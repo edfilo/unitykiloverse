@@ -9,7 +9,7 @@ SCHEME="Unity-iPhone"
 
 # --- Code Signing Configuration ---
 # Replace with your Apple Team ID (e.g., ABC123DEFG)
-TEAM_ID="YOUR_TEAM_ID_HERE"
+TEAM_ID="CYE232ULMR"
 # ----------------------------------
 
 echo "========================================"
