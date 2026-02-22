@@ -7,30 +7,36 @@ BUILD_PATH="$PROJECT_PATH/Builds/iOS_Project"
 IPA_PATH="$PROJECT_PATH/Builds/IPA"
 SCHEME="Unity-iPhone"
 
+# --- Code Signing Configuration ---
+# Replace with your Apple Team ID (e.g., ABC123DEFG)
+TEAM_ID="YOUR_TEAM_ID_HERE"
+# ----------------------------------
+
 echo "========================================"
 echo "      Starting Kiloverse iOS Build      "
 echo "========================================"
 
-# 1. Check if Unity Drive is mounted (if needed)
-if [ ! -d "/Volumes/XcodeBuilds/Unity" ]; then
-    echo "Warning: /Volumes/XcodeBuilds/Unity not found. Checking if Unity.app exists locally..."
-    # You might want to update the UNITY_PATH if it's installed elsewhere
+# 1. Check if Unity executable is reachable
+if [ ! -x "$UNITY_PATH" ]; then
+    echo "Error: Unity executable not found at $UNITY_PATH"
+    echo "Please ensure your Unity drive is mounted or update UNITY_PATH in this script."
+    exit 1
 fi
 
 # 2. Run Unity Headless Build (Generate Xcode Project)
 echo "Step 1: Generating Xcode Project from Unity..."
-"$UNITY_PATH" 
-  -batchmode 
-  -nographics 
-  -projectPath "$PROJECT_PATH" 
-  -executeMethod HeadlessBuilder.BuildIOS 
-  -customBuildPath "$BUILD_PATH" 
+"$UNITY_PATH" \
+  -batchmode \
+  -nographics \
+  -projectPath "$PROJECT_PATH" \
+  -executeMethod HeadlessBuilder.BuildIOS \
+  -customBuildPath "$BUILD_PATH" \
   -quit
 
 if [ $? -ne 0 ]; then
     echo "Error: Unity build failed. Check the logs."
     exit 1
-fi
+  fi
 
 echo "Xcode Project generated at: $BUILD_PATH"
 
@@ -41,12 +47,14 @@ cd "$BUILD_PATH"
 # Clean build
 xcodebuild clean -project Unity-iPhone.xcodeproj -scheme "$SCHEME" -configuration Release
 
-# Create Archive
-xcodebuild archive 
-  -project Unity-iPhone.xcodeproj 
-  -scheme "$SCHEME" 
-  -configuration Release 
-  -archivePath "$IPA_PATH/kiloverse.xcarchive"
+# Create Archive with Automatic Signing
+xcodebuild archive \
+  -project Unity-iPhone.xcodeproj \
+  -scheme "$SCHEME" \
+  -configuration Release \
+  -archivePath "$IPA_PATH/kiloverse.xcarchive" \
+  DEVELOPMENT_TEAM="$TEAM_ID" \
+  ALLOW_PROVISIONING_DEVICE_REGISTRATION=YES
 
 if [ $? -ne 0 ]; then
     echo "Error: Xcode archive failed."
@@ -59,10 +67,11 @@ echo "Archive created at: $IPA_PATH/kiloverse.xcarchive"
 if [ -f "$PROJECT_PATH/exportOptions.plist" ]; then
     echo "Step 3: Exporting IPA..."
     mkdir -p "$IPA_PATH/Output"
-    xcodebuild -exportArchive 
-      -archivePath "$IPA_PATH/kiloverse.xcarchive" 
-      -exportOptionsPlist "$PROJECT_PATH/exportOptions.plist" 
-      -exportPath "$IPA_PATH/Output"
+    xcodebuild -exportArchive \
+      -archivePath "$IPA_PATH/kiloverse.xcarchive" \
+      -exportOptionsPlist "$PROJECT_PATH/exportOptions.plist" \
+      -exportPath "$IPA_PATH/Output" \
+      -allowProvisioningUpdates
     
     if [ $? -eq 0 ]; then
         echo "IPA exported successfully to: $IPA_PATH/Output"
