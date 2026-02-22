@@ -1,0 +1,34 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c84fc8708dd1540e78b48286e9fdd957, type: 3}
+  m_Name: ZossBuildingStack
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  firstFloorHeight: 4.5
+  upperFloorHeight: 3.5
+  minDoorWidth: 3
+  maxDoorWidth: 5
+  minDoorHeightRatio: 0.5
+  maxDoorHeightRatio: 0.8
+  minWindowWidth: 1.5
+  maxWindowWidth: 4
+  minWindowSpacing: 1
+  maxWindowSpacing: 5
+  windowHeightRatio: 0.6
+  wallColors:
+  - {r: 1, g: 1, b: 1, a: 1}
+  - {r: 0.2, g: 0.2, b: 0.2, a: 1}
+  - {r: 0.3, g: 0.3, b: 0.35, a: 1}
+  windowOffPercentage: 0.345
+  windowBrightnessVariance: 0.371
+  bottomFloorDarkening: 0.35
+  windowVarianceSeed: 0

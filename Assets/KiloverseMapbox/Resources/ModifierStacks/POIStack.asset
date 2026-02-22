@@ -1,0 +1,103 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-8956241143734305877
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cb8a61183121446bbd024747630bf05c, type: 3}
+  m_Name: FilterStack
+  m_EditorClassIdentifier: MapboxVectorModule::Mapbox.VectorModule.MeshGeneration.Unity.VectorFilterStackObject
+  Filters: []
+  Type: 0
+--- !u!114 &-7521178015015841167
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d3ed67ab2b7a948ba95ee6e856f48c9b, type: 3}
+  m_Name: POILabelModifierObject
+  m_EditorClassIdentifier: Assembly-CSharp::POILabelModifierObject
+  m_Active: 1
+--- !u!114 &-7414666198577396816
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cb8a61183121446bbd024747630bf05c, type: 3}
+  m_Name: FilterStack
+  m_EditorClassIdentifier: MapboxVectorModule::Mapbox.VectorModule.MeshGeneration.Unity.VectorFilterStackObject
+  Filters: []
+  Type: 0
+--- !u!114 &-6808917251640622326
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d3ed67ab2b7a948ba95ee6e856f48c9b, type: 3}
+  m_Name: POILabelModifierObject
+  m_EditorClassIdentifier: Assembly-CSharp::POILabelModifierObject
+  m_Active: 1
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9a17705f45444b729e601b91361775ed, type: 3}
+  m_Name: POIStack
+  m_EditorClassIdentifier: MapboxVectorModule::Mapbox.VectorModule.MeshGeneration.Unity.ModifierStackObject
+  Settings:
+    VisibilityZoomRange: {x: 1, y: 20}
+    MergeObjects: 0
+    LayerType: 2
+  Filters: {fileID: -8956241143734305877}
+  MeshModifiers: []
+  GoModifiers:
+  - {fileID: -7521178015015841167}
+--- !u!114 &1195391102982367894
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cb8a61183121446bbd024747630bf05c, type: 3}
+  m_Name: FilterStack
+  m_EditorClassIdentifier: MapboxVectorModule::Mapbox.VectorModule.MeshGeneration.Unity.VectorFilterStackObject
+  Filters: []
+  Type: 0
+--- !u!114 &5459672605908616657
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d3ed67ab2b7a948ba95ee6e856f48c9b, type: 3}
+  m_Name: POILabelModifierObject
+  m_EditorClassIdentifier: Assembly-CSharp::POILabelModifierObject
+  m_Active: 1

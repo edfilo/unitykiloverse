@@ -1,0 +1,335 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3c802d405d81241969f62d2d41db4fb3, type: 3}
+  m_Name: MysticalNight
+  m_EditorClassIdentifier: Assembly-CSharp::KiloWorld.Rendering.KiloWorldMasterProfile
+  lighting:
+    moonlightColor: {r: 0.2, g: 0.25, b: 0.4, a: 1}
+    moonlightIntensity: 0.8
+    moonlightRotation: {x: 90, y: 0, z: 0}
+    enableShadows: 1
+    shadowStrength: 1
+    shadowDistance: 150
+    shadowResolution: 1
+    shadowCascades: 2
+    ambientMode: 0
+    ambientIntensity: 0.2
+    ambientFlatColor: {r: 0.05, g: 0.05, b: 0.08, a: 1}
+    ambientSkyColor: {r: 0.05, g: 0.05, b: 0.08, a: 1}
+    ambientEquatorColor: {r: 0.02, g: 0.02, b: 0.03, a: 1}
+    ambientGroundColor: {r: 0.01, g: 0.01, b: 0.01, a: 1}
+    reflectionMode: 0
+    customReflectionCubemap: {fileID: 0}
+    reflectionIntensity: 0.64
+    reflectionBounces: 0
+    subtractiveShadowColor: {r: 1, g: 1, b: 1, a: 1}
+    spotlightColor: {r: 0.5188679, g: 0.14301799, b: 0.056292284, a: 1}
+    spotlightIntensity: 1.69
+    spotlightCastShadows: 0
+    spotlightShadowStrength: 0
+    spotlightShadowBias: 0.05
+    spotlightShadowNormalBias: 1
+    spotlightEnabled: 1
+    enableExperimentalPointLight: 0
+    experimentalPointColor: {r: 1, g: 0, b: 0, a: 1}
+    experimentalPointRange: 50
+    experimentalPointIntensity: 2
+    experimentalPointOffsetZ: 20
+    experimentalLightFollowsBuilding: 0
+  sky:
+    hdriSkybox: {fileID: 8900000, guid: bedc66cf45de91846acb1bcca052b874, type: 3}
+    skyboxExposure: 3.8
+    skyboxRotation: 138
+    skyboxTint: {r: 0.36538804, g: 0.4373218, b: 0.6509434, a: 1}
+  rendererFeatures:
+    ssaoEnabled: 0
+    ssaoIntensity: 2.1
+    ssaoRadius: 1.96
+    ssaoDirectLightingStrength: 0.648
+    ssaoSamples: 2
+    ssgiEnabled: 0
+    ssgiQuality: 0
+    ssgiThickness: 10
+    ssgiMultiBounce: 0
+    ssgiIntensity: 3.97
+    ssrEnabled: 0
+    ssrResolution: 1
+    ssrMaxRaySteps: 48
+    ssrThickness: 3.01
+    ssrAccumulation: 0
+  orbs:
+    showBeam: 1
+    particleCount: 841
+    particleEmissionColor: {r: 0.09825563, g: 0.71582854, b: 0.9056604, a: 1}
+    particleSpeed: 3.2
+    particleChaos: 0.19
+    beamWidth: 2.05
+    particleBaseSize: 0.65
+    glowColor: {r: 0, g: 0.8734226, b: 1, a: 1}
+    emissionIntensity: 7.52
+    orbSize: 0.1
+    beamColor: {r: 0, g: 0.799112, b: 0.9056604, a: 1}
+    particleRadius: 2.17
+    particleSizeVariation: 3
+    particleSizeOverLifetime: 0.1
+    particleFadeIn: 0.05
+    particleFadeOut: 0.15
+    particleDensity: 1.15
+    particleRotationSpeed: 45
+    beamEmission: 0.1
+    beamHeight: 4851
+    proximityTriggerDistance: 5
+    proximityAlertCooldown: 30
+    respawnIntervalSeconds: 1800
+  volumetricFog:
+    raymarchQuality: 12
+    raymarchNearStepping: 12
+    raymarchMinStep: 0.1
+    jittering: 0.5
+    dithering: 0.8
+    constantDensity: 0
+    noiseStrength: 0.9
+    noiseScale: 15
+    noiseFinalMultiplier: 1.0
+    density: 0.35
+    albedo: {r: 0.5, g: 0.6, b: 0.7, a: 1}
+    brightness: 1.2
+    deepObscurance: 0.8
+    specularColor: {r: 0.8, g: 0.8, b: 0.9, a: 1}
+    specularThreshold: 0.3
+    specularIntensity: 1.0
+    turbulence: 0.5
+    windDirection: {x: 0.02, y: 0, z: 0.01}
+    lightDiffusionPower: 32
+    lightDiffusionIntensity: 2.5
+    receiveShadows: 1
+    shadowIntensity: 0.6
+    enableNativeLights: 1
+    nativeLightsMultiplier: 2.5
+    enablePointLights: 0
+    enableVoids: 0
+    enableAPV: 0
+    apvIntensityMultiplier: 0
+    scattering: 0.85
+    scatteringThreshold: 0.05
+    scatteringIntensity: 2.0
+    scatteringAbsorption: 0.2
+    scatteringTint: {r: 0.9, g: 0.8, b: 0.7, a: 1}
+    scatteringHighQuality: 1
+    border: 0.01
+    customHeight: 1
+    height: 40
+    verticalOffset: 0
+    distance: 3
+    distanceFallOff: 1
+    maxDistance: 10000
+    maxDistanceFallOff: 0.952
+    distantFog: 1
+    distantFogStartDistance: 3000
+    distantFogDistanceDensity: 0.96
+    distantFogMaxHeight: 70
+    distantFogHeightDensity: 1.41
+    distantFogColor: {r: 0.9622642, g: 0.2365364, b: 0.11347453, a: 1}
+    distantFogDiffusionIntensity: 0.77
+    distantFogBaseAltitude: 0
+    distantFogSymmetrical: 0
+  postFX:
+    bloomEnabled: 0
+    bloomIntensity: 1
+    bloomThreshold: 1.5
+    bloomScatter: 1
+    lensDirtTexture: {fileID: 0}
+    lensDirtIntensity: 0.5
+    bloomClampBeforeBloom: 20
+    anamorphicIntensity: 0.05
+    bloomTint: {r: 1, g: 1, b: 1, a: 1}
+    tonemappingEnabled: 1
+    tonemappingMode: 2
+    vignetteEnabled: 1
+    vignetteColor: {r: 0, g: 0, b: 0.05, a: 1}
+    vignetteIntensity: 0.25
+    vignetteSmoothness: 0.55
+    vignetteRounded: 1
+    chromaticAberrationEnabled: 1
+    chromaticAberrationIntensity: 0
+    lensDistortionEnabled: 0
+    lensDistortionIntensity: -0.16
+    lensDistortionXMultiplier: 1.28
+    lensDistortionYMultiplier: 1
+    lensDistortionScale: 1.04
+    exposureEnabled: 0
+    exposureFixedValue: 0.2
+    depthOfFieldEnabled: 1
+    focusDistance: 0.1
+    aperture: 4.5
+    focalLength: 9
+    colorGradingEnabled: 1
+    whiteBalanceActive: 1
+    temperatureOverride: 1
+    tintOverride: 1
+    temperature: -8
+    tint: 4
+    hueShift: 0
+    saturation: -15.8
+    contrast: 35.2
+    shadows: {x: 0.9180278, y: 0.9705794, z: 1, w: 0.03}
+    midtones: {x: 1, y: 0.95283026, z: 0.9056604, w: 0.02}
+    highlights: {x: 1, y: 0.81666666, z: 0.6666666, w: 0}
+    shadowsOverride: 1
+    midtonesOverride: 1
+    highlightsOverride: 1
+    shadowsStart: 0
+    shadowsEnd: 0.3
+    highlightsStart: 0.55
+    highlightsEnd: 1
+    shadowsStartOverride: 1
+    shadowsEndOverride: 1
+    highlightsStartOverride: 1
+    highlightsEndOverride: 1
+    motionBlurEnabled: 0
+    motionBlurQuality: 1
+    motionBlurIntensity: 0.5
+    motionBlurSampleCount: 8
+    ambientOcclusionEnabled: 0
+    aoIntensity: 0
+    aoRadius: 2.66
+    aoDirectLightingStrength: 0
+    filmGrainEnabled: 0
+    filmGrainType: 2
+    filmGrainIntensity: 0.051
+    filmGrainResponse: 0.828
+  camera:
+    transitionTime: 2
+    fpPositionY: 3
+    fpPositionZ: 3
+    fpRotationX: 0
+    godPositionY: 100
+    godPositionZ: 100
+    godRotationX: 16
+    nearClipPlane: 0.3
+    farClipPlane: 1000
+  startupLocation:
+    startupLocation: 3
+    stCharlesLatitude: 32.20232095513046
+    stCharlesLongitude: -110.96586529245728
+    dunkinLatitude: 40.69491386993338
+    dunkinLongitude: -80.10504714110444
+    hernandezLatitude: 40.703155506631546
+    hernandezLongitude: -73.9238789473517
+    meederLatitude: 40.70063561266829
+    meederLongitude: -80.10918961729158
+    pointStateParkLatitude: 40.441794818874946
+    pointStateParkLongitude: -80.0132127760516
+    customLatitude: 40.69491386993338
+    customLongitude: -80.10504714110444
+  teleportSettings:
+    locations:
+    - name: St Charles Tavern
+      latitude: 32.20232095513046
+      longitude: -110.96586529245728
+    - name: Dunkin Donuts
+      latitude: 40.69491386993338
+      longitude: -80.10504714110444
+    - name: Meeder Green
+      latitude: 40.70063561266829
+      longitude: -80.10918961729158
+    - name: Hernandez Park
+      latitude: 40.703155506631546
+      longitude: -73.9238789473517
+    - name: Point State Park
+      latitude: 40.441794818874946
+      longitude: -80.0132127760516
+    teleportA:
+      name: Hernandez Park
+      latitude: 40.703155506631546
+      longitude: -73.9238789473517
+    teleportB:
+      name: Meeder Green
+      latitude: 40.69491386993338
+      longitude: -80.10504714110444
+  roads:
+    roadMaterial: {fileID: 2100000, guid: be50ebf584a4a48aeb8f5a63be2b0574, type: 2}
+    roadColor: {r: 0.8962264, g: 0.38000566, b: 0.097232126, a: 1}
+    roadAlbedo: {fileID: 2800000, guid: 3228c8a8322be4b2daa25358e49d9f78, type: 3}
+    roadNormal: {fileID: 2800000, guid: 22bde17b0294e4c5e9c4a122d1300bbd, type: 3}
+    roadTiling: {x: 1000, y: 1000}
+    roadMetallic: 0.05
+    roadSmoothness: 0.96
+    roadNormalStrength: 0.561
+    roadEmission: {r: 0.00011055422, g: 0.00011055422, b: 0.00011055422, a: 1}
+    roadEmissionMap: {fileID: 0}
+    roadEmissionIntensity: 4
+    roadYPosition: 0.1
+    roadOcclusionMap: {fileID: 2800000, guid: 7a3775fe505984092b2768f263524386, type: 3}
+    roadHeightMap: {fileID: 2800000, guid: 32ae11d922a9142c49053d8dbe2d4b7d, type: 3}
+    roadRoughnessMap: {fileID: 0}
+    roadOcclusionStrength: 0.99
+    roadHeightScale: 0.0439
+    roadEnvironmentReflections: 0
+    roadSpecularHighlights: 0
+    reflectionStrength: 2
+    reflectionYOffset: 4
+    reflectionDistortion: 5
+    reflectionWarble: 0
+    reflectionWarbleScale: 1
+    puddleColor: {r: 0, g: 0, b: 0, a: 1}
+    puddleFrequency: 6.14
+    puddleAmount: 0.98
+    puddleSharpness: 2.7
+  buildings:
+    zossWallMaterial: {fileID: 2100000, guid: a1b2c3d4e5f6071819202122232425a1, type: 2}
+    zossWallColor: {r: 0.5566038, g: 0.5566038, b: 0.5566038, a: 1}
+    zossWallAlbedo: {fileID: 2800000, guid: 00ee2d53d929b44b99471fc9a3110f3d, type: 3}
+    zossWallNormal: {fileID: 2800000, guid: e5a2c7cf7143845f884d2487048a945a, type: 3}
+    zossWallOcclusionMap: {fileID: 2800000, guid: 07437e4638d5a4315948ba69ad6d51f5, type: 3}
+    zossWallRoughnessMap: {fileID: 0}
+    zossWallTiling: {x: 0.333, y: 0.333}
+    zossWallMetallic: 0
+    zossWallSmoothness: 0
+    zossWallNormalStrength: 1
+    zossWallOcclusionStrength: 1
+    zossWallEmission: {r: 0.019876612, g: 0.019876612, b: 0.019876612, a: 1}
+    zossWallEmissionMap: {fileID: 0}
+    zossWallEmissionIntensity: 0.6
+    zossWallEnvironmentReflections: 1
+    zossWallSpecularHighlights: 1
+    zossEmissiveMaterial: {fileID: 2100000, guid: b1c2d3e4f5061728192021222324b1e1, type: 2}
+    zossEmissiveColor: {r: 1, g: 0.55, b: 0.32, a: 1}
+    zossEmissiveAlbedo: {fileID: 2800000, guid: 2092a212b1562438591a109bc5315618, type: 3}
+    zossEmissiveTiling: {x: 1, y: 1}
+    zossEmissiveMetallic: 0
+    zossEmissiveSmoothness: 0.348
+    zossEmissiveEmission: {r: 1.3, g: 0.55, b: 0.3, a: 1}
+    zossEmissiveEmissionMap: {fileID: 0}
+    zossEmissiveIntensity: 8
+    windowEnvironmentReflections: 1
+    windowSpecularHighlights: 1
+    buildingHeightScale: 1
+  ground:
+    groundMaterial: {fileID: 0}
+    groundColor: {r: 1, g: 1, b: 1, a: 1}
+    groundTexture: {fileID: 2800000, guid: 2794690b87f20421a885b850321db920, type: 3}
+    groundNormal: {fileID: 2800000, guid: c4d41765ff79348e4b1b65f4978b6e40, type: 3}
+    groundTiling: {x: 1000, y: 1000}
+    groundYPosition: 0.05
+    groundMetallic: 0
+    groundSmoothness: 0
+    groundNormalStrength: 0.238
+    groundEmission: {r: 0, g: 0, b: 0, a: 1}
+    groundEmissionMap: {fileID: 0}
+    groundEmissionIntensity: 0
+    groundBrightness: 1
+  helmet:
+    scale: 2.49
+    positionOffset: {x: 0, y: 0, z: 0}
+    rotation: {x: -90, y: 90, z: 0}
+    showHelmet: 1

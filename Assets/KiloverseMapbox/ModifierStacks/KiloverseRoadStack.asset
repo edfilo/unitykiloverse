@@ -1,0 +1,71 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-3980773695454749321
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 839e2bbc3b9841e98d68b6aca7188d13, type: 3}
+  m_Name: MaterialModifierObject
+  m_EditorClassIdentifier: MapboxVectorModule::Mapbox.VectorModule.MeshGeneration.GameObjectModifiers.MaterialModifierObject
+  m_Active: 1
+  Materials:
+  - {fileID: 2100000, guid: be50ebf584a4a48aeb8f5a63be2b0574, type: 2}
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9a17705f45444b729e601b91361775ed, type: 3}
+  m_Name: KiloverseRoadStack
+  m_EditorClassIdentifier: 
+  Settings:
+    VisibilityZoomRange: {x: 10, y: 25}
+    MergeObjects: 1
+    LayerType: 1
+  Filters: {fileID: 5145616547485143670}
+  MeshModifiers:
+  - {fileID: 7988197472298083026}
+  GoModifiers:
+  - {fileID: -3980773695454749321}
+--- !u!114 &5145616547485143670
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cb8a61183121446bbd024747630bf05c, type: 3}
+  m_Name: FilterStack
+  m_EditorClassIdentifier: 
+  Filters: []
+  Type: 0
+--- !u!114 &7988197472298083026
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2ea29f9d87fb4ebea0af7ed9657e4da1, type: 3}
+  m_Name: LineMeshModifierObject
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  LineMeshParameters:
+    Width: 5
+    JoinType: 1
+    CapType: 1
+    MiterLimit: 0.2
+    RoundLimit: 1.05

@@ -1,0 +1,17 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b21b72bc156ca448aa6cfc022319c59a, type: 3}
+  m_Name: KiloverseTextureSideWall
+  m_EditorClassIdentifier:
+  m_Active: 1
+  AtlasInfo: {fileID: 11400000, guid: 968e70d18519c4b719c58c45fc082db3, type: 2}
+  Height: 10

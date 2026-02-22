@@ -1,0 +1,3158 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
+using Mapbox.BaseModule.Data;
+using Mapbox.BaseModule.Data.Tiles;
+using Mapbox.BaseModule.Utilities;
+using Mapbox.BaseModule.Unity;
+using Mapbox.BaseModule.Map;
+using Mapbox.VectorModule;
+using Mapbox.VectorTile;
+using Mapbox.BaseModule;
+using UnityEngine;
+using UnityEngine.Networking;
+using ICSharpCode.SharpZipLib.GZip;
+using System.IO;
+
+namespace Kiloverse.Mapbox
+{
+    /// <summary>
+    /// Orchestrates the Overture maps using the server-side /xyz/ tile proxy.
+    /// Replaces the complex client-side PMTiles reader with simple HTTP requests.
+    /// </summary>
+    public class OvertureMapManager : MonoBehaviour
+    {
+        private void Awake()
+        {
+            Debug.Log("[OvertureMapManager] ===== AWAKE CALLED =====");
+            Debug.Log($"[OvertureMapManager] Component enabled: {enabled}");
+            Debug.Log($"[OvertureMapManager] GameObject active: {gameObject.activeInHierarchy}");
+        }
+
+        private void OnEnable()
+        {
+            Debug.Log("[OvertureMapManager] OnEnable() called - Component is now enabled");
+        }
+
+        private void OnDisable()
+        {
+            Debug.Log("[OvertureMapManager] OnDisable() called - Component is now disabled");
+        }
+
+        [Header("Map")]
+        [SerializeField] private KiloverseMapInfo _map;
+        public KiloverseMapInfo map => _map;
+        [SerializeField] private Camera playerCamera; // For frustum culling
+        [SerializeField] private int zoomLevel = 16;
+        [SerializeField] private float tilePollInterval = 0.1f; // 10 FPS for smooth scrolling
+        [SerializeField] private bool logOvertureLayers = true;
+
+        [Header("Kiloverse Visualizers - No Mapbox Dependency")]
+        [SerializeField] private bool enableBuildingLayer = true;
+        [SerializeField] private bool enableRoadLayer = true;
+        [SerializeField] private bool enablePoiLayer = true;
+        [SerializeField] private bool enableWaterLayer = true;
+        
+        // Our custom Kiloverse visualizers (created at runtime)
+        private readonly Dictionary<string, IKiloverseLayerVisualizer> m_KiloverseVisualizers = new Dictionary<string, IKiloverseLayerVisualizer>();
+
+        private XYZTileFetcher m_PlacesFetcher;
+        private XYZTileFetcher m_BuildingsFetcher;
+        private XYZTileFetcher m_TransportationFetcher;
+        private XYZTileFetcher m_BaseFetcher;
+
+        private readonly List<XYZLayer> m_Layers = new List<XYZLayer>();
+        private OvertureVectorRenderer m_Renderer;
+        private float m_LastPoll;
+        private LatitudeLongitude _lastMapCenter = new LatitudeLongitude(0, 0); // Track map center changes
+
+private void Start()
+        {
+            Debug.Log("[OvertureMapManager] ===== START() CALLED =====");
+            Debug.Log("[OvertureMapManager] Step 1/7: Finding KiloverseMapInfo...");
+            
+            if (_map == null) _map = FindFirstObjectByType<KiloverseMapInfo>();
+            if (_map == null)
+            {
+                Debug.LogError("[OvertureMapManager] FAILED: KiloverseMapInfo not found.");
+                enabled = false;
+                return;
+            }
+            Debug.Log($"[OvertureMapManager] ✓ Step 1/7 Complete: Found KiloverseMapInfo on {_map.gameObject.name}");
+
+            Debug.Log("[OvertureMapManager] Step 2/7: Creating XYZ tile fetchers...");
+            m_PlacesFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/places/{z}/{x}/{y}.mvt");
+            m_BuildingsFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/buildings/{z}/{x}/{y}.mvt");
+            m_TransportationFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/transportation/{z}/{x}/{y}.mvt");
+            m_BaseFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/base/{z}/{x}/{y}.mvt");
+            Debug.Log("[OvertureMapManager] ✓ Step 2/7 Complete: Created 4 XYZ fetchers (places, buildings, transportation, base)");
+
+            Debug.Log("[OvertureMapManager] Step 3/7: Creating layer parent GameObjects...");
+            // Create parent GameObjects directly in the scene (under KiloMap)
+            var visualizers = new Dictionary<string, global::Mapbox.VectorModule.IVectorLayerVisualizer>();
+            
+            if (enableBuildingLayer)
+            {
+                var buildingRoot = new GameObject("building layer objects");
+                buildingRoot.transform.SetParent(_map.transform);
+                buildingRoot.transform.localPosition = Vector3.zero;
+                Debug.Log($"[OvertureMapManager] ✓ Created 'building layer objects' under {_map.name}");
+            }
+            
+            if (enableRoadLayer)
+            {
+                var roadRoot = new GameObject("road layer objects");
+                roadRoot.transform.SetParent(_map.transform);
+                roadRoot.transform.localPosition = Vector3.zero;
+                Debug.Log($"[OvertureMapManager] ✓ Created 'road layer objects' under {_map.name}");
+            }
+            
+            if (enablePoiLayer)
+            {
+                var poiRoot = new GameObject("poi_label layer objects");
+                poiRoot.transform.SetParent(_map.transform);
+                poiRoot.transform.localPosition = Vector3.zero;
+                Debug.Log($"[OvertureMapManager] ✓ Created 'poi_label layer objects' under {_map.name}");
+            }
+            
+            if (enableWaterLayer)
+            {
+                var waterRoot = new GameObject("water layer objects");
+                waterRoot.transform.SetParent(_map.transform);
+                waterRoot.transform.localPosition = Vector3.zero;
+                Debug.Log($"[OvertureMapManager] ✓ Created 'water layer objects' under {_map.name}");
+            }
+            Debug.Log($"[OvertureMapManager] ✓ Step 3/7 Complete: Created layer parent GameObjects (NO Mapbox visualizers!)");
+
+            Debug.Log("[OvertureMapManager] Step 4/7: Creating OvertureVectorRenderer...");
+            // Pass empty visualizers - renderer will create GameObjects directly
+            m_Renderer = new OvertureVectorRenderer(_map, visualizers, logOvertureLayers);
+            Debug.Log("[OvertureMapManager] ✓ Step 4/7 Complete: Created OvertureVectorRenderer (Mapbox-free mode)");
+
+            Debug.Log("[OvertureMapManager] Step 5/7: Starting initialization coroutine...");
+            StartCoroutine(InitializeWhenReady());
+            Debug.Log("[OvertureMapManager] ✓ Step 5/7 Complete: InitializeWhenReady coroutine started");
+            Debug.Log("[OvertureMapManager] ===== START() COMPLETE - Waiting for InitializeWhenReady() =====");
+        }
+
+private IEnumerator InitializeWhenReady()
+        {
+            // Force recompilation
+            Debug.Log("[OvertureMapManager] Step 6/7: InitializeWhenReady called...");
+            // KILOVERSE CUSTOM SDK: We bypass Mapbox initialization since we're using our own tile system
+            // All tiles come from api.kilomeme.com, not Mapbox servers
+            Debug.Log("[OvertureMapManager] Initializing KiloverseMapbox custom SDK (bypassing Mapbox token requirement)...");
+
+            Debug.Log("[OvertureMapManager] Step 6a: Initializing Kiloverse visualizers...");
+            try
+            {
+                m_Renderer.InitializeVisualizers();
+                Debug.Log($"[OvertureMapManager] ✓ Step 6a Complete: Visualizers initialized");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[OvertureMapManager] ERROR in Step 6a: {ex.Message}\n{ex.StackTrace}");
+            }
+
+            Debug.Log("[OvertureMapManager] Step 6b: Registering XYZ layers...");
+            try
+            {
+                RegisterLayers();
+                Debug.Log($"[OvertureMapManager] ✓ Step 6b Complete: Registered {m_Layers.Count} layers");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[OvertureMapManager] ERROR in Step 6b: {ex.Message}\n{ex.StackTrace}");
+            }
+
+            Debug.Log($"[OvertureMapManager] ✓ Step 6/7 Complete: Initialization complete. Layers: {m_Layers.Count}");
+
+            Debug.Log("[OvertureMapManager] Step 7/7: Triggering BuildingHeightLogger singleton...");
+            try
+            {
+                // Start building height logger to debug tall buildings
+                var _ = BuildingHeightLogger.Instance; // Trigger singleton creation
+                Debug.Log("[OvertureMapManager] ✓ Step 7/7 Complete: BuildingHeightLogger initialized");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[OvertureMapManager] ERROR in Step 7: {ex.Message}\n{ex.StackTrace}");
+            }
+
+            Debug.Log("[OvertureMapManager] ===== INITIALIZATION COMPLETE - Ready to load tiles! =====");
+            Debug.Log($"[OvertureMapManager] Summary: {m_KiloverseVisualizers.Count} Kiloverse visualizers, {m_Layers.Count} XYZ layers, tiles will load from api.kilomeme.com");
+
+            // Start water/road distance diagnostic
+            StartCoroutine(WaterRoadDistanceDiagnostic());
+
+            // WORKAROUND: Update() is not being called (Unity lifecycle issue)
+            // Continue this coroutine as a tile polling loop instead of relying on Update()
+            Debug.LogWarning("[OvertureMapManager] *** WORKAROUND: Tile polling via coroutine (Update() not running) ***");
+
+            // TILE POLLING LOOP (replaces Update() functionality)
+            while (true)
+            {
+                yield return new WaitForSeconds(tilePollInterval);
+
+                if (_map != null && m_Renderer != null && m_Layers.Count > 0)
+                {
+                    Debug.Log($"[OvertureMapManager-COROUTINE] Polling for tiles...");
+                    RequestCurrentTile();
+                }
+            }
+        }
+
+        private IEnumerator TilePollingCoroutine()
+        {
+            Debug.Log("[OvertureMapManager-POLLING] Tile polling coroutine started");
+            while (true)
+            {
+                yield return new WaitForSeconds(tilePollInterval);
+
+                // Same logic as Update()
+                if (_map != null && m_Renderer != null && m_Layers.Count > 0)
+                {
+                    Debug.Log($"[OvertureMapManager-POLLING] Polling for tiles...");
+                    RequestCurrentTile();
+                }
+            }
+        }
+
+        private IEnumerator WaterRoadDistanceDiagnostic()
+        {
+            Debug.Log("[WATER/ROAD DIAGNOSTIC] Started - checking every 10 seconds");
+
+            while (true)
+            {
+                yield return new WaitForSeconds(10f);
+
+                Vector3 playerPos = Vector3.zero; // Player at origin in floating origin system
+                int totalWaterObjects = 0;
+                int totalRoadObjects = 0;
+                int waterObjectsWithMesh = 0;
+                int roadObjectsWithMesh = 0;
+                float closestWaterDist = float.MaxValue;
+                float closestRoadDist = float.MaxValue;
+                Vector3 closestWaterPos = Vector3.zero;
+                Vector3 closestRoadPos = Vector3.zero;
+
+                // Check all loaded tiles
+                foreach (var kvp in m_Renderer.TileObjects)
+                {
+                    string tileKey = kvp.Key;
+                    List<GameObject> objects = kvp.Value;
+
+                    foreach (var obj in objects)
+                    {
+                        if (obj == null) continue;
+
+                        bool isWater = obj.name.Contains("water");
+                        bool isRoad = obj.name.Contains("segment");
+
+                        if (isWater) totalWaterObjects++;
+                        if (isRoad) totalRoadObjects++;
+
+                        if (isWater || isRoad)
+                        {
+                            var meshFilter = obj.GetComponent<MeshFilter>();
+                            if (meshFilter != null && meshFilter.mesh != null)
+                            {
+                                if (isWater) waterObjectsWithMesh++;
+                                if (isRoad) roadObjectsWithMesh++;
+
+                                // Check each vertex
+                                Vector3 tilePos = obj.transform.position;
+                                foreach (var vertex in meshFilter.mesh.vertices)
+                                {
+                                    Vector3 worldPos = tilePos + obj.transform.TransformVector(vertex);
+                                    float distance = Vector3.Distance(playerPos, worldPos);
+
+                                    if (isWater && distance < closestWaterDist)
+                                    {
+                                        closestWaterDist = distance;
+                                        closestWaterPos = worldPos;
+                                    }
+
+                                    if (isRoad && distance < closestRoadDist)
+                                    {
+                                        closestRoadDist = distance;
+                                        closestRoadPos = worldPos;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Debug.Log($"[WATER/ROAD DIAGNOSTIC] ==================");
+                Debug.Log($"[WATER/ROAD DIAGNOSTIC] Total loaded tiles: {m_Renderer.TileObjects.Count}");
+                Debug.Log($"[WATER/ROAD DIAGNOSTIC] Water objects: {totalWaterObjects} (with mesh: {waterObjectsWithMesh})");
+                Debug.Log($"[WATER/ROAD DIAGNOSTIC] Road objects: {totalRoadObjects} (with mesh: {roadObjectsWithMesh})");
+
+                if (closestWaterDist < float.MaxValue)
+                {
+                    Debug.Log($"[WATER/ROAD DIAGNOSTIC] ✓ CLOSEST WATER: {closestWaterDist:F1}m at position {closestWaterPos}");
+                }
+                else
+                {
+                    Debug.LogWarning($"[WATER/ROAD DIAGNOSTIC] ✗ NO WATER FOUND in any loaded tiles");
+                }
+
+                if (closestRoadDist < float.MaxValue)
+                {
+                    Debug.Log($"[WATER/ROAD DIAGNOSTIC] ✓ CLOSEST ROAD: {closestRoadDist:F1}m at position {closestRoadPos}");
+                }
+                else
+                {
+                    Debug.LogWarning($"[WATER/ROAD DIAGNOSTIC] ✗ NO ROADS FOUND in any loaded tiles");
+                }
+
+                Debug.Log($"[WATER/ROAD DIAGNOSTIC] ==================");
+            }
+        }
+
+
+
+        private void Update()
+        {
+            // CRITICAL DEBUG: Fire EVERY frame to prove Update() is running
+            Debug.LogWarning($"[OvertureMapManager-UPDATE] Frame {Time.frameCount} - Update() IS RUNNING!");
+
+            // Debug: Check if Update is running at all
+            if (Time.frameCount % 60 == 0) // Every second at 60fps
+            {
+                Debug.Log($"[OvertureMapManager] Update() running at frame {Time.frameCount}");
+            }
+
+            // Process mesh generation queue EVERY frame to spread memory load
+            if (m_Renderer != null)
+            {
+                m_Renderer.ProcessMeshQueue();
+            }
+
+            if (Time.time - m_LastPoll < tilePollInterval) return;
+            m_LastPoll = Time.time;
+
+            // Debug: Log initialization status every 5 seconds
+            if (Time.frameCount % 300 == 0)
+            {
+                Debug.Log($"[OvertureMapManager] Update: map={(_map != null ? "OK" : "NULL")}, m_Renderer={(m_Renderer != null ? "OK" : "NULL")}, m_Layers.Count={m_Layers.Count}");
+
+                // Count building GameObjects (total and active)
+                if (m_Renderer != null)
+                {
+                    int totalBuildings = 0;
+                    int activeBuildings = 0;
+
+                    // Find the building layer root
+                    var buildingLayerRoot = GameObject.Find("building layer objects");
+                    if (buildingLayerRoot != null)
+                    {
+                        // Count unique tile indexes
+                        HashSet<string> tileIndexes = new HashSet<string>();
+                        Dictionary<string, int> tileCount = new Dictionary<string, int>();
+                        Dictionary<string, int> activeTileCount = new Dictionary<string, int>();
+
+                        totalBuildings = buildingLayerRoot.transform.childCount;
+
+                        for (int i = 0; i < buildingLayerRoot.transform.childCount; i++)
+                        {
+                            Transform child = buildingLayerRoot.transform.GetChild(i);
+                            if (child.gameObject.activeInHierarchy)
+                                activeBuildings++;
+
+                            // Extract tile index from name like "Overture_building_T5_123"
+                            string name = child.name;
+                            int tIndex = name.IndexOf("_T");
+                            if (tIndex >= 0)
+                            {
+                                int underscoreAfter = name.IndexOf("_", tIndex + 2);
+                                if (underscoreAfter > 0)
+                                {
+                                    string tileNum = name.Substring(tIndex + 2, underscoreAfter - tIndex - 2);
+                                    tileIndexes.Add(tileNum);
+
+                                    if (!tileCount.ContainsKey(tileNum))
+                                    {
+                                        tileCount[tileNum] = 0;
+                                        activeTileCount[tileNum] = 0;
+                                    }
+                                    tileCount[tileNum]++;
+                                    if (child.gameObject.activeInHierarchy)
+                                        activeTileCount[tileNum]++;
+                                }
+                            }
+                        }
+
+                        var sortedTiles = new System.Collections.Generic.List<string>(tileIndexes);
+                        sortedTiles.Sort((a, b) => int.Parse(a).CompareTo(int.Parse(b)));
+
+                        Debug.Log($"[OvertureMapManager] Buildings: {activeBuildings}/{totalBuildings} active | Unique tiles: {tileIndexes.Count} (T{string.Join(", T", sortedTiles.ToArray())})");
+                    }
+                }
+            }
+
+            // Wait for initialization to complete
+            if (_map == null || m_Renderer == null || m_Layers.Count == 0)
+            {
+                return;
+            }
+
+            RequestCurrentTile();
+
+            // Frustum culling - deactivate tiles outside camera view
+            if (m_Renderer == null)
+            {
+                if (Time.frameCount % 300 == 0)
+                    Debug.LogError("[OvertureMapManager] m_Renderer is NULL! Cannot run frustum culling!");
+            }
+            else
+            {
+                m_Renderer.UpdateFrustumCulling();
+            }
+        }
+
+        private void RegisterLayers()
+        {
+            // Clear all existing tiles from renderer (handles zoom level changes)
+            m_Renderer?.ClearAllTiles();
+
+            m_Layers.Clear();
+
+            // Mobile: Skip land layer to save RAM (ground plane not essential)
+            if (!Application.isMobilePlatform)
+            {
+                m_Layers.Add(new XYZLayer(m_BaseFetcher, m_Renderer, "LandLayer", "land", "land_use", "land_cover", "infrastructure"));
+            }
+
+            // Core layers (all platforms)
+            m_Layers.Add(new XYZLayer(m_BaseFetcher, m_Renderer, "WaterLayer", "water"));
+            m_Layers.Add(new XYZLayer(m_TransportationFetcher, m_Renderer, "RoadsLayer", "segment"));
+            m_Layers.Add(new XYZLayer(m_BuildingsFetcher, m_Renderer, "BuildingsLayer", "building"));
+            m_Layers.Add(new XYZLayer(m_PlacesFetcher, m_Renderer, "PlacesLayer", "place"));
+
+            if (Application.isMobilePlatform)
+            {
+                Debug.Log($"[OvertureMapManager] Mobile mode: Registered {m_Layers.Count} layers (Land layer skipped to save RAM)");
+            }
+            else
+            {
+                Debug.Log($"[OvertureMapManager] Desktop mode: Registered {m_Layers.Count} layers (all layers enabled)");
+            }
+        }
+
+        // Calculate which tiles are visible in camera frustum
+private HashSet<CanonicalTileId> GetVisibleTilesInFrustum(LatitudeLongitude playerLatLon, int zoom)
+    {
+        var visibleTiles = new HashSet<CanonicalTileId>();
+
+        if (playerCamera == null)
+        {
+            playerCamera = Camera.main;
+            if (playerCamera == null)
+            {
+                Debug.LogWarning("[TileLoad] No camera found for frustum culling - frustum disabled");
+                return visibleTiles;
+            }
+        }
+
+        // Calculate frustum planes (same approach as UpdateFrustumCulling())
+        Plane[] frustumPlanes = GeometryUtility.CalculateFrustumPlanes(playerCamera);
+
+        // Get player's center tile
+        var centerTile = Conversions.LatitudeLongitudeToTileId(playerLatLon, zoom);
+
+        // Map center in Web Mercator (for calculating Unity positions)
+        Vector2d mapCenterMercator = Conversions.LatitudeLongitudeToWebMercator(_map.MapInformation.Position);
+
+        // DEBUG: Log player tile and map center (every 5 seconds via frame check)
+        if (Time.frameCount % 300 == 0)
+        {
+            var playerMercator = Conversions.LatitudeLongitudeToWebMercator(playerLatLon);
+            var offsetFromCenter = playerMercator - mapCenterMercator;
+            Debug.Log($"[TileCalc] Player GPS: ({playerLatLon.Latitude:F6}, {playerLatLon.Longitude:F6}) → Tile: {zoom}/{centerTile.X}/{centerTile.Y}");
+            Debug.Log($"[TileCalc] Map Center GPS: ({_map.MapInformation.Position.Latitude:F6}, {_map.MapInformation.Position.Longitude:F6}) → Player offset: ({offsetFromCenter.x:F1}m, {offsetFromCenter.y:F1}m)");
+        }
+
+        int checkedCount = 0;
+        int rejectedCount = 0;
+
+        // Check tiles in 5x5 grid (larger than 3x3 to catch edge tiles)
+        for (int dx = -2; dx <= 2; dx++)
+        {
+            for (int dy = -2; dy <= 2; dy++)
+            {
+                checkedCount++;
+                var tileX = centerTile.X + dx;
+                var tileY = centerTile.Y + dy;
+                var tileId = new CanonicalTileId(zoom, tileX, tileY);
+
+                // Get tile bounds in Web Mercator
+                var (minX, minY, maxX, maxY) = Conversions.TileBoundsInWebMercator(new TileId(zoom, tileX, tileY));
+
+                // Calculate tile center in Web Mercator (NOT lat/lon!)
+                Vector2d tileCenterMercator = new Vector2d(
+                    (minX + maxX) / 2.0,
+                    (minY + maxY) / 2.0
+                );
+
+                // Calculate Unity world position (offset from map center)
+                Vector2d offsetMercator = tileCenterMercator - mapCenterMercator;
+                Vector3 tileCenterUnity = new Vector3((float)offsetMercator.x, 0, (float)offsetMercator.y);
+
+                // Calculate tile size in Unity units
+                float tileWidthUnity = (float)(maxX - minX);
+                float tileHeightUnity = (float)(maxY - minY);
+                
+                // Create bounds for this tile (center point + extents)
+                // Height of 500 to ensure buildings are included
+                Bounds tileBoundsUnity = new Bounds(
+                    tileCenterUnity + new Vector3(0, 250, 0),
+                    new Vector3(tileWidthUnity, 500, tileHeightUnity)
+                );
+
+                // Test if tile bounds intersect frustum (same as UpdateFrustumCulling())
+                bool inFrustum = GeometryUtility.TestPlanesAABB(frustumPlanes, tileBoundsUnity);
+
+                // Debug center tile
+                if (dx == 0 && dy == 0)
+                {
+                    Debug.Log($"[FRUSTUM-CENTER] z{zoom}/{tileX}/{tileY} Unity=({tileCenterUnity.x:F1},{tileCenterUnity.y:F1},{tileCenterUnity.z:F1}) Size=({tileWidthUnity:F1}x{tileHeightUnity:F1}) InFrustum={inFrustum}");
+                }
+
+                if (inFrustum)
+                {
+                    visibleTiles.Add(tileId);
+                }
+                else
+                {
+                    rejectedCount++;
+                }
+            }
+        }
+
+        if (visibleTiles.Count == 0)
+        {
+            Debug.LogWarning($"[FRUSTUM] z{zoom}: All tiles rejected! Checked={checkedCount}, Rejected={rejectedCount}, CameraPos={playerCamera.transform.position}");
+        }
+        else
+        {
+            Debug.Log($"[FRUSTUM] z{zoom}: {visibleTiles.Count} tiles visible (checked {checkedCount})");
+        }
+
+        return visibleTiles;
+    }
+
+private void RequestCurrentTile()
+        {
+            // Overture tile zoom limits (tested):
+            // - Base/Transportation: max z12 (~10km tiles, updates every ~3-10km movement)
+            // - Buildings: max z14 (~2.5km tiles, updates every ~800m-2.5km movement)
+            // - Places: max z15 (~1.2km tiles, updates every ~400m-1.2km movement)
+            // Each layer independently tracks its own tiles and only loads/unloads when needed
+
+            // MOBILE: Wait for GPS initialization before loading tiles (prevents RAM waste during "finding coordinates")
+            if (Application.isMobilePlatform)
+            {
+                // Check GPSLocationController.GPSReady flag to ensure GPS has locked
+                // Without this, we'd load tiles at default position (40.4417, -80.0132) before GPS is ready
+                var gpsControllerType = System.Type.GetType("GPSLocationController, Assembly-CSharp");
+                if (gpsControllerType != null)
+                {
+                    var gpsReadyProperty = gpsControllerType.GetProperty("GPSReady", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                    if (gpsReadyProperty != null)
+                    {
+                        bool gpsReady = (bool)gpsReadyProperty.GetValue(null);
+                        if (!gpsReady)
+                        {
+                            // GPS not initialized yet - skip tile loading to save RAM
+                            if (Time.frameCount % 300 == 0) // Log every 5 seconds
+                            {
+                                Debug.Log("[TileLoad] Waiting for GPS initialization before loading tiles...");
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Get PLAYER'S current GPS position from KiloFirstPersonController
+            // GPS is the source of truth for positioning
+            // NOTE: KiloFirstPersonController is in Assembly-CSharp, which references Kiloverse.Mapbox
+            // This would create a circular dependency, so we use reflection instead
+            var playerControllerType = System.Type.GetType("KiloFirstPersonController, Assembly-CSharp");
+            if (playerControllerType == null)
+            {
+                Debug.LogWarning("[OvertureMapManager] KiloFirstPersonController type not found!");
+                return;
+            }
+            var playerController = FindFirstObjectByType(playerControllerType) as MonoBehaviour;
+            if (playerController == null)
+            {
+                Debug.LogWarning("[OvertureMapManager] KiloFirstPersonController not found!");
+                return;
+            }
+
+            // Use reflection to get playerGPS field (it's a field, not a property)
+            var playerGPSField = playerControllerType.GetField("playerGPS");
+            if (playerGPSField == null)
+            {
+                Debug.LogWarning("[OvertureMapManager] playerGPS field not found on KiloFirstPersonController!");
+                return;
+            }
+            var playerGPS = playerGPSField.GetValue(playerController);
+            // Convert Mapbox.BaseModule.Data.Vector2d.LatitudeLongitude to our Kiloverse.Mapbox.LatitudeLongitude
+            var mapboxLatLon = (global::Mapbox.BaseModule.Data.Vector2d.LatitudeLongitude)playerGPS;
+            var playerLatLon = new LatitudeLongitude(mapboxLatLon.Latitude, mapboxLatLon.Longitude);
+
+            // NOTE: Map center is updated by KiloFirstPersonController immediately when player moves
+            // This happens BEFORE we reach this point, so we just need to reposition tiles if center changed
+
+            // Check if map center changed this frame (GPS movement or teleport)
+            var currentCenter = _map.MapInformation.Position;
+
+            // Use a tiny threshold to detect actual changes (avoid floating-point noise)
+            bool centerMoved = System.Math.Abs(_lastMapCenter.Latitude - currentCenter.Latitude) > 0.00000001 ||
+                              System.Math.Abs(_lastMapCenter.Longitude - currentCenter.Longitude) > 0.00000001;
+
+            if (centerMoved && m_Renderer != null)
+            {
+                // CRITICAL: Reposition ALL tiles to keep player at origin (floating origin system)
+                // This creates the "conveyor belt" effect - world slides as player moves
+                m_Renderer.RepositionAllTiles();
+                _lastMapCenter = currentCenter;
+            }
+
+            // Debug current position every ~5 seconds
+            if (Time.frameCount % 300 == 0)
+            {
+                Vector3 playerWorldPos = playerController.transform.position;
+                Debug.Log($"[TileLoad] Player GPS: ({playerLatLon.Latitude:F6}, {playerLatLon.Longitude:F6}) | Unity position: ({playerWorldPos.x:F1}, {playerWorldPos.y:F1}, {playerWorldPos.z:F1})");
+                Debug.Log($"[TileLoad] Map center updated to player GPS: ({_map.MapInformation.Position.Latitude:F6}, {_map.MapInformation.Position.Longitude:F6})");
+            }
+
+            // Update each layer independently
+            // POI: Always use grid (need 3x3 for distance sorting in locations panel)
+            // Visual layers: Use frustum culling (typically 1-2 tiles visible)
+            foreach (var layer in m_Layers)
+            {
+                // POI: Always grid mode (need surrounding tiles for distance sorting)
+                // All others: Frustum culling (only load visible tiles)
+                bool useFrustumLoading = !layer.Name.Contains("Places");
+                HashSet<CanonicalTileId> visibleTiles = null;
+
+                if (useFrustumLoading)
+                {
+                    visibleTiles = GetVisibleTilesInFrustum(playerLatLon, layer.GetMaxZoom());
+
+                    // Log tile IDs every 5 seconds
+                    if (Time.frameCount % 300 == 0)
+                    {
+                        string tileList = string.Join(", ", visibleTiles.Select(t => $"{t.Z}/{t.X}/{t.Y}"));
+                        Debug.Log($"[FRUSTUM] {layer.Name} z{layer.GetMaxZoom()}: {visibleTiles.Count} tiles in frustum: {tileList}");
+                    }
+                }
+                else if (Time.frameCount % 300 == 0)
+                {
+                    Debug.Log($"[GRID] {layer.Name}: Using grid mode (not frustum)");
+                }
+
+                layer.UpdateTilesForPosition(playerLatLon, this, useFrustumLoading, visibleTiles);
+            }
+        }
+    }
+
+    public class XYZTileFetcher
+    {
+        private readonly string _urlTemplate;
+
+        public XYZTileFetcher(string urlTemplate)
+        {
+            _urlTemplate = urlTemplate;
+        }
+
+        public IEnumerator FetchTile(int zoom, int x, int y, Action<byte[]> onComplete)
+        {
+            var url = _urlTemplate
+                .Replace("{z}", zoom.ToString())
+                .Replace("{x}", x.ToString())
+                .Replace("{y}", y.ToString());
+
+            using (var request = UnityWebRequest.Get(url))
+            {
+                yield return request.SendWebRequest();
+
+                if (request.result == UnityWebRequest.Result.Success)
+                {
+                    var data = request.downloadHandler.data;
+                    if (data != null && data.Length > 0)
+                    {
+                        // Debug.Log($"[XYZTileFetcher] ✅ Success {zoom}/{x}/{y}: {data.Length} bytes"); // Disabled to reduce log spam
+                        onComplete?.Invoke(data);
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[XYZTileFetcher] ⚠️ Empty tile {zoom}/{x}/{y}");
+                        onComplete?.Invoke(null);
+                    }
+                }
+                else
+                {
+                    Debug.LogError($"[XYZTileFetcher] ❌ Failed {zoom}/{x}/{y}: {request.error} ({request.responseCode})");
+                    onComplete?.Invoke(null);
+                }
+            }
+        }
+    }
+
+    public class XYZLayer
+    {
+        protected readonly XYZTileFetcher Fetcher;
+        protected readonly string[] SourceLayers;
+        public readonly string Name;
+        protected readonly OvertureVectorRenderer Renderer;
+        protected readonly int MaxZoom;
+
+        private readonly HashSet<CanonicalTileId> _loadedTiles = new HashSet<CanonicalTileId>();
+        private readonly HashSet<CanonicalTileId> _requestingTiles = new HashSet<CanonicalTileId>(); // Tiles currently being requested/loaded
+        private readonly HashSet<CanonicalTileId> _renderingTiles = new HashSet<CanonicalTileId>();
+        private readonly Queue<CanonicalTileId> _tileLoadQueue = new Queue<CanonicalTileId>(); // Pending tiles to load
+        private CanonicalTileId? _lastCenterTile;
+        private int _globalTileIndex = 0; // Never reset, keeps counting across all tile loads
+
+        // Mobile: Limit concurrent tile loads to prevent memory pressure spikes
+        private static int MAX_CONCURRENT_LOADS => Application.isMobilePlatform ? 2 : 6;
+
+        // Tile cache - keep tiles after they leave frustum (for camera rotation/exploration)
+        // Mobile: 30 seconds (limited RAM), Desktop: 5 minutes (more RAM available)
+        private readonly Dictionary<CanonicalTileId, float> _tileCacheTime = new Dictionary<CanonicalTileId, float>();
+        private static float TILE_CACHE_TIMEOUT => Application.isMobilePlatform ? 30f : 300f;
+
+        // Track tile request times for API performance logging
+        public static readonly Dictionary<string, float> _tileRequestTimes = new Dictionary<string, float>();
+
+        public XYZLayer(XYZTileFetcher fetcher, OvertureVectorRenderer renderer, string name, params string[] sourceLayers)
+        {
+            Fetcher = fetcher;
+            Renderer = renderer;
+            SourceLayers = sourceLayers;
+            Name = name;
+
+            // Set max zoom based on layer name (tested limits)
+            // Mobile: Reduce zoom by 1 level for less detail and better performance
+            int zoomReduction = Application.isMobilePlatform ? 1 : 0;
+
+            if (name.Contains("Places"))
+                MaxZoom = 15 - zoomReduction;  // Desktop: z15 (~1.2km), Mobile: z14 (~2.5km)
+            else if (name.Contains("Buildings"))
+                MaxZoom = 14 - zoomReduction;  // Desktop: z14 (~2.5km), Mobile: z13 (~5km)
+            else if (name.Contains("Roads"))
+                MaxZoom = 14 - zoomReduction;  // Desktop: z14 (~2.5km), Mobile: z13 (~5km)
+            else if (name.Contains("Water"))
+                MaxZoom = 12;  // Water: z12 (base layer max zoom, same as land)
+            else if (name.Contains("Land"))
+                MaxZoom = 12;  // Land: z12 (10km tiles, can stay large for ground plane)
+            else
+                MaxZoom = 12;  // Default safe zoom
+
+            if (Application.isMobilePlatform && zoomReduction > 0)
+            {
+                Debug.Log($"[XYZLayer] {name}: Using z{MaxZoom} on mobile (reduced from z{MaxZoom + zoomReduction} for performance)");
+            }
+        }
+
+        public int GetMaxZoom()
+        {
+            return MaxZoom;
+        }
+
+        public void UpdateTilesForPosition(LatitudeLongitude latLon, MonoBehaviour coroutineHost, bool useFrustum = false, HashSet<CanonicalTileId> visibleTiles = null)
+        {
+            // Calculate current center tile at this layer's zoom
+            var currentTileId = Conversions.LatitudeLongitudeToTileId(latLon, MaxZoom);
+            var currentCenter = new CanonicalTileId(currentTileId.Z, currentTileId.X, currentTileId.Y);
+
+            // DEBUG: Log center tile calculation (every 5 seconds via frame check)
+            if (Time.frameCount % 300 == 0 && Name.Contains("Buildings"))
+            {
+                Debug.Log($"[CenterTile] {Name}: Player GPS ({latLon.Latitude:F6}, {latLon.Longitude:F6}) → Center Tile: {currentCenter.Z}/{currentCenter.X}/{currentCenter.Y}");
+            }
+
+            // Determine which tiles should be loaded
+            HashSet<CanonicalTileId> newTiles;
+
+            if (useFrustum && visibleTiles != null)
+            {
+                // Frustum-based loading (buildings, roads, land/water)
+                newTiles = visibleTiles;
+            }
+            else
+            {
+                // Grid-based loading (POI)
+                // Mobile: 1x1 (center tile only) to save RAM
+                // Desktop: 3x3 grid for smoother experience
+                newTiles = new HashSet<CanonicalTileId>();
+
+                int gridRadius = Application.isMobilePlatform ? 0 : 1; // 0 = 1x1, 1 = 3x3
+
+                for (int dx = -gridRadius; dx <= gridRadius; dx++)
+                {
+                    for (int dy = -gridRadius; dy <= gridRadius; dy++)
+                    {
+                        var tileX = currentCenter.X + dx;
+                        var tileY = currentCenter.Y + dy;
+                        newTiles.Add(new CanonicalTileId(currentCenter.Z, tileX, tileY));
+                    }
+                }
+            }
+
+            // Update cache times for visible tiles (reset timeout)
+            float currentTime = Time.time;
+            foreach (var tile in newTiles)
+            {
+                _tileCacheTime[tile] = currentTime;
+            }
+
+            // Find tiles to add (in new set but not in loaded or currently requesting)
+            var tilesToAdd = new HashSet<CanonicalTileId>(newTiles);
+            tilesToAdd.ExceptWith(_loadedTiles);
+            tilesToAdd.ExceptWith(_requestingTiles);
+
+            // Find tiles to remove (loaded tiles that are no longer visible AND cache expired)
+            var tilesToRemove = new HashSet<CanonicalTileId>();
+            foreach (var tile in _loadedTiles)
+            {
+                if (!newTiles.Contains(tile))
+                {
+                    // Tile not visible - check if cache expired
+                    if (_tileCacheTime.TryGetValue(tile, out float lastSeenTime))
+                    {
+                        if (currentTime - lastSeenTime > TILE_CACHE_TIMEOUT)
+                        {
+                            tilesToRemove.Add(tile);
+                            _tileCacheTime.Remove(tile);
+                        }
+                    }
+                    else
+                    {
+                        // No cache entry - remove immediately
+                        tilesToRemove.Add(tile);
+                    }
+                }
+            }
+
+            // Log ONCE when tiles change (reduced spam)
+            if (tilesToAdd.Count > 0 || tilesToRemove.Count > 0)
+            {
+                string mode = useFrustum ? "FRUSTUM" : "GRID";
+                Debug.Log($"[TileLoad] {Name} ({mode}): +{tilesToAdd.Count} tiles, -{tilesToRemove.Count} tiles | Loaded: {_loadedTiles.Count}, Cached: {_tileCacheTime.Count}");
+            }
+
+            // Remove old tiles (but skip tiles that are currently rendering)
+            foreach (var tile in tilesToRemove)
+            {
+                if (_renderingTiles.Contains(tile))
+                {
+                    continue; // Don't remove tiles that are mid-render
+                }
+
+                if (Renderer != null)
+                {
+                    Renderer.RemoveTile(tile);
+                }
+                _loadedTiles.Remove(tile);
+            }
+
+            // Load new tiles - queue them for progressive loading to avoid memory spikes
+            foreach (var tile in tilesToAdd)
+            {
+                _tileLoadQueue.Enqueue(tile);
+            }
+
+            // Start loading queued tiles (respecting concurrent load limit)
+            ProcessTileLoadQueue(coroutineHost);
+
+            _lastCenterTile = currentCenter;
+        }
+
+        private void ProcessTileLoadQueue(MonoBehaviour coroutineHost)
+        {
+            // Start new tile loads up to the concurrent limit
+            while (_tileLoadQueue.Count > 0 && _requestingTiles.Count < MAX_CONCURRENT_LOADS)
+            {
+                var tile = _tileLoadQueue.Dequeue();
+                string tileKey = $"{tile.Z}/{tile.X}/{tile.Y}";
+                _tileRequestTimes[tileKey] = Time.realtimeSinceStartup;
+
+                _requestingTiles.Add(tile); // Mark as requesting (will move to _loadedTiles after successful load)
+
+                // DEBUG: Log water tile requests specifically
+                if (Name.ToLower().Contains("water"))
+                {
+                    Debug.Log($"[WATER-REQUEST] Requesting water tile: {tileKey}");
+                }
+
+                coroutineHost.StartCoroutine(RequestTile(tile, _globalTileIndex, coroutineHost));
+                _globalTileIndex++;
+            }
+
+            if (_tileLoadQueue.Count > 0 && Application.isMobilePlatform)
+            {
+                Debug.Log($"[TileLoad] {Name}: {_requestingTiles.Count}/{MAX_CONCURRENT_LOADS} loading, {_tileLoadQueue.Count} queued (mobile memory protection)");
+            }
+        }
+
+public IEnumerator RequestTile(CanonicalTileId tile, int tileIndex, MonoBehaviour coroutineHost)
+        {
+            yield return Fetcher.FetchTile(tile.Z, tile.X, tile.Y, data =>
+            {
+                if (data != null && data.Length > 0)
+                {
+                    _renderingTiles.Add(tile); // Mark as rendering
+
+                    try
+                    {
+                        Renderer?.RenderTile(tile, data, SourceLayers, Name, tileIndex);
+
+                        // Successfully loaded - move from requesting to loaded
+                        _requestingTiles.Remove(tile);
+                        _loadedTiles.Add(tile);
+
+                        // MOBILE: Process next tile in queue now that this one finished
+                        ProcessTileLoadQueue(coroutineHost);
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogError($"[TileLoad] {Name}: RenderTile FAILED for {tile.Z}/{tile.X}/{tile.Y}: {ex.Message}");
+                        _requestingTiles.Remove(tile); // Failed - remove from requesting so we can retry later
+
+                        // Process next tile in queue even after failure
+                        ProcessTileLoadQueue(coroutineHost);
+                    }
+                    finally
+                    {
+                        _renderingTiles.Remove(tile); // Always unmark when done
+                    }
+                }
+                else
+                {
+                    // DEBUG: Log empty water tiles
+                    if (Name.ToLower().Contains("water"))
+                    {
+                        Debug.Log($"[WATER-EMPTY] Water tile {tile.Z}/{tile.X}/{tile.Y} returned NO DATA (empty or failed to load)");
+                    }
+
+                    _requestingTiles.Remove(tile); // Failed - remove from requesting
+
+                    // Process next tile in queue even after empty response
+                    ProcessTileLoadQueue(coroutineHost);
+                }
+            });
+        }
+    }
+
+    public class OvertureVectorRenderer
+    {
+        private readonly KiloverseMapInfo _map;
+        // Kiloverse modifier stacks loaded directly from Resources (no visualizers!)
+        private readonly Dictionary<string, ScriptableObject> _modifierStacks = new Dictionary<string, ScriptableObject>();
+
+        private readonly Dictionary<string, global::Mapbox.VectorModule.IVectorLayerVisualizer> _visualizers =
+            new Dictionary<string, global::Mapbox.VectorModule.IVectorLayerVisualizer>();
+        private readonly Dictionary<string, List<GameObject>> _tileObjects =
+            new Dictionary<string, List<GameObject>>();
+
+        // Public accessor for diagnostics
+        public Dictionary<string, List<GameObject>> TileObjects => _tileObjects;
+
+        private readonly HashSet<string> _loggedTiles = new HashSet<string>();
+        private readonly bool _logLayers;
+        private bool _initialized;
+
+        private static readonly Dictionary<string, string> LayerMapping = new Dictionary<string, string>
+        {
+            { "segment", "road" },
+            { "place", "poi_label" },
+            { "building", "building" },
+            { "water", "water" }
+        };
+
+        // Frame-spread mesh processing to prevent memory spikes
+        private class MeshWorkItem
+        {
+            public CanonicalTileId Tile;
+            public Dictionary<int, HashSet<MeshData>> MeshDataDict;
+            public GameObject LayerRoot;
+            public ScriptableObject ModifierStack;
+            public string LayerName;
+            public int TileIndex;
+            public bool IsPOILayer;
+        }
+
+        private static readonly Queue<MeshWorkItem> _meshProcessingQueue = new Queue<MeshWorkItem>();
+        private static int MAX_MESHES_PER_FRAME => Application.isMobilePlatform ? 1 : 2;
+
+        // Track queued/processing tiles to avoid duplicates
+        private static readonly HashSet<string> _queuedTiles = new HashSet<string>();
+
+public OvertureVectorRenderer(KiloverseMapInfo map, Dictionary<string, global::Mapbox.VectorModule.IVectorLayerVisualizer> visualizers, bool logLayers)
+        {
+            _map = map;
+            _logLayers = logLayers;
+
+            // KILOVERSE MAPBOX-FREE: Load modifier stacks directly from Resources
+            Debug.Log("[OvertureVectorRenderer] Loading modifier stacks from Resources/ModifierStacks...");
+            
+            var buildingStack = Resources.Load<ScriptableObject>("ModifierStacks/ZossBuildingStack");
+            if (buildingStack != null)
+            {
+                _modifierStacks["building"] = buildingStack;
+                Debug.Log("[OvertureVectorRenderer] ✓ Loaded ZossBuildingStack");
+            }
+            else
+            {
+                Debug.LogWarning("[OvertureVectorRenderer] ⚠️ ZossBuildingStack not found in Resources");
+            }
+            
+            var roadStack = Resources.Load<ScriptableObject>("ModifierStacks/KiloverseRoadStack");
+            if (roadStack != null)
+            {
+                _modifierStacks["road"] = roadStack;
+                Debug.Log("[OvertureVectorRenderer] ✓ Loaded KiloverseRoadStack");
+            }
+            else
+            {
+                Debug.LogWarning("[OvertureVectorRenderer] ⚠️ KiloverseRoadStack not found in Resources");
+            }
+            
+            var waterStack = Resources.Load<ScriptableObject>("ModifierStacks/WaterStack");
+            if (waterStack != null)
+            {
+                _modifierStacks["water"] = waterStack;
+                Debug.Log("[OvertureVectorRenderer] ✓ Loaded WaterStack");
+            }
+            else
+            {
+                Debug.LogWarning("[OvertureVectorRenderer] ⚠️ WaterStack not found in Resources");
+            }
+
+            var poiStack = Resources.Load<ScriptableObject>("ModifierStacks/POIStack");
+            if (poiStack != null)
+            {
+                _modifierStacks["poi_label"] = poiStack;
+                Debug.Log("[OvertureVectorRenderer] ✓ Loaded POIStack");
+            }
+            else
+            {
+                Debug.LogWarning("[OvertureVectorRenderer] ⚠️ POIStack not found in Resources");
+            }
+            
+            Debug.Log($"[OvertureVectorRenderer] Loaded {_modifierStacks.Count}/4 modifier stacks from Resources (Mapbox-free!)");
+
+            // Use provided visualizers directly (DEPRECATED - only for backward compatibility)
+            foreach (var kvp in visualizers)
+            {
+                _visualizers[kvp.Key] = kvp.Value;
+                Debug.Log($"[OvertureVectorRenderer] Linked visualizer: {kvp.Key}");
+            }
+
+            InitializeVisualizers();
+        }
+
+        public void InitializeVisualizers()
+        {
+            if (_initialized || _map == null) return;
+
+            // Ensure parent layer objects are active
+            foreach (var kvp in _visualizers)
+            {
+                var visualizer = kvp.Value as VectorLayerVisualizer;
+                if (visualizer != null)
+                {
+                    var rootField = typeof(VectorLayerVisualizer).GetField("_layerRootObject", BindingFlags.NonPublic | BindingFlags.Instance);
+                    var rootTransform = rootField?.GetValue(visualizer) as Transform;
+                    if (rootTransform != null && rootTransform.gameObject != null)
+                    {
+                        rootTransform.gameObject.SetActive(true);
+                        Debug.Log($"[OvertureVectorRenderer] Activated layer root: {rootTransform.name}");
+                    }
+                }
+            }
+
+            _initialized = _modifierStacks.Count > 0;
+            Debug.Log($"[OvertureVectorRenderer] Initialized with {_modifierStacks.Count} modifier stacks - KILOVERSE SDK (Mapbox-free!)");
+        }
+
+public void RenderTile(CanonicalTileId tile, byte[] payload, string[] sourceLayers, string layerName = "", int tileIndex = -1)
+        {
+            // Start coroutine to render tile over multiple frames
+            _map.StartCoroutine(RenderTileCoroutine(tile, payload, sourceLayers, layerName, tileIndex));
+        }
+
+private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, string[] sourceLayers, string layerName = "", int tileIndex = -1)
+        {
+            string tileIndexStr = tileIndex >= 0 ? $" tile #{tileIndex}" : "";
+            if (!_initialized) InitializeVisualizers();
+            if (!_initialized)
+            {
+                 Debug.LogError("[OvertureVectorRenderer] Failed to initialize modifier stacks. Check Resources/ModifierStacks folder.");
+                 yield break;
+            }
+
+            var tileKey = $"{tile.Z}/{tile.X}/{tile.Y}";
+
+            // Calculate API timing
+            float apiTimeMs = 0f;
+            if (XYZLayer._tileRequestTimes.TryGetValue(tileKey, out float startTime))
+            {
+                apiTimeMs = (Time.realtimeSinceStartup - startTime) * 1000f; // Convert to milliseconds
+                XYZLayer._tileRequestTimes.Remove(tileKey); // Clean up
+            }
+
+            // Use the simplified decoder
+            if (!PMTilesTileDecoder.TryParseVectorTile(payload, out var vectorTile))
+            {
+                Debug.LogWarning($"[OvertureVectorRenderer]{tileIndexStr} Failed to parse tile {tileKey}");
+                yield break; // Failed to parse
+            }
+
+            if (_logLayers && !_loggedTiles.Contains(tileKey))
+            {
+                _loggedTiles.Add(tileKey);
+            }
+
+            // DEBUG: Log ALL source layers in water/road tiles to find rivers
+            if (layerName.Contains("Water") || layerName.Contains("Roads"))
+            {
+                var allLayers = new System.Collections.Generic.List<string>();
+                foreach (var ln in vectorTile.LayerNames())
+                {
+                    var layer = vectorTile.GetLayer(ln);
+                    allLayers.Add($"{ln}({layer.FeatureCount()})");
+                }
+                Debug.Log($"[TILE-LAYERS] {layerName} {tileKey} source layers: [{string.Join(", ", allLayers)}]");
+            }
+
+            var createdObjects = new List<GameObject>();
+            foreach (var sourceLayer in sourceLayers)
+            {
+                var visualizerKey = ResolveVisualizerKey(sourceLayer);
+                if (visualizerKey == null) continue;
+                
+                // Debug.Log($"[Overture] Processing '{sourceLayer}' -> '{visualizerKey}'");
+
+                // KILOVERSE MAPBOX-FREE: Use modifier stacks instead of visualizers
+                if (!_modifierStacks.TryGetValue(visualizerKey, out var modifierStack))
+                {
+                     Debug.LogWarning($"[Overture]{tileIndexStr} No modifier stack found for key '{visualizerKey}' (available: {string.Join(", ", _modifierStacks.Keys)})");
+                     continue;
+                }
+
+                if (!vectorTile.LayerNames().Contains(sourceLayer))
+                {
+                    continue;
+                }
+
+                // Check if layer root GameObject exists (we created them in Start())
+                string layerRootName = $"{visualizerKey} layer objects";
+                var layerRoot = GameObject.Find(layerRootName);
+                if (layerRoot == null)
+                {
+                    Debug.LogError($"[Overture]{tileIndexStr} Layer root '{layerRootName}' not found! Skipping tile {tileKey}.");
+                    continue;
+                }
+                Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tileKey}: Layer root exists: {layerRoot.name} (active={layerRoot.activeInHierarchy})");
+
+                var layerData = vectorTile.GetLayer(sourceLayer);
+                var meshDataDict = new Dictionary<int, HashSet<MeshData>>();
+
+                // Check if this is a POI layer once (used in multiple places below)
+                bool isPOILayer = sourceLayer == "place" || sourceLayer == "poi_label" || sourceLayer == "poi";
+
+                // KILOVERSE MAPBOX-FREE: Execute modifier stack directly
+                // Use reflection to access GetModStacks property (from Mapbox SDK)
+                {
+                    if (sourceLayer == "building")
+                    {
+                        Debug.Log($"[Stack Debug]{tileIndexStr} {tileKey}: modifierStack type = {modifierStack.GetType().Name}");
+                    }
+
+                    // ModifierStackObject is the ScriptableObject itself - it HAS the modifiers as fields
+                    // For now, just use the modifierStack directly as the single stack (stackKey = 0)
+                    var stacks = new Dictionary<int, object> { { 0, modifierStack } };
+
+                    foreach (var stackPair in stacks)
+                    {
+                        int stackKey = stackPair.Key;
+                        var stack = stackPair.Value; // This is the ModifierStackObject itself
+
+                        if (sourceLayer == "building")
+                        {
+                            Debug.Log($"[Stack Debug]{tileIndexStr} {tileKey}: Processing stack - type = {stack.GetType().Name}");
+                        }
+
+                        int featureCount = layerData.FeatureCount();
+
+                        for (int i = 0; i < featureCount; i++)
+                        {
+                            var feature = layerData.GetFeature(i);
+
+                            // Convert to Unity Feature
+                            var featureUnity = new VectorFeatureUnity();
+                            featureUnity.Properties = feature.GetProperties();
+
+                            // BUG FIX: Mapbox.VectorTile.VectorTileReader.dll doubles num_floors values
+                            // Evidence: MVT tile contains num_floors=64, GetProperties() returns 128
+                            // Confirmed by parsing same tile with Python mapbox_vector_tile library
+                            // Affects ALL buildings: building #1 MVT=13 SDK=26, building #962 MVT=64 SDK=128
+                            // Root cause: Unknown bug in Mapbox.VectorTile.dll protobuf parser
+                            // TODO: Replace DLL with fixed version from https://github.com/mapbox/vector-tile-cs
+                            if (sourceLayer == "building" && featureUnity.Properties.ContainsKey("num_floors"))
+                            {
+                                try
+                                {
+                                    long numFloors = Convert.ToInt64(featureUnity.Properties["num_floors"]);
+                                    featureUnity.Properties["num_floors"] = numFloors / 2;
+                                }
+                                catch (System.Exception ex)
+                                {
+                                    Debug.LogWarning($"[MVT Bug Fix] Failed to correct num_floors for building #{i}: {ex.Message}");
+                                }
+                            }
+
+                            featureUnity.Data = feature;
+                            featureUnity.TileId = tile;
+                            
+                            // Geometry conversion (Simplified from VectorLayerVisualizer)
+                            var geom = feature.Geometry<float>(0);
+                            var points = new List<List<Vector3>>();
+                            foreach (var g in geom)
+                            {
+                                var part = new List<Vector3>();
+                                foreach (var p in g)
+                                {
+                                    part.Add(new Vector3(p.X / 4096f, 0, -1 * (p.Y / 4096f))); // 4096 = Layer Extent
+                                }
+                                points.Add(part);
+                            }
+                            featureUnity.Points = points;
+
+                            // BYPASS FILTER CHECK
+                            // if (stack.Filters != null && !stack.Filters.Try(featureUnity)) continue;
+
+                            var md = new MeshData();
+                            md.Feature = featureUnity;
+
+                            // Check if we have valid geometry for mesh generation
+                            bool hasGeometry = featureUnity.Points != null &&
+                                              featureUnity.Points.Count > 0 &&
+                                              featureUnity.Points[0].Count > 0;
+
+                            // POI features (place/poi_label/poi) don't need mesh geometry - they create label anchors via POILabelModifier
+                            // Allow them to proceed even without geometry so modifiers can run
+                            bool isPOI = sourceLayer == "place" || sourceLayer == "poi_label" || sourceLayer == "poi";
+
+                            // DEBUG: Log POI feature properties for Point State Park area to find fountains
+                            // POIs are at z15 (9101/12352 for Point State Park), NOT z12!
+                            // Cover 3x3 grid around Point State Park z15 tile
+                            if (isPOI && tile.Z == 15 && tile.X >= 9100 && tile.X <= 9102 && tile.Y >= 12351 && tile.Y <= 12353 && i < 50)
+                            {
+                                var props = new List<string>();
+                                foreach (var prop in featureUnity.Properties)
+                                {
+                                    props.Add($"{prop.Key}={prop.Value}");
+                                }
+                                Debug.Log($"[POI-PROPS] Tile {tileKey} Feature #{i}: {string.Join(", ", props)}");
+
+                                // Check specifically for fountain POIs
+                                if (featureUnity.Properties.ContainsKey("categories"))
+                                {
+                                    string categories = featureUnity.Properties["categories"].ToString().ToLower();
+                                    if (categories.Contains("fountain"))
+                                    {
+                                        Debug.Log($"[POI-FOUNTAIN] Found fountain POI in {tileKey}! Properties: {string.Join(", ", props)}");
+                                    }
+                                }
+                            }
+
+                            // WATER GEOMETRY FILTER: Skip LineString water features (river centerlines for routing)
+                            // Only render Polygon water features (actual water surfaces)
+                            // Rivers have BOTH LineString (centerline) and Polygon (surface) - we only want Polygon
+                            if (sourceLayer == "water" && hasGeometry)
+                            {
+                                var geomType = feature.GeometryType;
+
+                                // Check if this is a fountain or special water feature FIRST (before filtering)
+                                bool isFountain = false;
+                                string subtypeValue = "";
+                                if (featureUnity.Properties.ContainsKey("subtype"))
+                                {
+                                    subtypeValue = featureUnity.Properties["subtype"].ToString().ToLower();
+                                    isFountain = subtypeValue == "fountain";
+                                }
+
+                                // DEBUG: Log ALL water feature properties for Point State Park area (NO LIMIT!)
+                                // Log EVERYTHING so we can find fountains
+                                if (tile.Z == 12 && tile.X >= 1137 && tile.X <= 1138 && tile.Y >= 1543 && tile.Y <= 1544)
+                                {
+                                    var props = new List<string>();
+                                    foreach (var prop in featureUnity.Properties)
+                                    {
+                                        props.Add($"{prop.Key}={prop.Value}");
+                                    }
+                                    string propsStr = props.Count > 0 ? string.Join(", ", props) : "(no properties)";
+                                    Debug.Log($"[WATER-ALL] {tileKey} #{i} {geomType} subtype={subtypeValue} fountain={isFountain}: {propsStr}");
+                                }
+
+                                // Filter LineStrings UNLESS it's a fountain
+                                if (geomType == global::Mapbox.VectorTile.Geometry.GeomType.LINESTRING)
+                                {
+                                    if (isFountain)
+                                    {
+                                        Debug.Log($"[WATER-FOUNTAIN-LINESTRING] {tileKey} #{i}: Fountain is LineString - skipping (fountains should be Point or Polygon)");
+                                    }
+                                    else
+                                    {
+                                        // Debug log filtered LineStrings in Point State Park
+                                        if (tile.Z == 12 && tile.X >= 1137 && tile.X <= 1138 && tile.Y >= 1543 && tile.Y <= 1544)
+                                        {
+                                            Debug.Log($"[WATER-FILTERED] {tileKey} #{i}: Skipping LineString {subtypeValue}");
+                                        }
+                                    }
+                                    // Skip LineString water (these are river centerlines for navigation, not renderable surfaces)
+                                    continue;
+                                }
+
+                                // Log if we found a fountain that will render
+                                if (isFountain)
+                                {
+                                    Debug.Log($"[WATER-FOUNTAIN-RENDER] {tileKey} #{i}: Found {geomType} fountain! Properties: {string.Join(", ", featureUnity.Properties.Select(p => $"{p.Key}={p.Value}"))}");
+                                }
+                            }
+
+                            // Skip features with no geometry (UNLESS they are POIs - POIs use point data for positioning, not mesh geometry)
+                            if (!hasGeometry && !isPOI)
+                            {
+                                continue;
+                            }
+
+                            
+                            // DEBUG: Log buildings with high floor counts in T7
+                            if (sourceLayer == "building" && tileKey.Contains("14/4551/6176"))
+                            {
+                                if (featureUnity.Properties.ContainsKey("num_floors"))
+                                {
+                                    try
+                                    {
+                                        int floors = Convert.ToInt32(featureUnity.Properties["num_floors"]);
+                                        if (floors >= 50)
+                                        {
+                                            string hasHeight = featureUnity.Properties.ContainsKey("height") ? featureUnity.Properties["height"].ToString() : "NO";
+                                            Debug.Log($"[TileLoad] T7 TALL BUILDING #{i}: num_floors={floors}, height={hasHeight}");
+                                        }
+                                    }
+                                    catch { }
+                                }
+                            }
+
+                            // DEBUG: Log buildings with "fountain" in name for Point State Park tile
+                            if (sourceLayer == "building" && tile.Z == 14 && tile.X == 4550 && tile.Y == 6176)
+                            {
+                                // Check if building has fountain in name or properties
+                                bool isFountainBuilding = false;
+                                string buildingName = "";
+
+                                if (featureUnity.Properties.ContainsKey("names"))
+                                {
+                                    string names = featureUnity.Properties["names"].ToString().ToLower();
+                                    if (names.Contains("fountain"))
+                                    {
+                                        isFountainBuilding = true;
+                                        buildingName = featureUnity.Properties["names"].ToString();
+                                    }
+                                }
+
+                                if (featureUnity.Properties.ContainsKey("@name"))
+                                {
+                                    string name = featureUnity.Properties["@name"].ToString().ToLower();
+                                    if (name.Contains("fountain"))
+                                    {
+                                        isFountainBuilding = true;
+                                        buildingName = featureUnity.Properties["@name"].ToString();
+                                    }
+                                }
+
+                                if (isFountainBuilding)
+                                {
+                                    var props = new List<string>();
+                                    foreach (var prop in featureUnity.Properties)
+                                    {
+                                        props.Add($"{prop.Key}={prop.Value}");
+                                    }
+                                    Debug.Log($"[BUILDING-FOUNTAIN] {tileKey} Feature #{i}: Name='{buildingName}', GeomType={feature.GeometryType}, Properties: {string.Join(", ", props)}");
+                                }
+                            }
+
+                            // KILOVERSE MAPBOX-FREE: Manually execute mesh modifiers from ModifierStackObject
+                            try
+                            {
+                                // Create UnityContext for modifier initialization
+                                var unityContext = new UnityContext();
+
+                                // Calculate tile size in Unity units (scale factor for this zoom level)
+                                double n = System.Math.Pow(2, tile.Z);
+                                float tileSize = (float)(20037508.342789244 * 2 / n);
+
+                                // Get MeshModifiers field from stack (ModifierStackObject)
+                                var meshModifiersField = stack.GetType().GetField("MeshModifiers");
+                                if (meshModifiersField != null)
+                                {
+                                    var meshModifiers = meshModifiersField.GetValue(stack) as System.Collections.IList;
+                                    if (meshModifiers != null && meshModifiers.Count > 0)
+                                    {
+                                        if (i == 0 && sourceLayer == "building")
+                                        {
+                                            Debug.Log($"[Modifiers]{tileIndexStr} {tileKey}: Found {meshModifiers.Count} mesh modifiers, initializing...");
+                                        }
+
+                                        // Initialize and run each mesh modifier
+                                        foreach (var modObj in meshModifiers)
+                                        {
+                                            // Call ConstructModifier to initialize the modifier
+                                            var constructMethod = modObj.GetType().GetMethod("ConstructModifier");
+                                            if (constructMethod != null)
+                                            {
+                                                constructMethod.Invoke(modObj, new object[] { unityContext });
+                                            }
+
+                                            // Get the actual implementation via _meshModifierImplementation property
+                                            var implProp = modObj.GetType().GetProperty("_meshModifierImplementation", BindingFlags.NonPublic | BindingFlags.Instance);
+                                            if (implProp == null)
+                                            {
+                                                // Try public property
+                                                implProp = modObj.GetType().GetProperty("MeshModifierImplementation", BindingFlags.Public | BindingFlags.Instance);
+                                            }
+
+                                            if (implProp != null)
+                                            {
+                                                var meshModImpl = implProp.GetValue(modObj);
+                                                if (meshModImpl != null)
+                                                {
+                                                    // Call Run() on the actual mesh modifier implementation
+                                                    var runMethod = meshModImpl.GetType().GetMethod("Run",
+                                                        BindingFlags.Public | BindingFlags.Instance);
+
+                                                    if (runMethod != null)
+                                                    {
+                                                        runMethod.Invoke(meshModImpl, new object[] { featureUnity, md, _map.MapInformation });
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (i == 0 && sourceLayer == "building")
+                                        {
+                                            int vertCount = md.Vertices != null ? md.Vertices.Count : 0;
+                                            Debug.Log($"[Modifiers]{tileIndexStr} {tileKey}: After modifiers - {vertCount} vertices generated");
+                                        }
+                                    }
+                                    else
+                                    {
+                                        if (i == 0)
+                                        {
+                                            Debug.LogWarning($"[Modifiers]{tileIndexStr} {tileKey}: MeshModifiers array empty, using simple geometry fallback");
+                                        }
+                                        GenerateSimpleGeometry(md, featureUnity, sourceLayer);
+                                    }
+                                }
+                                else
+                                {
+                                    if (i == 0)
+                                    {
+                                        Debug.LogWarning($"[Modifiers]{tileIndexStr} {tileKey}: MeshModifiers field NOT FOUND, using simple geometry fallback");
+                                    }
+                                    GenerateSimpleGeometry(md, featureUnity, sourceLayer);
+                                }
+                            }
+                            catch (System.Exception ex)
+                            {
+                                if (i == 0)
+                                {
+                                    // For reflection calls, InnerException contains the real error
+                                    var actualException = ex.InnerException ?? ex;
+                                    Debug.LogWarning($"[Modifiers]{tileIndexStr} {tileKey} Modifier execution FAILED for '{sourceLayer}': {actualException.Message}\n{actualException.StackTrace}");
+                                }
+                                // Try simple geometry as fallback
+                                try
+                                {
+                                    GenerateSimpleGeometry(md, featureUnity, sourceLayer);
+                                }
+                                catch
+                                {
+                                    continue;
+                                }
+                            }
+                            
+                            // Add MeshData to dict for processing
+                            // POI features (place/poi_label/poi) don't have mesh geometry - they create label anchors via GoModifiers
+                            // BUT we still need to add them to meshDataDict so CreateGameObjects creates placeholder GameObjects
+                            // for GoModifiers to run on
+                            bool hasValidMesh = md.Vertices != null && md.Vertices.Count > 0;
+
+                            if (hasValidMesh || isPOILayer)
+                            {
+                                if (!meshDataDict.ContainsKey(stackKey)) meshDataDict.Add(stackKey, new HashSet<MeshData>());
+                                meshDataDict[stackKey].Add(md);
+                            }
+                        }
+                    }
+                }
+
+                // Check if mesh data was actually generated
+                int meshCount = 0;
+                foreach(var pair in meshDataDict)
+                {
+                    foreach(var m in pair.Value)
+                    {
+                        if (m.Vertices.Count > 0) meshCount++;
+                    }
+                }
+
+                // Create GameObjects if we have mesh geometry OR if this is a POI layer (POIs need placeholder GameObjects for GoModifiers)
+                if (meshCount > 0 || (isPOILayer && meshDataDict.Count > 0))
+                {
+                    // Verify all MeshData in dict has valid data before calling CreateGo
+                    int validMeshes = 0;
+                    int invalidMeshes = 0;
+                    foreach (var stackPair in meshDataDict)
+                    {
+                        foreach (var md in stackPair.Value)
+                        {
+                            if (md.Vertices != null && md.Vertices.Count > 0)
+                                validMeshes++;
+                            else
+                                invalidMeshes++;
+                        }
+                    }
+
+                    Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Calling CreateGo with {meshDataDict.Count} stacks, {validMeshes} valid meshes, {invalidMeshes} invalid meshes");
+
+                    // POI layers are EXPECTED to have empty meshes (they create label anchors via GoModifiers, not mesh geometry)
+                    if (invalidMeshes > 0 && !isPOILayer)
+                    {
+                        Debug.LogError($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Found {invalidMeshes} invalid meshes in meshDataDict! This should never happen!");
+                    }
+
+                    // FRAME-SPREAD: Queue mesh generation instead of processing immediately
+                    // This prevents memory spikes when all 5 layers load tiles simultaneously
+                    if (layerRoot != null)
+                    {
+                        var tileKey = $"{tile.Z}/{tile.X}/{tile.Y}";
+
+                        // Avoid queueing duplicates
+                        if (!_queuedTiles.Contains(tileKey))
+                        {
+                            _queuedTiles.Add(tileKey);
+
+                            var workItem = new MeshWorkItem
+                            {
+                                Tile = tile,
+                                MeshDataDict = meshDataDict,
+                                LayerRoot = layerRoot,
+                                ModifierStack = modifierStack,
+                                LayerName = layerName,
+                                TileIndex = tileIndex,
+                                IsPOILayer = isPOILayer
+                            };
+
+                            _meshProcessingQueue.Enqueue(workItem);
+                            Debug.Log($"[MeshQueue] Queued {tileKey} ({layerName}) - {_meshProcessingQueue.Count} in queue");
+                        }
+
+                        // Continue to next source layer - mesh will be created by ProcessMeshQueue()
+                        continue;
+                    }
+                    else
+                    {
+                        Debug.LogError($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Layer root not found, skipping tile");
+                        continue;
+                    }
+
+                    // OLD IMMEDIATE PROCESSING CODE REMOVED - now handled by ProcessMeshQueue()
+                    // See ProcessMeshQueue() method for: CreateGameObjects, GoModifiers, metadata, naming, storage
+                }
+                else
+                {
+                    // No mesh geometry (e.g., POI labels which are created by POILabelModifier)
+                    string objectType = sourceLayer == "place" ? "POIs" : "objects";
+                    Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: No mesh geometry, layer queued for modifiers only");
+                }
+
+                // Yield after each source layer to avoid blocking main thread too long
+                yield return null;
+            }
+
+            // POI label anchors - name with tile index but DON'T add to tile frustum culling
+            // POICanvasManager handles its own distance (1600m) and frustum culling
+            // NOTE: POILabelModifier is in Assembly-CSharp, which references Kiloverse.Mapbox
+            // This would create a circular dependency, so we use reflection instead
+            var poiModifierType = System.Type.GetType("POILabelModifier, Assembly-CSharp");
+            List<GameObject> labelAnchors = null;
+            if (poiModifierType != null)
+            {
+                var method = poiModifierType.GetMethod("GetAndClearCurrentTileLabels", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                if (method != null)
+                {
+                    labelAnchors = method.Invoke(null, null) as List<GameObject>;
+                }
+            }
+
+            if (labelAnchors != null && labelAnchors.Count > 0)
+            {
+                // Add tile index to POI anchor names for debugging
+                if (tileIndex >= 0)
+                {
+                    for (int i = 0; i < labelAnchors.Count; i++)
+                    {
+                        if (labelAnchors[i] != null)
+                        {
+                            labelAnchors[i].name = $"POI_T{tileIndex}_{i}_{labelAnchors[i].name}";
+                        }
+                    }
+                }
+
+                // DON'T add to createdObjects - POI labels should be visible across multiple tiles (1600m range)
+                // createdObjects.AddRange(labelAnchors);
+                Debug.Log($"[TileLoad]{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Created {labelAnchors.Count} POI label anchors (NOT tile-culled, managed by POICanvasManager)");
+            }
+
+            // FRAME-SPREAD: Objects are stored in _tileObjects by ProcessMeshQueue(), not here
+            // createdObjects is now empty since all mesh generation is queued
+            // RepositionTileObjects and UpdateForView are also handled in ProcessMeshQueue
+
+            Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Tile queued for frame-spread mesh generation");
+        }
+
+        public void UpdateForView(CanonicalTileId tile)
+        {
+            if (!_initialized) return;
+            foreach (var visualizer in _visualizers.Values)
+            {
+                visualizer.UpdateForView(tile, _map.MapInformation);
+            }
+        }
+
+        private void RepositionTileObjects(CanonicalTileId tile)
+        {
+            // CRITICAL: Tile coordinate system explanation
+            // - Tile has southwest corner at GPS (South, West)
+            // - Vertices are in 0-1 normalized space, scaled to 0→tileSize in local space
+            // - Vertex (0, 0) = southwest corner, vertex (1, 1) = northeast corner
+            // - GameObject local (0, 0, 0) must be positioned at tile's southwest corner in world space
+
+            var tileBounds = TileIdToBounds(tile);
+            var tileSouthwestGPS = new LatitudeLongitude(tileBounds.South, tileBounds.West);
+
+            // Calculate tile's world offset from map center to tile SOUTHWEST CORNER
+            Vector2d mapCenterMercator = Conversions.LatitudeLongitudeToWebMercator(_map.MapInformation.Position);
+            Vector2d tileSouthwestMercator = Conversions.LatitudeLongitudeToWebMercator(tileSouthwestGPS);
+            Vector2d tileOffset = tileSouthwestMercator - mapCenterMercator;
+
+            // This is the world position where the tile's southwest corner should be
+            Vector3 tileWorldOffset = new Vector3((float)tileOffset.x, 0, (float)tileOffset.y);
+
+            // Get all objects for this tile
+            var tileKey = $"{tile.Z}/{tile.X}/{tile.Y}";
+            if (_tileObjects.TryGetValue(tileKey, out var objects))
+            {
+                int repositionedCount = 0;
+                foreach (var obj in objects)
+                {
+                    if (obj != null && obj.activeSelf) // OPTIMIZATION: Skip inactive (culled) objects
+                    {
+                        // CRITICAL: SET position (not additive!) - vertices are already in tile-local space (0→tileSize)
+                        // We just need to position the tile at its world offset from map center
+                        // Y-offset (ground 0m, water +0.2m, roads +0.5m) is already in localPosition.y from CreateGameObjects
+                        obj.transform.localPosition = new Vector3(
+                            tileWorldOffset.x,
+                            obj.transform.localPosition.y, // Preserve Y offset for roads/water elevation
+                            tileWorldOffset.z
+                        );
+                        repositionedCount++;
+
+                        // DEBUG: Log first object's final world position
+                        if (repositionedCount == 1)
+                        {
+                            Debug.Log($"[TilePosition] {tileKey}: SW corner GPS=({tileBounds.South:F6},{tileBounds.West:F6}) → Mercator offset=({tileOffset.x:F1},{tileOffset.y:F1}) → World offset=({tileWorldOffset.x:F1},{tileWorldOffset.z:F1})");
+                            Debug.Log($"[TilePosition] {tileKey}: First object final localPos={obj.transform.localPosition}, worldPos={obj.transform.position}");
+                        }
+                    }
+                }
+
+                // (Debug water logging continues below if needed)
+            }
+        }
+
+        // Helper methods for OvertureVectorRenderer
+
+        public void UpdateForView(CanonicalTileId tile)
+        {
+            if (!_initialized) return;
+            foreach (var visualizer in _visualizers.Values)
+            {
+                visualizer.UpdateForView(tile, _map.MapInformation);
+            }
+        }
+
+        /// <summary>
+        /// Reposition ALL existing tiles when map center changes
+        /// Critical for large tiles (z12 water/land) that can be 6-10km from player if center moved
+        /// </summary>
+        public void RepositionAllTiles()
+        {
+            int tileCount = 0;
+            int objectCount = 0;
+
+            foreach (var tileKey in _tileObjects.Keys.ToList())
+            {
+                // Parse tile key "z/x/y"
+                var parts = tileKey.Split('/');
+                if (parts.Length == 3 &&
+                    int.TryParse(parts[0], out int z) &&
+                    int.TryParse(parts[1], out int x) &&
+                    int.TryParse(parts[2], out int y))
+                {
+                    var tile = new CanonicalTileId(z, x, y);
+                    RepositionTileObjects(tile);
+                    tileCount++;
+                    objectCount += _tileObjects[tileKey]?.Count ?? 0;
+                }
+            }
+
+            if (tileCount > 0)
+            {
+                Debug.Log($"[TileReposition] Map center changed - repositioned {objectCount} objects across {tileCount} tiles");
+            }
+        }
+
+        private struct TileBounds
+        {
+            public double North;
+            public double South;
+            public double East;
+            public double West;
+        }
+
+        private TileBounds TileIdToBounds(CanonicalTileId tile)
+        {
+            // Convert XYZ tile coordinates to GPS bounds
+            int z = tile.Z;
+            int x = tile.X;
+            int y = tile.Y;
+            int n = 1 << z; // 2^z
+
+            double west = x / (double)n * 360.0 - 180.0;
+            double east = (x + 1) / (double)n * 360.0 - 180.0;
+
+            double northRad = System.Math.Atan(System.Math.Sinh(System.Math.PI * (1 - 2.0 * y / n)));
+            double southRad = System.Math.Atan(System.Math.Sinh(System.Math.PI * (1 - 2.0 * (y + 1) / n)));
+            double north = northRad * 180.0 / System.Math.PI;
+            double south = southRad * 180.0 / System.Math.PI;
+
+            return new TileBounds { North = north, South = south, East = east, West = west };
+        }
+
+        // RemoveTile, ProcessMeshQueue, ClearAllTiles and other methods continue below in the actual file...
+    }
+
+    /// <summary>
+    /// Component to store VectorFeatureUnity reference on GameObjects
+    /// Allows GoModifiers (like POILabelModifier) to access feature properties via VectorEntity.Feature
+    /// </summary>
+    public class FeatureDataHolder : MonoBehaviour
+    {
+        public VectorFeatureUnity Feature;
+    }
+
+    /// <summary>
+    /// Component to store VectorFeatureUnity reference on GameObjects
+    /// Allows GoModifiers (like POILabelModifier) to access feature properties via VectorEntity.Feature
+    /// </summary>
+    public class FeatureDataHolder : MonoBehaviour
+    {
+        public VectorFeatureUnity Feature;
+    }
+
+    /// <summary>
+    /// Kiloverse mesh builder - creates GameObjects from MeshData WITHOUT Mapbox visualizers
+    /// This is the GLUE CODE that connects our custom modifier stacks to Unity GameObjects
+    /// Replaces VectorLayerVisualizer.CreateGo() with our own Mapbox-free implementation
+    /// </summary>
+    public static class KiloverseMeshBuilder
+    {
+        public static List<GameObject> CreateGameObjects(
+            CanonicalTileId tile,
+            Dictionary<int, HashSet<MeshData>> meshDataDict,
+            Transform parentTransform,
+            string layerName)
+        {
+            var gameObjects = new List<GameObject>();
+
+            // Calculate tile size in Unity units (scale factor for this zoom level)
+            // MeshData vertices are in normalized 0-1 space, need to scale to actual world size
+            double n = System.Math.Pow(2, tile.Z);
+            float tileSize = (float)(20037508.342789244 * 2 / n); // Web Mercator extent / 2^zoom
+
+            // DEBUG: Log tile size (once per tile)
+            var tileKey = $"{tile.Z}/{tile.X}/{tile.Y}";
+            Debug.Log($"[TileSize] {tileKey}: tileSize = {tileSize:F1}m (zoom {tile.Z})");
+
+            // DEBUG: Count water features in this tile
+            if (layerName.ToLower().Contains("water"))
+            {
+                int waterFeatureCount = meshDataDict.Values.Sum(set => set.Count);
+                int waterVertexCount = meshDataDict.Values.SelectMany(set => set).Sum(md => md.Vertices?.Count ?? 0);
+                Debug.Log($"[WATER-DEBUG] Tile {tileKey}: {waterFeatureCount} water features, {waterVertexCount} total vertices");
+            }
+
+            foreach (var stackPair in meshDataDict)
+            {
+                foreach (var meshData in stackPair.Value)
+                {
+                                                                Debug.Log($"[GoModifiers]{tileIndexStr} {tileKey}: First building after {goModObj.GetType().Name} - Materials: {matNames}");
+                                                            }
+                                                        }
+                                                        catch (System.Exception ex)
+                                                        {
+                                                            // Suppress MeshFilter errors for POI placeholders (they don't have meshes)
+                                                            if (!ex.Message.Contains("MeshFilter"))
+                                                            {
+                                                                Debug.LogWarning($"[GoModifiers]{tileIndexStr} {tileKey}: Failed to apply modifier to {layerObj.name}: {ex.Message}");
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Debug.Log($"[GoModifiers]{tileIndexStr} {tileKey}: Applied {goModifiers.Count} GameObject modifiers to {layerObjects.Count} objects");
+                                }
+                            }
+                        }
+                        else
+                        {
+                            Debug.LogError($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Layer root '{layerRootName}' not found!");
+                            layerObjects = new List<GameObject>();
+                        }
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogError($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: KiloverseMeshBuilder FAILED: {ex.Message}\n{ex.StackTrace}");
+                        layerObjects = new List<GameObject>();
+                        continue; // Skip this source layer
+                    }
+
+                    // Count POIs, roads, buildings, etc.
+                    string objectType = sourceLayer == "place" ? "POIs" :
+                                       sourceLayer == "road" ? "road segments" :
+                                       sourceLayer == "building" ? "buildings" :
+                                       sourceLayer == "water" ? "water features" : "objects";
+
+                    
+                    // DEBUG: Check mesh vertex counts immediately after CreateGo for tall buildings
+                    if (sourceLayer == "building" && tileKey.Contains("14/4551/6176"))
+                    {
+                        for (int debugIdx = 0; debugIdx < layerObjects.Count; debugIdx++)
+                        {
+                            var go = layerObjects[debugIdx];
+                            var mf = go.GetComponent<MeshFilter>();
+                            if (mf != null && mf.sharedMesh != null)
+                            {
+                                int vertexCount = mf.sharedMesh.vertexCount;
+                                // Log buildings with significant vertex counts (potential tall buildings)
+                                if (vertexCount > 5000)
+                                {
+                                    Debug.Log($"[CreateGo IMMEDIATE] T7 building #{debugIdx}: {vertexCount} vertices in returned GameObject");
+                                }
+                            }
+                        }
+                    }
+
+                    // DEBUG: Check first building for mesh/material/renderer state
+                    if (sourceLayer == "building" && layerObjects.Count > 0)
+                    {
+                        var firstBuilding = layerObjects[0];
+                        var mf = firstBuilding.GetComponent<MeshFilter>();
+                        var mr = firstBuilding.GetComponent<MeshRenderer>();
+                        int verts = (mf != null && mf.sharedMesh != null) ? mf.sharedMesh.vertexCount : 0;
+                        bool hasRenderer = mr != null;
+                        bool isActive = firstBuilding.activeSelf;
+                        string matName = (mr != null && mr.sharedMaterial != null) ? mr.sharedMaterial.name : "NULL";
+                        Debug.Log($"[Building Debug]{tileIndexStr} {tileKey}: First building - Verts: {verts}, Renderer: {hasRenderer}, Active: {isActive}, Material: {matName}");
+                    }
+
+                    Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: api.kilomeme.com ({apiTimeMs:F0}ms) → {layerData.FeatureCount()} {objectType} → {layerObjects.Count} {objectType}");
+
+                    int goIndex = 0;
+
+                    // Build a list of features for metadata assignment
+                    List<VectorFeatureUnity> features = new List<VectorFeatureUnity>();
+                    foreach (var stackPair in meshDataDict)
+                    {
+                        foreach (var md in stackPair.Value)
+                        {
+                            if (md.Feature != null)
+                            {
+                                features.Add(md.Feature);
+                            }
+                        }
+                    }
+
+                    foreach (var go in layerObjects)
+                    {
+                        // Add BuildingMetadata component for buildings
+                        if (sourceLayer == "building" && goIndex < features.Count)
+                        {
+                            var metadata = go.AddComponent<BuildingMetadata>();
+                            metadata.Initialize(features[goIndex].Properties, tileKey, tileIndex, goIndex);
+
+                            // Use building name in GameObject name if available
+                            string displayName = !string.IsNullOrEmpty(metadata.buildingName)
+                                ? $"_({metadata.buildingName})"
+                                : "";
+                            go.name = tileIndex >= 0
+                                ? $"Overture_{sourceLayer}_T{tileIndex}_{goIndex}{displayName}"
+                                : $"Overture_{sourceLayer}_{goIndex}{displayName}";
+                        }
+                        else
+                        {
+                            // Non-building layers just get numbered names
+                            go.name = tileIndex >= 0
+                                ? $"Overture_{sourceLayer}_T{tileIndex}_{goIndex}"
+                                : $"Overture_{sourceLayer}_{goIndex}";
+                        }
+
+                        goIndex++;
+                        go.SetActive(true);
+                        createdObjects.Add(go);
+                    }
+                }
+                else
+                {
+                    // No mesh geometry (e.g., POI labels which are created by POILabelModifier)
+                    string objectType = sourceLayer == "place" ? "POIs" : "objects";
+                    Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: api.kilomeme.com ({apiTimeMs:F0}ms) → {layerData.FeatureCount()} {objectType} (no mesh, modifiers only)");
+                }
+                */
+                // END OLD IMMEDIATE PROCESSING - now all handled by ProcessMeshQueue()
+
+                // Yield after each source layer to avoid blocking main thread too long
+                yield return null;
+            }
+
+            // POI label anchors - name with tile index but DON'T add to tile frustum culling
+            // POICanvasManager handles its own distance (1600m) and frustum culling
+            // NOTE: POILabelModifier is in Assembly-CSharp, which references Kiloverse.Mapbox
+            // This would create a circular dependency, so we use reflection instead
+            var poiModifierType = System.Type.GetType("POILabelModifier, Assembly-CSharp");
+            List<GameObject> labelAnchors = null;
+            if (poiModifierType != null)
+            {
+                var method = poiModifierType.GetMethod("GetAndClearCurrentTileLabels", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                if (method != null)
+                {
+                    labelAnchors = method.Invoke(null, null) as List<GameObject>;
+                }
+            }
+
+            if (labelAnchors != null && labelAnchors.Count > 0)
+            {
+                // Add tile index to POI anchor names for debugging
+                if (tileIndex >= 0)
+                {
+                    for (int i = 0; i < labelAnchors.Count; i++)
+                    {
+                        if (labelAnchors[i] != null)
+                        {
+                            labelAnchors[i].name = $"POI_T{tileIndex}_{i}_{labelAnchors[i].name}";
+                        }
+                    }
+                }
+
+                // DON'T add to createdObjects - POI labels should be visible across multiple tiles (1600m range)
+                // createdObjects.AddRange(labelAnchors);
+                Debug.Log($"[TileLoad]{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Created {labelAnchors.Count} POI label anchors (NOT tile-culled, managed by POICanvasManager)");
+            }
+
+            // FRAME-SPREAD: Objects are stored in _tileObjects by ProcessMeshQueue(), not here
+            // createdObjects is now empty since all mesh generation is queued
+            // RepositionTileObjects and UpdateForView are also handled in ProcessMeshQueue
+
+            Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Tile queued for frame-spread mesh generation");
+        }
+
+        public void UpdateForView(CanonicalTileId tile)
+        {
+            if (!_initialized) return;
+            foreach (var visualizer in _visualizers.Values)
+            {
+                visualizer.UpdateForView(tile, _map.MapInformation);
+            }
+        }
+
+        private void RepositionTileObjects(CanonicalTileId tile)
+        {
+            // CRITICAL: Tile coordinate system explanation
+            // - Tile has southwest corner at GPS (South, West)
+            // - Vertices are in 0-1 normalized space, scaled to 0→tileSize in local space
+            // - Vertex (0, 0) = southwest corner, vertex (1, 1) = northeast corner
+            // - GameObject local (0, 0, 0) must be positioned at tile's southwest corner in world space
+
+            var tileBounds = TileIdToBounds(tile);
+            var tileSouthwestGPS = new LatitudeLongitude(tileBounds.South, tileBounds.West);
+
+            // Calculate tile's world offset from map center to tile SOUTHWEST CORNER
+            Vector2d mapCenterMercator = Conversions.LatitudeLongitudeToWebMercator(_map.MapInformation.Position);
+            Vector2d tileSouthwestMercator = Conversions.LatitudeLongitudeToWebMercator(tileSouthwestGPS);
+            Vector2d tileOffset = tileSouthwestMercator - mapCenterMercator;
+
+            // This is the world position where the tile's southwest corner should be
+            Vector3 tileWorldOffset = new Vector3((float)tileOffset.x, 0, (float)tileOffset.y);
+
+            // Get all objects for this tile
+            var tileKey = $"{tile.Z}/{tile.X}/{tile.Y}";
+            if (_tileObjects.TryGetValue(tileKey, out var objects))
+            {
+                int repositionedCount = 0;
+                foreach (var obj in objects)
+                {
+                    if (obj != null && obj.activeSelf) // OPTIMIZATION: Skip inactive (culled) objects
+                    {
+                        // CRITICAL: SET position (not additive!) - vertices are already in tile-local space (0→tileSize)
+                        // We just need to position the tile at its world offset from map center
+                        // Y-offset (ground 0m, water +0.2m, roads +0.5m) is already in localPosition.y from CreateGameObjects
+                        obj.transform.localPosition = new Vector3(
+                            tileWorldOffset.x,
+                            obj.transform.localPosition.y, // Preserve Y offset for roads/water elevation
+                            tileWorldOffset.z
+                        );
+                        repositionedCount++;
+
+                        // DEBUG: Log first object's final world position
+                        if (repositionedCount == 1)
+                        {
+                            Debug.Log($"[TilePosition] {tileKey}: SW corner GPS=({tileBounds.South:F6},{tileBounds.West:F6}) → Mercator offset=({tileOffset.x:F1},{tileOffset.y:F1}) → World offset=({tileWorldOffset.x:F1},{tileWorldOffset.z:F1})");
+                            Debug.Log($"[TilePosition] {tileKey}: First object final localPos={obj.transform.localPosition}, worldPos={obj.transform.position}");
+                        }
+                    }
+                }
+                
+
+                // DEBUG WATER: Log all water object positions for tiles 1543 and 1544
+                if ((tileKey == "12/1137/1543" || tileKey == "12/1137/1544") && repositionedCount > 0)
+                {
+                    Debug.Log($"[WATER-DEBUG-POS] Tile {tileKey}: Detailed object positions:");
+                    int idx = 0;
+                    foreach (var obj in objects)
+                    {
+                        if (obj != null)
+                        {
+                            var mf = obj.GetComponent<MeshFilter>();
+                            var bounds = mf != null && mf.sharedMesh != null ? mf.sharedMesh.bounds : default;
+                            Vector3 worldCenter = obj.transform.TransformPoint(bounds.center);
+                            float distFromPlayer = Vector3.Distance(Vector3.zero, worldCenter);
+                            Debug.Log($"[WATER-DEBUG-POS]   {idx}: name='{obj.name}' active={obj.activeSelf} localPos={obj.transform.localPosition} worldPos={obj.transform.position} meshBounds.center={bounds.center} worldMeshCenter={worldCenter} distFromPlayer={distFromPlayer:F1}m");
+                            idx++;
+                        }
+                    }
+                }
+Debug.Log($"[TileLoad] {tileKey}: Repositioned {repositionedCount} objects to world offset ({tileWorldOffset.x:F1}, {tileWorldOffset.z:F1})");
+            }
+        }
+
+        /// <summary>
+        /// Reposition ALL existing tiles when map center changes
+        /// Critical for large tiles (z12 water/land) that can be 6-10km from player if center moved
+        /// </summary>
+        public void RepositionAllTiles()
+        {
+            int tileCount = 0;
+            int objectCount = 0;
+
+            foreach (var tileKey in _tileObjects.Keys.ToList())
+            {
+                // Parse tile key "z/x/y"
+                var parts = tileKey.Split('/');
+                if (parts.Length == 3 &&
+                    int.TryParse(parts[0], out int z) &&
+                    int.TryParse(parts[1], out int x) &&
+                    int.TryParse(parts[2], out int y))
+                {
+                    var tile = new CanonicalTileId(z, x, y);
+                    RepositionTileObjects(tile);
+                    tileCount++;
+                    objectCount += _tileObjects[tileKey]?.Count ?? 0;
+                }
+            }
+
+            if (tileCount > 0)
+            {
+                Debug.Log($"[TileReposition] Map center changed - repositioned {objectCount} objects across {tileCount} tiles");
+            }
+        }
+
+        private struct TileBounds
+        {
+            public double North;
+            public double South;
+            public double East;
+            public double West;
+        }
+
+        private TileBounds TileIdToBounds(CanonicalTileId tile)
+        {
+            // Convert XYZ tile coordinates to GPS bounds
+            int z = tile.Z;
+            int x = tile.X;
+            int y = tile.Y;
+            int n = 1 << z; // 2^z
+
+            double west = x / (double)n * 360.0 - 180.0;
+            double east = (x + 1) / (double)n * 360.0 - 180.0;
+
+            double northRad = System.Math.Atan(System.Math.Sinh(System.Math.PI * (1 - 2.0 * y / n)));
+            double southRad = System.Math.Atan(System.Math.Sinh(System.Math.PI * (1 - 2.0 * (y + 1) / n)));
+            double north = northRad * 180.0 / System.Math.PI;
+            double south = southRad * 180.0 / System.Math.PI;
+
+            // DEBUG: Log tile bounds calculation (first call only)
+            var tileKey = $"{z}/{x}/{y}";
+            if (tileKey == "14/4550/6175")
+            {
+                Debug.Log($"[TileBounds] {tileKey}: z={z}, x={x}, y={y}, n={n}");
+                Debug.Log($"[TileBounds] {tileKey}: north={north:F6}, south={south:F6}, east={east:F6}, west={west:F6}");
+            }
+
+            return new TileBounds { North = north, South = south, East = east, West = west };
+        }
+
+        public void RemoveTile(CanonicalTileId tile)
+        {
+            var tileKey = $"{tile.Z}/{tile.X}/{tile.Y}";
+
+            if (!_initialized)
+            {
+                Debug.LogWarning($"[RemoveTile] {tileKey}: Renderer not initialized, cannot remove tile");
+                return;
+            }
+
+            Debug.Log($"[RemoveTile] {tileKey}: Removing tile");
+
+            // On mobile: destroy immediately to free RAM
+            // On desktop: deactivate for potential pooling (visualizer handles cleanup)
+            if (_tileObjects.TryGetValue(tileKey, out var objects))
+            {
+                Debug.Log($"[RemoveTile] {tileKey}: Cleaning up {objects.Count} objects (mobile={Application.isMobilePlatform})");
+                foreach (var go in objects)
+                {
+                    if (go != null)
+                    {
+                        if (Application.isMobilePlatform)
+                        {
+                            // Mobile: Destroy immediately to free RAM
+                            GameObject.Destroy(go);
+                        }
+                        else
+                        {
+                            // Desktop: Deactivate (visualizer may pool)
+                            go.SetActive(false);
+                        }
+                    }
+                }
+                _tileObjects.Remove(tileKey);
+            }
+            else
+            {
+                Debug.LogWarning($"[RemoveTile] {tileKey}: No objects found in _tileObjects dictionary");
+            }
+
+            // This is the critical step: returns objects to pool or destroys them properly
+            Debug.Log($"[RemoveTile] {tileKey}: Calling UnregisterTile on {_visualizers.Count} visualizers");
+            foreach (var visualizer in _visualizers.Values)
+            {
+                visualizer.UnregisterTile(tile);
+            }
+        }
+
+        /// <summary>
+        /// Process mesh generation queue - called from Update() to spread work across frames
+        /// </summary>
+        public void ProcessMeshQueue()
+        {
+            if (_meshProcessingQueue.Count == 0) return;
+
+            int processed = 0;
+            while (_meshProcessingQueue.Count > 0 && processed < MAX_MESHES_PER_FRAME)
+            {
+                var workItem = _meshProcessingQueue.Dequeue();
+                var tileKey = $"{workItem.Tile.Z}/{workItem.Tile.X}/{workItem.Tile.Y}";
+
+                // Remove from queued tracking
+                _queuedTiles.Remove(tileKey);
+
+                string tileIndexStr = workItem.TileIndex >= 0 ? $" tile #{workItem.TileIndex}" : "";
+
+                Debug.Log($"[MeshQueue] Processing {tileKey} ({workItem.LayerName}) - {_meshProcessingQueue.Count} remaining");
+
+                try
+                {
+                    // Create GameObjects from mesh data
+                    var layerObjects = KiloverseMeshBuilder.CreateGameObjects(
+                        workItem.Tile,
+                        workItem.MeshDataDict,
+                        workItem.LayerRoot.transform,
+                        workItem.LayerName
+                    );
+
+                    Debug.Log($"[MeshQueue] {workItem.LayerName}{tileIndexStr} {tileKey}: Created {layerObjects.Count} GameObjects");
+
+                    // Execute GoModifiers
+                    var goModifiersField = workItem.ModifierStack.GetType().GetField("GoModifiers");
+                    if (goModifiersField != null)
+                    {
+                        var goModifiers = goModifiersField.GetValue(workItem.ModifierStack) as System.Collections.IList;
+                        if (goModifiers != null && goModifiers.Count > 0)
+                        {
+                            var goUnityContext = new UnityContext();
+
+                            foreach (var goModObj in goModifiers)
+                            {
+                                var constructMethod = goModObj.GetType().GetMethod("ConstructModifier");
+                                if (constructMethod != null)
+                                {
+                                    constructMethod.Invoke(goModObj, new object[] { goUnityContext });
+                                }
+
+                                var implProp = goModObj.GetType().GetProperty("_gameObjectModifierImplementation", BindingFlags.NonPublic | BindingFlags.Instance);
+                                if (implProp == null)
+                                {
+                                    implProp = goModObj.GetType().GetProperty("GameObjectModifierImplementation", BindingFlags.Public | BindingFlags.Instance);
+                                }
+
+                                if (implProp != null)
+                                {
+                                    var goModImpl = implProp.GetValue(goModObj);
+                                    if (goModImpl != null)
+                                    {
+                                        var runMethod = goModImpl.GetType().GetMethod("Run", BindingFlags.Public | BindingFlags.Instance);
+                                        if (runMethod != null)
+                                        {
+                                            foreach (var go in layerObjects)
+                                            {
+                                                if (go != null)
+                                                {
+                                                    runMethod.Invoke(goModImpl, new object[] { go });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Store created objects
+                    if (!_tileObjects.ContainsKey(tileKey))
+                    {
+                        _tileObjects[tileKey] = new List<GameObject>();
+                    }
+                    _tileObjects[tileKey].AddRange(layerObjects);
+
+                    // Position objects in world space
+                    RepositionTileObjects(workItem.Tile);
+
+                    // Update visualizer views
+                    foreach (var visualizer in _visualizers.Values)
+                    {
+                        if (visualizer.ContainsVisualFor(workItem.Tile))
+                        {
+                            visualizer.UpdateForView(workItem.Tile, _map.MapInformation);
+                        }
+                    }
+
+                    processed++;
+                }
+                catch (System.Exception ex)
+                {
+                    Debug.LogError($"[MeshQueue] FAILED to process {tileKey}: {ex.Message}\n{ex.StackTrace}");
+                    processed++; // Still count as processed to avoid getting stuck
+                }
+            }
+
+            if (_meshProcessingQueue.Count > 0)
+            {
+                Debug.Log($"[MeshQueue] Frame complete: Processed {processed}/{MAX_MESHES_PER_FRAME}, {_meshProcessingQueue.Count} tiles remaining");
+            }
+        }
+
+        public void ClearAllTiles()
+        {
+            if (!_initialized) return;
+
+            // Iterate through all known keys and remove them properly
+            // We must use a copy of keys since RemoveTile modifies the dictionary
+            var keys = new List<string>(_tileObjects.Keys);
+            int count = 0;
+            
+            foreach (var key in keys)
+            {
+                var parts = key.Split('/');
+                if (parts.Length == 3 && 
+                    int.TryParse(parts[0], out int z) && 
+                    int.TryParse(parts[1], out int x) && 
+                    int.TryParse(parts[2], out int y))
+                {
+                    RemoveTile(new CanonicalTileId(z, x, y));
+                    count++;
+                }
+            }
+            
+            // Just in case some were missed (bad key format?)
+            foreach (var kvp in _tileObjects)
+            {
+                 foreach (var go in kvp.Value)
+                 {
+                     if (go != null) go.SetActive(false);
+                 }
+            }
+            _tileObjects.Clear();
+            Debug.Log($"[OvertureVectorRenderer] Cleared {count} tiles properly via UnregisterTile");
+        }
+
+        private Dictionary<string, bool> _tileVisibility = new Dictionary<string, bool>();
+        private int _frustumCullFrame = 0;
+
+        public void UpdateFrustumCulling()
+        {
+            if (!_initialized)
+            {
+                if (Time.frameCount % 300 == 0)
+                    Debug.LogWarning("[Frustum] UpdateFrustumCulling: Renderer NOT initialized! _visualizers.Count=" + _visualizers.Count);
+                return;
+            }
+
+            // Only run frustum culling every 10 frames to reduce overhead
+            _frustumCullFrame++;
+            if (_frustumCullFrame % 10 != 0) return;
+
+            // Get main camera frustum planes
+            Camera mainCamera = Camera.main;
+            if (mainCamera == null) return;
+
+            Plane[] frustumPlanes = GeometryUtility.CalculateFrustumPlanes(mainCamera);
+
+            // Debug: Log what's in _tileObjects every 5 seconds
+            if (Time.frameCount % 300 == 0)
+            {
+                int totalObjects = 0;
+                int labelAnchors = 0;
+                foreach (var kvp in _tileObjects)
+                {
+                    if (kvp.Value != null)
+                    {
+                        totalObjects += kvp.Value.Count;
+                        foreach (var go in kvp.Value)
+                        {
+                            if (go != null && go.name.Contains("LabelAnchor"))
+                                labelAnchors++;
+                        }
+                    }
+                }
+                Debug.Log($"[Frustum] UpdateFrustumCulling running: {_tileObjects.Count} tiles, {totalObjects} total objects, {labelAnchors} LabelAnchors");
+            }
+
+            // Check each tile's visibility
+            foreach (var kvp in _tileObjects)
+            {
+                string tileKey = kvp.Key;
+                var objects = kvp.Value;
+                if (objects == null || objects.Count == 0) continue;
+
+                // Check if ANY object in this tile is visible
+                bool tileVisible = false;
+                bool isWaterTile = tileKey.Contains("12/1137/1544") || tileKey.Contains("12/1138/1544") || tileKey.Contains("12/1137/1543");
+
+                // TEMP DEBUG: Force water tiles to always be visible
+                if (tileKey.StartsWith("12/") && (tileKey.Contains("/1137/") || tileKey.Contains("/1138/")))
+                {
+                    tileVisible = true; // Force z12 water tiles active for debugging
+                }
+
+                foreach (var go in objects)
+                {
+                    if (go == null) continue;
+
+                    // Check renderer bounds against frustum
+                    // Must check even if inactive so we can reactivate when back in view!
+                    var renderer = go.GetComponent<Renderer>();
+                    if (renderer != null)
+                    {
+                        bool inFrustum = GeometryUtility.TestPlanesAABB(frustumPlanes, renderer.bounds);
+
+                        // DEBUG: Log water tile frustum checks (DETAILED)
+                        if (isWaterTile && Time.frameCount % 100 == 0 && go.name.Contains("water"))
+                        {
+                            var camPos = mainCamera.transform.position;
+                            var camForward = mainCamera.transform.forward;
+                            var goPos = go.transform.position;
+                            var goLocalPos = go.transform.localPosition;
+                            var distToCamera = Vector3.Distance(camPos, renderer.bounds.center);
+
+                            Debug.Log($"[WaterFrustum] {tileKey} '{go.name}':");
+                            Debug.Log($"  Camera: pos=({camPos.x:F1},{camPos.y:F1},{camPos.z:F1}) forward=({camForward.x:F2},{camForward.y:F2},{camForward.z:F2})");
+                            Debug.Log($"  GO: worldPos=({goPos.x:F1},{goPos.y:F1},{goPos.z:F1}) localPos=({goLocalPos.x:F1},{goLocalPos.y:F1},{goLocalPos.z:F1})");
+                            Debug.Log($"  Renderer.bounds: center=({renderer.bounds.center.x:F1},{renderer.bounds.center.y:F1},{renderer.bounds.center.z:F1}) size=({renderer.bounds.size.x:F1},{renderer.bounds.size.y:F1},{renderer.bounds.size.z:F1})");
+                            Debug.Log($"  Distance to camera: {distToCamera:F1}m | inFrustum: {inFrustum}");
+                        }
+
+                        if (inFrustum)
+                        {
+                            tileVisible = true;
+                            break; // At least one object visible, keep entire tile active
+                        }
+                    }
+                    else
+                    {
+                        // For objects without renderers (e.g., POI label anchors), check if point is in frustum
+                        Vector3 pos = go.transform.position;
+
+                        // Debug first few POI positions every 5 seconds
+                        if (Time.frameCount % 300 == 0 && go.name.Contains("LabelAnchor"))
+                        {
+                            Vector3 camPos = mainCamera.transform.position;
+                            float dist = Vector3.Distance(camPos, pos);
+                            Debug.Log($"[Frustum] Checking POI: {go.name} | Camera: ({camPos.x:F0}, {camPos.y:F0}, {camPos.z:F0}) | POI: ({pos.x:F0}, {pos.y:F0}, {pos.z:F0}) | Distance: {dist:F0}m");
+                        }
+
+                        // Test if point is inside all 6 frustum planes (proper frustum check)
+                        bool insideFrustum = true;
+                        foreach (var plane in frustumPlanes)
+                        {
+                            if (plane.GetDistanceToPoint(pos) < 0)
+                            {
+                                insideFrustum = false;
+                                break;
+                            }
+                        }
+
+                        if (insideFrustum)
+                        {
+                            tileVisible = true;
+                            break;
+                        }
+                    }
+                }
+
+                // Only update if visibility changed
+                if (!_tileVisibility.TryGetValue(tileKey, out bool wasVisible) || wasVisible != tileVisible)
+                {
+                    _tileVisibility[tileKey] = tileVisible;
+
+                    // Activate/deactivate entire tile
+                    int affectedObjects = 0;
+                    foreach (var go in objects)
+                    {
+                        if (go != null)
+                        {
+                            go.SetActive(tileVisible);
+                            affectedObjects++;
+                        }
+                    }
+
+                    // Log visibility changes
+                    string action = tileVisible ? "ACTIVATED" : "DEACTIVATED";
+                    Debug.Log($"[Frustum] {action} tile {tileKey}: {affectedObjects} objects");
+                }
+            }
+
+            // Log stats every 5 seconds (300 frames at 60fps)
+            if (Time.frameCount % 300 == 0)
+            {
+                // Count active/inactive objects per layer
+                var layerStats = new Dictionary<string, (int active, int inactive)>();
+
+                foreach (var kvp in _tileObjects)
+                {
+                    var objects = kvp.Value;
+                    if (objects == null) continue;
+
+                    foreach (var go in objects)
+                    {
+                        if (go == null) continue;
+
+                        // Determine layer from object name
+                        string layerName = "unknown";
+                        if (go.name.Contains("building")) layerName = "building";
+                        else if (go.name.Contains("road") || go.name.Contains("segment")) layerName = "road";
+                        else if (go.name.Contains("place") || go.name.Contains("poi")) layerName = "place";
+                        else if (go.name.Contains("water")) layerName = "water";
+                        else if (go.name.Contains("LabelAnchor")) layerName = "labels";
+
+                        if (!layerStats.ContainsKey(layerName))
+                            layerStats[layerName] = (0, 0);
+
+                        var stats = layerStats[layerName];
+                        if (go.activeSelf)
+                            stats.active++;
+                        else
+                            stats.inactive++;
+                        layerStats[layerName] = stats;
+                    }
+                }
+
+                // Log per-layer stats (in same format as POI labels)
+                foreach (var kvp in layerStats)
+                {
+                    int total = kvp.Value.active + kvp.Value.inactive;
+                    string layerDisplayName = kvp.Key switch
+                    {
+                        "building" => "Buildings",
+                        "road" => "Roads",
+                        "labels" => "POI Anchors",
+                        "water" => "Water",
+                        "place" => "Places",
+                        _ => kvp.Key
+                    };
+
+                    // Count visible renderers for ALL layers
+                    int visibleRenderers = 0;
+                    string layerFilter = kvp.Key; // building, road, labels, water, place
+
+                    foreach (var kvp2 in _tileObjects)
+                    {
+                        var objects = kvp2.Value;
+                        if (objects == null) continue;
+
+                        foreach (var go in objects)
+                        {
+                            if (go == null || !go.activeSelf) continue;
+
+                            // Match layer type
+                            bool isMatch = false;
+                            if (layerFilter == "building" && go.name.Contains("building")) isMatch = true;
+                            else if (layerFilter == "road" && (go.name.Contains("road") || go.name.Contains("segment"))) isMatch = true;
+                            else if (layerFilter == "labels" && go.name.Contains("LabelAnchor")) isMatch = true;
+                            else if (layerFilter == "water" && go.name.Contains("water")) isMatch = true;
+                            else if (layerFilter == "place" && go.name.Contains("place")) isMatch = true;
+
+                            if (!isMatch) continue;
+
+                            var renderer = go.GetComponent<MeshRenderer>();
+                            if (renderer != null && renderer.enabled)
+                            {
+                                visibleRenderers++;
+                            }
+                        }
+                    }
+
+                    float cullingEfficiency = total > 0 ? ((1f - visibleRenderers / (float)total) * 100f) : 0f;
+                    Debug.Log($"[MEMORY PRESSURE] {layerDisplayName}: {total} in memory | {kvp.Value.inactive} tile-culled | {kvp.Value.active} active | {visibleRenderers} rendering | Culling: {cullingEfficiency:F1}%");
+                }
+            }
+        }
+
+        private static string ResolveVisualizerKey(string sourceLayer)
+        {
+            return LayerMapping.TryGetValue(sourceLayer, out var mapped) ? mapped : sourceLayer;
+        }
+
+        /// <summary>
+        /// KILOVERSE MAPBOX-FREE: Generate simple geometry directly from feature data
+        /// Bypasses all Mapbox SDK modifiers - completely custom implementation
+        /// </summary>
+        private void GenerateSimpleGeometry(MeshData meshData, VectorFeatureUnity feature, string layerType)
+        {
+            if (feature.Points == null || feature.Points.Count == 0)
+            {
+                return;
+            }
+
+            // ROADS (LINESTRING): Need at least 2 points for a line
+            // WATER/BUILDINGS (POLYGON): Need at least 3 points for a polygon
+            bool isRoad = layerType == "segment" || layerType == "road";
+            int minPoints = isRoad ? 2 : 3;
+
+            if (feature.Points[0].Count < minPoints)
+            {
+                return;
+            }
+
+            var geometry = feature.Points[0]; // First geometry part
+
+            // Handle roads differently (LINESTRING needs extrusion, not fill)
+            if (isRoad)
+            {
+                CreateRoadRibbon(meshData, geometry, 5f); // 5m default width
+                return;
+            }
+
+            // POLYGON handling (water, buildings, land)
+            var polygon = geometry;
+
+            // Get height for buildings
+            float height = 0f;
+            if (layerType == "building")
+            {
+                // Try to get height from properties
+                if (feature.Properties.ContainsKey("height"))
+                {
+                    try { height = Convert.ToSingle(feature.Properties["height"]); } catch { }
+                }
+                else if (feature.Properties.ContainsKey("num_floors"))
+                {
+                    try
+                    {
+                        float floors = Convert.ToSingle(feature.Properties["num_floors"]);
+                        height = floors * 3.5f; // 3.5m per floor
+                    }
+                    catch { }
+                }
+
+                // Default building height if no data
+                if (height <= 0) height = 10f;
+            }
+
+            // Triangulate the polygon (simple ear clipping for convex polygons)
+            var triangles = TriangulatePolygon(polygon);
+
+            if (layerType == "building" && height > 0)
+            {
+                // Create extruded building geometry
+                CreateExtrudedBuilding(meshData, polygon, triangles, height);
+            }
+            else
+            {
+                // Create flat polygon (for water, land, roads)
+                CreateFlatPolygon(meshData, polygon, triangles);
+            }
+        }
+
+        private List<int> TriangulatePolygon(List<Vector3> polygon)
+        {
+            var triangles = new List<int>();
+            int n = polygon.Count;
+
+            // Simple fan triangulation (works for convex polygons)
+            for (int i = 1; i < n - 1; i++)
+            {
+                triangles.Add(0);
+                triangles.Add(i);
+                triangles.Add(i + 1);
+            }
+
+            return triangles;
+        }
+
+        private void CreateFlatPolygon(MeshData meshData, List<Vector3> polygon, List<int> triangles)
+        {
+            meshData.Vertices = new List<Vector3>(polygon);
+            meshData.Triangles = new List<List<int>> { triangles };
+
+            // Generate normals
+            var normals = new List<Vector3>();
+            for (int i = 0; i < polygon.Count; i++)
+            {
+                normals.Add(Vector3.up);
+            }
+            meshData.Normals = normals;
+
+            // Generate UVs (simple planar mapping)
+            var uvs = new List<Vector2>();
+            for (int i = 0; i < polygon.Count; i++)
+            {
+                uvs.Add(new Vector2(polygon[i].x, polygon[i].z));
+            }
+            meshData.UV = new List<List<Vector2>> { uvs };
+        }
+
+        private void CreateExtrudedBuilding(MeshData meshData, List<Vector3> polygon, List<int> triangles, float height)
+        {
+            int n = polygon.Count;
+            var vertices = new List<Vector3>();
+            var tris = new List<int>();
+            var normals = new List<Vector3>();
+            var uvs = new List<Vector2>();
+
+            // Bottom vertices (y=0)
+            foreach (var p in polygon)
+            {
+                vertices.Add(p);
+                normals.Add(Vector3.down);
+                uvs.Add(new Vector2(p.x, p.z));
+            }
+
+            // Top vertices (y=height)
+            foreach (var p in polygon)
+            {
+                vertices.Add(new Vector3(p.x, height, p.z));
+                normals.Add(Vector3.up);
+                uvs.Add(new Vector2(p.x, p.z));
+            }
+
+            // Bottom face triangles
+            foreach (int idx in triangles)
+            {
+                tris.Add(idx);
+            }
+
+            // Top face triangles (reversed winding)
+            for (int i = triangles.Count - 1; i >= 0; i--)
+            {
+                tris.Add(triangles[i] + n);
+            }
+
+            // Side walls
+            for (int i = 0; i < n; i++)
+            {
+                int next = (i + 1) % n;
+                int bottom1 = i;
+                int bottom2 = next;
+                int top1 = i + n;
+                int top2 = next + n;
+
+                // Two triangles per wall quad
+                tris.Add(bottom1);
+                tris.Add(top1);
+                tris.Add(bottom2);
+
+                tris.Add(bottom2);
+                tris.Add(top1);
+                tris.Add(top2);
+
+                // Add vertices for wall normals (duplicate vertices for proper normals)
+                // This is simplified - we're reusing vertices which will give averaged normals
+            }
+
+            meshData.Vertices = vertices;
+            meshData.Triangles = new List<List<int>> { tris };
+            meshData.Normals = normals;
+            meshData.UV = new List<List<Vector2>> { uvs };
+        }
+
+        private void CreateRoadRibbon(MeshData meshData, List<Vector3> centerline, float width)
+        {
+            if (centerline.Count < 2) return;
+
+            float halfWidth = width / 2f;
+            var vertices = new List<Vector3>();
+            var tris = new List<int>();
+            var normals = new List<Vector3>();
+            var uvs = new List<Vector2>();
+
+            // Extrude centerline to create ribbon
+            for (int i = 0; i < centerline.Count; i++)
+            {
+                Vector3 point = centerline[i];
+                Vector3 perpendicular;
+
+                // Calculate perpendicular direction
+                if (i == 0)
+                {
+                    // First point: use direction to next point
+                    Vector3 forward = (centerline[i + 1] - centerline[i]).normalized;
+                    perpendicular = new Vector3(-forward.z, 0, forward.x); // 90° rotation in XZ plane
+                }
+                else if (i == centerline.Count - 1)
+                {
+                    // Last point: use direction from previous point
+                    Vector3 forward = (centerline[i] - centerline[i - 1]).normalized;
+                    perpendicular = new Vector3(-forward.z, 0, forward.x);
+                }
+                else
+                {
+                    // Middle points: average of incoming and outgoing directions
+                    Vector3 incoming = (centerline[i] - centerline[i - 1]).normalized;
+                    Vector3 outgoing = (centerline[i + 1] - centerline[i]).normalized;
+                    Vector3 avgForward = ((incoming + outgoing) / 2f).normalized;
+                    perpendicular = new Vector3(-avgForward.z, 0, avgForward.x);
+                }
+
+                // Add left and right vertices
+                vertices.Add(point + perpendicular * halfWidth);  // Left
+                vertices.Add(point - perpendicular * halfWidth);  // Right
+
+                normals.Add(Vector3.up);
+                normals.Add(Vector3.up);
+
+                float uvY = (float)i / (centerline.Count - 1);
+                uvs.Add(new Vector2(0, uvY));
+                uvs.Add(new Vector2(1, uvY));
+
+                // Create quad triangles (except for last point)
+                if (i < centerline.Count - 1)
+                {
+                    int baseIdx = i * 2;
+                    // Triangle 1
+                    tris.Add(baseIdx);
+                    tris.Add(baseIdx + 2);
+                    tris.Add(baseIdx + 1);
+                    // Triangle 2
+                    tris.Add(baseIdx + 1);
+                    tris.Add(baseIdx + 2);
+                    tris.Add(baseIdx + 3);
+                }
+            }
+
+            meshData.Vertices = vertices;
+            meshData.Triangles = new List<List<int>> { tris };
+            meshData.Normals = normals;
+            meshData.UV = new List<List<Vector2>> { uvs };
+        }
+    }
+
+    /// <summary>
+    /// Component to store VectorFeatureUnity reference on GameObjects
+    /// Allows GoModifiers (like POILabelModifier) to access feature properties via VectorEntity.Feature
+    /// </summary>
+    public class FeatureDataHolder : MonoBehaviour
+    {
+        public VectorFeatureUnity Feature;
+    }
+
+    /// <summary>
+    /// Kiloverse mesh builder - creates GameObjects from MeshData WITHOUT Mapbox visualizers
+    /// This is the GLUE CODE that connects our custom modifier stacks to Unity GameObjects
+    /// Replaces VectorLayerVisualizer.CreateGo() with our own Mapbox-free implementation
+    /// </summary>
+    public static class KiloverseMeshBuilder
+    {
+        public static List<GameObject> CreateGameObjects(
+            CanonicalTileId tile,
+            Dictionary<int, HashSet<MeshData>> meshDataDict,
+            Transform parentTransform,
+            string layerName)
+        {
+            var gameObjects = new List<GameObject>();
+
+            // Calculate tile size in Unity units (scale factor for this zoom level)
+            // MeshData vertices are in normalized 0-1 space, need to scale to actual world size
+            double n = System.Math.Pow(2, tile.Z);
+            float tileSize = (float)(20037508.342789244 * 2 / n); // Web Mercator extent / 2^zoom
+
+            // DEBUG: Log tile size (once per tile)
+            var tileKey = $"{tile.Z}/{tile.X}/{tile.Y}";
+            Debug.Log($"[TileSize] {tileKey}: tileSize = {tileSize:F1}m (zoom {tile.Z})");
+
+            // DEBUG: Count water features in this tile
+            if (layerName.ToLower().Contains("water"))
+            {
+                int waterFeatureCount = meshDataDict.Values.Sum(set => set.Count);
+                int waterVertexCount = meshDataDict.Values.SelectMany(set => set).Sum(md => md.Vertices?.Count ?? 0);
+                Debug.Log($"[WATER-DEBUG] Tile {tileKey}: {waterFeatureCount} water features, {waterVertexCount} total vertices");
+            }
+
+            foreach (var stackPair in meshDataDict)
+            {
+                foreach (var meshData in stackPair.Value)
+                {
+                    // Check if this is a POI feature (place/poi_label/poi) - they don't have mesh geometry
+                    bool isPOI = layerName.ToLower().Contains("place") || layerName.ToLower().Contains("poi");
+                    bool hasValidMesh = meshData.Vertices != null && meshData.Vertices.Count > 0;
+
+                    if (!hasValidMesh && !isPOI)
+                    {
+                        continue; // Skip empty meshes (unless it's a POI - POIs create label anchors via GoModifiers)
+                    }
+
+                    // Create GameObject (for POIs this is just a placeholder for GoModifiers to run on)
+                    var go = new GameObject($"{layerName}_feature");
+                    go.transform.SetParent(parentTransform, false);
+
+                    // CRITICAL: Store Feature reference on GameObject so GoModifiers can access it via VectorEntity
+                    // POILabelModifier needs ve.Feature to extract POI properties (name, category, etc.)
+                    var featureHolder = go.AddComponent<FeatureDataHolder>();
+                    featureHolder.Feature = meshData.Feature;
+
+                    // POI features: Create placeholder GameObject without mesh, GoModifiers will handle label anchor creation
+                    if (isPOI && !hasValidMesh)
+                    {
+                        gameObjects.Add(go);
+                        if (gameObjects.Count == 1)
+                        {
+                            Debug.Log($"[KiloverseMeshBuilder] POI - Created placeholder GameObject for GoModifiers (no mesh data)");
+                        }
+                        continue; // Skip mesh generation for POIs
+                    }
+
+                    // CRITICAL FIX: Scale vertices from normalized 0-1 space to actual tile size
+                    // Vertices from modifiers are in tile-local coordinates (0-1 range, but can extend outside for features crossing tiles)
+                    // COORDINATE SYSTEM FIX: Mapbox vector tiles have Y=0 at NORTH, Y=1 at SOUTH
+                    // Unity has Z=0 at SOUTH, Z+ northward
+                    // We position tiles from SW corner, so (0,0) local = SW corner in world space
+                    // Formula: unityZ = tileSize - (tileY * tileSize) to flip north-south axis
+                    // This correctly handles negative values (south of tile) and >1.0 values (north of tile)
+                    var scaledVertices = new List<Vector3>(meshData.Vertices.Count);
+                    bool loggedFirstVertex = false;
+                    foreach (var vert in meshData.Vertices)
+                    {
+                        // X: same (both increase eastward)
+                        // Y: height (both vertical)
+                        // Z: FLIP (Mapbox Y=0 is north, Unity Z=0 is south)
+                        // vert.z range is [0, -1] where 0=north, -1=south (from line 1112: -1 * (p.Y / 4096f))
+                        // Unity local Z should be [tileSize, 0] where tileSize=north, 0=south (anchored at SW corner)
+                        // Formula: (1 + vert.z) * tileSize correctly maps [0, -1] → [tileSize, 0]
+                        var scaledVert = new Vector3(
+                            vert.x * tileSize,
+                            vert.y * tileSize,
+                            (1 + vert.z) * tileSize  // FIX: Correct formula for Z range [0, -1] → [tileSize, 0]
+                        );
+                        scaledVertices.Add(scaledVert);
+
+                        // DEBUG: Log first vertex to verify vertex range
+                        if (!loggedFirstVertex && gameObjects.Count == 0)
+                        {
+                            Debug.Log($"[VertexScale] {tileKey} {layerName}: First vertex: raw=({vert.x:F6}, {vert.y:F6}, {vert.z:F6}) → scaled=({scaledVert.x:F1}, {scaledVert.y:F1}, {scaledVert.z:F1})");
+                            loggedFirstVertex = true;
+                        }
+                    }
+
+                    // Create mesh from MeshData (output from our custom modifiers)
+                    var mesh = new Mesh();
+                    mesh.name = $"{layerName}_mesh";
+
+                    // Set scaled vertices
+                    mesh.SetVertices(scaledVertices);
+
+                    // Set triangles (from modifiers)
+                    // MeshData.Triangles is List<List<int>> for multiple submeshes
+                    // ZossBuildingStack uses submesh 0 for walls, submesh 1 for windows/doors
+                    if (meshData.Triangles != null && meshData.Triangles.Count > 0)
+                    {
+                        mesh.subMeshCount = meshData.Triangles.Count;
+                        for (int subIdx = 0; subIdx < meshData.Triangles.Count; subIdx++)
+                        {
+                            if (meshData.Triangles[subIdx] != null && meshData.Triangles[subIdx].Count > 0)
+                            {
+                                mesh.SetTriangles(meshData.Triangles[subIdx], subIdx);
+                            }
+                        }
+                    }
+
+                    // Set normals (from modifiers)
+                    if (meshData.Normals != null && meshData.Normals.Count > 0)
+                    {
+                        mesh.SetNormals(meshData.Normals);
+                    }
+                    else
+                    {
+                        mesh.RecalculateNormals(); // Auto-generate if modifiers didn't provide them
+                    }
+
+                    // Set UVs (from texture modifiers)
+                    // MeshData.UV is List<List<Vector2>> for multiple UV channels
+                    if (meshData.UV != null && meshData.UV.Count > 0 && meshData.UV[0] != null)
+                    {
+                        mesh.SetUVs(0, meshData.UV[0]);
+                    }
+
+                    // CRITICAL: Set vertex colors from UV[1] (ZossBuildingStack packs colors into UV channel 1)
+                    // ZossBuildingStack stores RGB in UV[1] as Vector2(r, g) - we need to convert to Color
+                    if (meshData.UV != null && meshData.UV.Count > 1 && meshData.UV[1] != null && meshData.UV[1].Count > 0)
+                    {
+                        var colors = new List<Color>(meshData.UV[1].Count);
+                        foreach (var uv in meshData.UV[1])
+                        {
+                            // UV[1] contains Vector2(color.r, color.g)
+                            // ZossBuildingStack uses grayscale colors (r=g=b) for walls/windows/doors
+                            // Reconstruct as grayscale: use uv.x for all RGB channels
+                            colors.Add(new Color(uv.x, uv.x, uv.x, 1f));
+                        }
+                        mesh.SetColors(colors);
+                    }
+                    // Fallback: Use md.Colors if available (for future compatibility)
+                    else if (meshData.Colors != null && meshData.Colors.Count > 0)
+                    {
+                        mesh.SetColors(meshData.Colors);
+                    }
+
+                    // Optimize mesh and log bounds for debugging
+                    mesh.RecalculateBounds();
+                    mesh.Optimize();
+
+                    // DEBUG: Log mesh bounds for first building to verify centering
+                    if (layerName.Contains("Building") && gameObjects.Count == 0)
+                    {
+                        Debug.Log($"[KiloverseMeshBuilder] Building mesh bounds AFTER centering: Center={mesh.bounds.center}, Size={mesh.bounds.size}, Extents={mesh.bounds.extents}");
+                    }
+
+                    // Add MeshFilter
+                    var meshFilter = go.AddComponent<MeshFilter>();
+                    meshFilter.sharedMesh = mesh;
+
+                    // Add MeshRenderer
+                    var meshRenderer = go.AddComponent<MeshRenderer>();
+
+                    // Create basic material (custom modifiers may replace this)
+                    // CRITICAL: Use Unlit shader for buildings to show vertex colors from ZossBuildingStack
+                    Shader shader;
+                    if (layerName.Contains("building"))
+                    {
+                        // Buildings use vertex colors for procedural facades - need Unlit shader to show them
+                        shader = Shader.Find("Universal Render Pipeline/Unlit");
+                    }
+                    else
+                    {
+                        shader = Shader.Find("Universal Render Pipeline/Lit");
+                    }
+
+                    var material = new Material(shader);
+                    material.name = $"{layerName}_material";
+
+                    // Set layer-specific default colors (will be multiplied with vertex colors)
+                    if (layerName.Contains("building"))
+                    {
+                        material.color = Color.white; // White to show vertex colors unmodified
+
+                        // Buildings use 2 submeshes: submesh 0 = walls, submesh 1 = windows/doors
+                        // Use same material for both - vertex colors handle brightness differences
+                        if (mesh.subMeshCount > 1)
+                        {
+                            meshRenderer.sharedMaterials = new Material[] { material, material };
+                        }
+                        else
+                        {
+                            meshRenderer.sharedMaterial = material;
+                        }
+                    }
+                    else if (layerName.ToLower().Contains("road") || layerName.ToLower().Contains("segment"))
+                    {
+                        material.color = new Color(0.3f, 0.3f, 0.3f); // Dark gray for roads
+                        meshRenderer.sharedMaterial = material;
+
+                        // Elevate roads slightly above ground to ensure visibility
+                        go.transform.localPosition = new Vector3(0, 0.5f, 0);
+
+                        // DEBUG: Log first road mesh details (bounds should be centered around 0,0,0)
+                        if (gameObjects.Count == 0)
+                        {
+                            Debug.Log($"[KiloverseMeshBuilder] ROAD - Verts: {mesh.vertexCount}, TileSize: {tileSize:F2}, Centered: YES");
+                            Debug.Log($"[KiloverseMeshBuilder] ROAD - Bounds: Center={mesh.bounds.center}, Size={mesh.bounds.size}");
+                            Debug.Log($"[KiloverseMeshBuilder] ROAD - LocalPos: {go.transform.localPosition} (should be just Y-offset)");
+                        }
+                    }
+                    else if (layerName.ToLower().Contains("water"))
+                    {
+                        // WATER: Use bright blue color that's easy to see
+                        material.color = new Color(0.2f, 0.5f, 1.0f); // Bright blue for water
+
+                        // Enable emission to make water more visible
+                        material.EnableKeyword("_EMISSION");
+                        material.SetColor("_EmissionColor", new Color(0.1f, 0.2f, 0.4f));
+
+                        // CRITICAL FIX: Water meshes are flat 2D planes (Y=0) - make them double-sided so they're visible from above
+                        material.SetInt("_Cull", 0); // 0=Off (double-sided), 1=Front, 2=Back (default)
+                        material.doubleSidedGI = true; // Fix lighting from both sides
+
+                        meshRenderer.sharedMaterial = material;
+
+                        // Elevate water slightly above ground, but BELOW roads
+                        // Ground: 0m, Water: +0.2m, Roads: +0.5m
+                        go.transform.localPosition = new Vector3(0, 0.2f, 0);
+
+                        // DEBUG: Log water material details
+                        if (gameObjects.Count == 0)
+                        {
+                            Debug.Log($"[KiloverseMeshBuilder] WATER - Verts: {mesh.vertexCount}, TileSize: {tileSize:F2}, Elevated: +0.2m (below roads at +0.5m)");
+                            Debug.Log($"[KiloverseMeshBuilder] WATER - Bounds: Center={mesh.bounds.center}, Size={mesh.bounds.size}");
+                            Debug.Log($"[KiloverseMeshBuilder] WATER - Material: shader={material.shader.name}, color={material.color}");
+                            Debug.Log($"[KiloverseMeshBuilder] WATER - GameObject: '{go.name}' at localPos={go.transform.localPosition}");
+                        }
+                    }
+                    else if (layerName.Contains("land"))
+                    {
+                        material.color = new Color(0.4f, 0.6f, 0.3f); // Green for land
+                        meshRenderer.sharedMaterial = material;
+                    }
+                    else
+                    {
+                        meshRenderer.sharedMaterial = material;
+                    }
+
+                    // Add to list
+                    gameObjects.Add(go);
+                }
+            }
+
+            Debug.Log($"[KiloverseMeshBuilder] Created {gameObjects.Count} GameObjects for {layerName} tile {tile.Z}/{tile.X}/{tile.Y}");
+
+            // DEBUG: Highlight if water tile had zero GameObjects (common issue)
+            if (layerName.ToLower().Contains("water") && gameObjects.Count == 0)
+            {
+                Debug.LogWarning($"[WATER-ZERO] Water tile {tile.Z}/{tile.X}/{tile.Y} created ZERO GameObjects - no water features in this tile");
+            }
+
+            // DEBUG: Log all water GameObject positions for Pittsburgh tile (contains three rivers)
+            if (layerName.ToLower().Contains("water") && tile.Z == 12 && tile.X == 1137 && tile.Y == 1544 && gameObjects.Count > 0)
+            {
+                Debug.Log($"[WATER-PITTSBURGH] Tile 12/1137/1544 created {gameObjects.Count} water GameObjects:");
+                for (int i = 0; i < gameObjects.Count; i++)
+                {
+                    var go = gameObjects[i];
+                    var meshFilter = go.GetComponent<MeshFilter>();
+                    var bounds = meshFilter?.sharedMesh?.bounds ?? new Bounds();
+                    Debug.Log($"[WATER-PITTSBURGH]   {i}: pos={go.transform.localPosition}, bounds.center={bounds.center}, bounds.size={bounds.size}");
+                }
+            }
+
+            return gameObjects;
+        }
+    }
+
+    // Simplified Decoder - Keeps GZIP/Deflate support just in case
+    internal static class PMTilesTileDecoder
+    {
+        public static bool TryParseVectorTile(byte[] payload, out global::Mapbox.VectorTile.VectorTile vectorTile)
+        {
+            vectorTile = null;
+            if (payload == null || payload.Length == 0) return false;
+
+            // 1. Try Raw
+            if (TryParse(payload, out vectorTile)) return true;
+
+            // 2. Try Gzip (Magic Bytes 1f 8b)
+            if (payload.Length > 2 && payload[0] == 0x1f && payload[1] == 0x8b)
+            {
+                var decompressed = DecompressGzip(payload);
+                if (decompressed != null && TryParse(decompressed, out vectorTile)) return true;
+            }
+
+            // 3. Try Deflate (No Header) - common in PMTiles but rare in web transport
+            // Skipping for now unless needed.
+            
+            return false;
+        }
+
+        private static bool TryParse(byte[] data, out global::Mapbox.VectorTile.VectorTile tile)
+        {
+            tile = null;
+            try {
+                tile = new global::Mapbox.VectorTile.VectorTile(data);
+                return true;
+            } catch { return false; }
+        }
+
+        private static byte[] DecompressGzip(byte[] data)
+        {
+            try {
+                using var input = new MemoryStream(data);
+                using var gzip = new GZipInputStream(input);
+                using var output = new MemoryStream();
+                gzip.CopyTo(output);
+                return output.ToArray();
+            } catch { return null; }
+        }
+    }
+}

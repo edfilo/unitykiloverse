@@ -1,0 +1,100 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-1005
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cb8a61183121446bbd024747630bf05c, type: 3}
+  m_Name: FilterStack
+  m_EditorClassIdentifier: 
+  Filters: []
+  Type: 0
+--- !u!114 &-1004
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 839e2bbc3b9841e98d68b6aca7188d13, type: 3}
+  m_Name: ZossMaterialModifier
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  Materials:
+  - {fileID: 2100000, guid: a1b2c3d4e5f6071819202122232425a1, type: 2}
+  - {fileID: 2100000, guid: b1c2d3e4f5061728192021222324b1e1, type: 2}
+--- !u!114 &-1003
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c84fc8708dd1540e78b48286e9fdd957, type: 3}
+  m_Name: ZossBuildingStackObject
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  firstFloorHeight: 4.5
+  upperFloorHeight: 3.5
+  minDoorWidth: 3
+  maxDoorWidth: 5
+  minDoorHeightRatio: 0.5
+  maxDoorHeightRatio: 0.709
+  minWindowWidth: 1.5
+  maxWindowWidth: 4
+  minWindowSpacing: 1
+  maxWindowSpacing: 5
+  windowHeightRatio: 0.658
+  wallColors:
+  - {r: 0.3962264, g: 0.13643645, b: 0.15202382, a: 1}
+  - {r: 0.3207547, g: 0.31016374, b: 0.31016374, a: 1}
+  - {r: 0.29930583, g: 0.29930583, b: 0.3584906, a: 1}
+  windowOffPercentage: 0.331
+  windowBrightnessVariance: 0.84
+  bottomFloorDarkening: 0.42
+  windowVarianceSeed: 234234234
+--- !u!114 &-1001
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cc1f98279c3d447589a86caced7bbc42, type: 3}
+  m_Name: PolygonMeshModifierObject
+  m_EditorClassIdentifier: 
+  m_Active: 1
+  Height: 0
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9a17705f45444b729e601b91361775ed, type: 3}
+  m_Name: ZossBuildingStack
+  m_EditorClassIdentifier: 
+  Settings:
+    VisibilityZoomRange: {x: 15, y: 25}
+    MergeObjects: 0
+    LayerType: 0
+  Filters: {fileID: -1005}
+  MeshModifiers:
+  - {fileID: -1001}
+  - {fileID: -1003}
+  GoModifiers:
+  - {fileID: -1004}
