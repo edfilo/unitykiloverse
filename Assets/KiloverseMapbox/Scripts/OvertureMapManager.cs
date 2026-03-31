@@ -3,11 +3,8 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using global::Mapbox.BaseModule.Data.Tiles;
-using global::Mapbox.BaseModule.Utilities;
-using global::Mapbox.VectorModule;
-using global::Mapbox.VectorTile;
-using global::Mapbox.BaseModule;
+// Old Mapbox SDK imports removed — using Kiloverse.Mapbox types
+using MapboxVectorTile = global::Mapbox.BaseModule.Data.Tiles.VectorTile;
 using UnityEngine;
 using UnityEngine.Networking;
 using ICSharpCode.SharpZipLib.GZip;
@@ -47,10 +44,10 @@ namespace Kiloverse.Mapbox
         [SerializeField] private bool logOvertureLayers = true;
 
         [Header("Visualizers (ScriptableObjects)")]
-        [SerializeField] private global::Mapbox.VectorModule.IVectorLayerVisualizer buildingVisualizer;
-        [SerializeField] private global::Mapbox.VectorModule.IVectorLayerVisualizer roadVisualizer;
-        [SerializeField] private global::Mapbox.VectorModule.IVectorLayerVisualizer poiVisualizer;
-        [SerializeField] private global::Mapbox.VectorModule.IVectorLayerVisualizer waterVisualizer;
+        [SerializeField] private IVectorLayerVisualizer buildingVisualizer;
+        [SerializeField] private IVectorLayerVisualizer roadVisualizer;
+        [SerializeField] private IVectorLayerVisualizer poiVisualizer;
+        [SerializeField] private IVectorLayerVisualizer waterVisualizer;
 
         private XYZTileFetcher m_PlacesFetcher;
         private XYZTileFetcher m_BuildingsFetcher;
@@ -159,7 +156,7 @@ private void Start()
         if (Application.isEditor)
             BootDiagnostics.Mark("Overture before Find VectorLayerModule");
         // Find visualizers from VectorLayerModuleScript component (Unity can't serialize interface fields in Inspector)
-        var vectorLayerModule = FindFirstObjectByType<global::Mapbox.VectorModule.Unity.VectorLayerModuleScript>();
+        var vectorLayerModule = FindFirstObjectByType<VectorLayerModuleScript>();
         if (Application.isEditor)
             BootDiagnostics.Mark("Overture after Find VectorLayerModule");
         yield return null;
@@ -169,7 +166,7 @@ private void Start()
             Debug.Log($"[OvertureMapManager] Found VectorLayerModuleScript on GameObject: {vectorLayerModule.gameObject.name}");
 
             // Get the _layerVisualizers field (it's a List<VectorLayerVisualizerObject>)
-            var layerVisListField = typeof(global::Mapbox.VectorModule.Unity.VectorLayerModuleScript).GetField("_layerVisualizers", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            var layerVisListField = typeof(VectorLayerModuleScript).GetField("_layerVisualizers", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
             if (layerVisListField != null)
             {
@@ -192,7 +189,7 @@ private void Start()
 
                             // VectorLayerVisualizerObject is a wrapper - cast it first, then get the visualizer
                             Debug.Log("[OvertureMapManager] About to cast to VectorLayerVisualizerObject...");
-                            var visualizerObject = item as global::Mapbox.VectorModule.Unity.VectorLayerVisualizerObject;
+                            var visualizerObject = item as VectorLayerVisualizerObject;
                             Debug.Log($"[OvertureMapManager] Cast result: {visualizerObject != null}");
 
                             if (visualizerObject != null)
@@ -202,11 +199,11 @@ private void Start()
                                 // CRITICAL FIX: Call ConstructLayerVisualizer() to properly initialize the visualizer WITH modifier stacks
                                 // The _layerVisualizer field is null until this method is called
                                 // This method creates the visualizer and adds all modifier stacks from _modifierStackObjects
-                                global::Mapbox.VectorModule.IVectorLayerVisualizer visualizer = null;
+                                IVectorLayerVisualizer visualizer = null;
                                 try
                                 {
                                     // Create UnityContext (required by ConstructLayerVisualizer)
-                                    var unityContext = new global::Mapbox.BaseModule.Unity.UnityContext();
+                                    var unityContext = new UnityContext();
 
                                     // Call ConstructLayerVisualizer - this creates the visualizer AND adds modifier stacks
                                     if (Application.isEditor)
@@ -282,7 +279,7 @@ private void Start()
         yield return null;
 
         // Create visualizer dictionary
-        var visualizers = new Dictionary<string, global::Mapbox.VectorModule.IVectorLayerVisualizer>();
+        var visualizers = new Dictionary<string, IVectorLayerVisualizer>();
         if (buildingVisualizer != null) visualizers["building"] = buildingVisualizer;
         if (roadVisualizer != null) visualizers["road"] = roadVisualizer;
         if (poiVisualizer != null) visualizers["poi_label"] = poiVisualizer;
@@ -515,9 +512,9 @@ private void Update()
         }
 
         // Calculate which tiles are visible in camera frustum
-private HashSet<CanonicalTileId> GetVisibleTilesInFrustum(LatitudeLongitude playerLatLon, int zoom)
+private HashSet<TileId> GetVisibleTilesInFrustum(LatitudeLongitude playerLatLon, int zoom)
     {
-        var visibleTiles = new HashSet<CanonicalTileId>();
+        var visibleTiles = new HashSet<TileId>();
 
         if (playerCamera == null)
         {
@@ -551,7 +548,7 @@ private HashSet<CanonicalTileId> GetVisibleTilesInFrustum(LatitudeLongitude play
                 checkedCount++;
                 var tileX = centerTile.X + dx;
                 var tileY = centerTile.Y + dy;
-                var tileId = new CanonicalTileId(zoom, tileX, tileY);
+                var tileId = new TileId(zoom, tileX, tileY);
 
                 // Get tile bounds in Web Mercator
                 var tileBounds = Conversions.TileBoundsInWebMercator(new TileId(zoom, tileX, tileY));
@@ -691,7 +688,7 @@ private void RequestCurrentTile()
                 // Visual layers: Frustum-based (buildings, roads, land/water)
                 // TEMP: Force 3x3 grid for buildings to debug USX Tower loading
                 bool useFrustumLoading = !layer.Name.Contains("Places") && !layer.Name.Contains("Buildings");
-                HashSet<CanonicalTileId> visibleTiles = null;
+                HashSet<TileId> visibleTiles = null;
 
                 if (useFrustumLoading)
                 {
@@ -784,17 +781,17 @@ private void RequestCurrentTile()
         protected readonly OvertureVectorRenderer Renderer;
         protected readonly int MaxZoom;
 
-        private readonly HashSet<CanonicalTileId> _loadedTiles = new HashSet<CanonicalTileId>();
-        private readonly HashSet<CanonicalTileId> _requestingTiles = new HashSet<CanonicalTileId>(); // Tiles currently being requested/loaded
-        private readonly HashSet<CanonicalTileId> _renderingTiles = new HashSet<CanonicalTileId>();
-        private CanonicalTileId? _lastCenterTile;
+        private readonly HashSet<TileId> _loadedTiles = new HashSet<TileId>();
+        private readonly HashSet<TileId> _requestingTiles = new HashSet<TileId>(); // Tiles currently being requested/loaded
+        private readonly HashSet<TileId> _renderingTiles = new HashSet<TileId>();
+        private TileId? _lastCenterTile;
         private int _globalTileIndex = 0; // Never reset, keeps counting across all tile loads
 
         // Tiered tile cache - tuned to actual tile sizes and walking speed (~5km/h)
         //   z12 (~10km tiles): Player crosses one every ~2 hours. Keep 10 min, max 12 tiles.
         //   z14 (~2.5km tiles): Player crosses one every ~30 min. Keep 5 min, max 16 tiles.
         //   z15 (~1.2km tiles): Player crosses one every ~15 min. Keep 2 min, max 20 tiles.
-        private readonly Dictionary<CanonicalTileId, float> _tileCacheTime = new Dictionary<CanonicalTileId, float>();
+        private readonly Dictionary<TileId, float> _tileCacheTime = new Dictionary<TileId, float>();
         private float TileCacheTimeout => MaxZoom <= 12 ? 600f : MaxZoom <= 14 ? 300f : 120f;
         private int MaxLoadedTiles => MaxZoom <= 12 ? 12 : MaxZoom <= 14 ? 16 : 20;
 
@@ -826,13 +823,13 @@ private void RequestCurrentTile()
             return MaxZoom;
         }
 
-        public void UpdateTilesForPosition(LatitudeLongitude latLon, MonoBehaviour coroutineHost, bool useFrustum = false, HashSet<CanonicalTileId> visibleTiles = null)
+        public void UpdateTilesForPosition(LatitudeLongitude latLon, MonoBehaviour coroutineHost, bool useFrustum = false, HashSet<TileId> visibleTiles = null)
         {
             // Calculate current center tile at this layer's zoom
             var currentCenter = Conversions.LatitudeLongitudeToTileId(latLon, MaxZoom);
 
             // Determine which tiles should be loaded
-            HashSet<CanonicalTileId> newTiles;
+            HashSet<TileId> newTiles;
 
             if (useFrustum && visibleTiles != null)
             {
@@ -842,14 +839,14 @@ private void RequestCurrentTile()
             else
             {
                 // Grid-based loading (POI - always 3x3)
-                newTiles = new HashSet<CanonicalTileId>();
+                newTiles = new HashSet<TileId>();
                 for (int dx = -1; dx <= 1; dx++)
                 {
                     for (int dy = -1; dy <= 1; dy++)
                     {
                         var tileX = currentCenter.X + dx;
                         var tileY = currentCenter.Y + dy;
-                        newTiles.Add(new CanonicalTileId(currentCenter.Z, tileX, tileY));
+                        newTiles.Add(new TileId(currentCenter.Z, tileX, tileY));
                     }
                 }
             }
@@ -862,12 +859,12 @@ private void RequestCurrentTile()
             }
 
             // Find tiles to add (in new set but not in loaded or currently requesting)
-            var tilesToAdd = new HashSet<CanonicalTileId>(newTiles);
+            var tilesToAdd = new HashSet<TileId>(newTiles);
             tilesToAdd.ExceptWith(_loadedTiles);
             tilesToAdd.ExceptWith(_requestingTiles);
 
             // Find tiles to remove (loaded tiles that are no longer visible AND cache expired)
-            var tilesToRemove = new HashSet<CanonicalTileId>();
+            var tilesToRemove = new HashSet<TileId>();
             foreach (var tile in _loadedTiles)
             {
                 if (!newTiles.Contains(tile))
@@ -952,10 +949,10 @@ private void RequestCurrentTile()
                 added++;
             }
 
-            _lastCenterTile = new CanonicalTileId(currentCenter.Z, currentCenter.X, currentCenter.Y);
+            _lastCenterTile = new TileId(currentCenter.Z, currentCenter.X, currentCenter.Y);
         }
 
-public IEnumerator RequestTile(CanonicalTileId tile, int tileIndex)
+public IEnumerator RequestTile(TileId tile, int tileIndex)
         {
             yield return Fetcher.FetchTile(tile.Z, tile.X, tile.Y, data =>
             {
@@ -994,8 +991,8 @@ public IEnumerator RequestTile(CanonicalTileId tile, int tileIndex)
     public class OvertureVectorRenderer
     {
         private readonly KiloverseMapInfo _map;
-        private readonly Dictionary<string, global::Mapbox.VectorModule.IVectorLayerVisualizer> _visualizers =
-            new Dictionary<string, global::Mapbox.VectorModule.IVectorLayerVisualizer>();
+        private readonly Dictionary<string, IVectorLayerVisualizer> _visualizers =
+            new Dictionary<string, IVectorLayerVisualizer>();
         private readonly Dictionary<string, List<GameObject>> _tileObjects =
             new Dictionary<string, List<GameObject>>();
         private readonly HashSet<string> _loggedTiles = new HashSet<string>();
@@ -1135,13 +1132,13 @@ public IEnumerator RequestTile(CanonicalTileId tile, int tileIndex)
             Debug.Log($"[OvertureVectorRenderer] ✓ Initialized '{key}': {stacks?.Count ?? 0} modifier stacks (pool created)");
         }
 
-public void RenderTile(CanonicalTileId tile, byte[] payload, string[] sourceLayers, string layerName = "", int tileIndex = -1)
+public void RenderTile(TileId tile, byte[] payload, string[] sourceLayers, string layerName = "", int tileIndex = -1)
         {
             // Start coroutine to render tile over multiple frames
             _map.StartCoroutine(RenderTileCoroutine(tile, payload, sourceLayers, layerName, tileIndex));
         }
 
-private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, string[] sourceLayers, string layerName = "", int tileIndex = -1)
+private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] sourceLayers, string layerName = "", int tileIndex = -1)
         {
             // Editor: yield immediately to spread burst when many tiles complete at once (prevents lockup)
             if (Application.isEditor) yield return null;
@@ -1210,7 +1207,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
                 }
 
                 var layerData = vectorTile.GetLayer(sourceLayer);
-                var meshDataDict = new Dictionary<int, HashSet<global::Mapbox.BaseModule.Data.MeshData>>();
+                var meshDataDict = new Dictionary<int, HashSet<MeshData>>();
 
                 // WATER DIAGNOSTIC: Log tile structure once — what makes it "water" is the layer name (backend puts features there)
                 if (sourceLayer == "water" && !_waterTileStructureLogged)
@@ -1337,14 +1334,14 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
                                 var sub = GetWaterSubtype(featureUnity.Properties);
                                 // LINESTRING water = river centerlines. PolygonMeshModifier would close the path and fill whole tile.
                                 // Render as extruded line (like roads) instead.
-                                if (feature.GeometryType == global::Mapbox.VectorTile.Geometry.GeomType.LINESTRING)
+                                if ((int)feature.GeometryType == (int)GeomType.LINESTRING)
                                 {
                                     if (string.IsNullOrEmpty(cls) && string.IsNullOrEmpty(sub))
                                     {
                                         waterSkipped++; continue; // Skip drainage lines, etc.
                                     }
                                     // Generate line mesh for river centerline
-                                    var riverMd = new global::Mapbox.BaseModule.Data.MeshData();
+                                    var riverMd = new MeshData();
                                     riverMd.Feature = featureUnity;
                                     GenerateRiverLineMesh(featureUnity, riverMd, _map.MapInformation);
                                     if (riverMd.Vertices != null && riverMd.Vertices.Count > 0)
@@ -1354,7 +1351,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
                                         if (waterRendered < 2)
                                             Debug.Log($"[Water] {tileKey} RENDER LINESTRING #{waterRendered} class={cls} subtype={sub} verts={totalVerts} (as line)");
                                         waterRendered++;
-                                        if (!meshDataDict.ContainsKey(stackPair.Key)) meshDataDict.Add(stackPair.Key, new HashSet<global::Mapbox.BaseModule.Data.MeshData>());
+                                        if (!meshDataDict.ContainsKey(stackPair.Key)) meshDataDict.Add(stackPair.Key, new HashSet<MeshData>());
                                         meshDataDict[stackPair.Key].Add(riverMd);
                                         if (cumulativeVerts > vertexBudget && !budgetExceeded)
                                         {
@@ -1394,7 +1391,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
                             // BYPASS FILTER CHECK
                             // if (stack.Filters != null && !stack.Filters.Try(featureUnity)) continue;
 
-                            var md = new global::Mapbox.BaseModule.Data.MeshData();
+                            var md = new MeshData();
                             md.Feature = featureUnity;
 
                             // Check if we have valid geometry for mesh generation
@@ -1484,7 +1481,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
                                     break; // Stop processing more features for this layer
                                 }
 
-                                if (!meshDataDict.ContainsKey(stackPair.Key)) meshDataDict.Add(stackPair.Key, new HashSet<global::Mapbox.BaseModule.Data.MeshData>());
+                                if (!meshDataDict.ContainsKey(stackPair.Key)) meshDataDict.Add(stackPair.Key, new HashSet<MeshData>());
                                 meshDataDict[stackPair.Key].Add(md);
                             }
                         }
@@ -1662,25 +1659,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
 
             // POI label anchors - name with tile index but DON'T add to tile frustum culling
             // POICanvasManager handles its own distance (1600m) and frustum culling
-            var labelAnchors = POILabelModifier.GetAndClearCurrentTileLabels();
-            if (labelAnchors.Count > 0)
-            {
-                // Add tile index to POI anchor names for debugging
-                if (tileIndex >= 0)
-                {
-                    for (int i = 0; i < labelAnchors.Count; i++)
-                    {
-                        if (labelAnchors[i] != null)
-                        {
-                            labelAnchors[i].name = $"POI_T{tileIndex}_{i}_{labelAnchors[i].name}";
-                        }
-                    }
-                }
-
-                // DON'T add to createdObjects - POI labels should be visible across multiple tiles (1600m range)
-                // createdObjects.AddRange(labelAnchors);
-                Debug.Log($"[TileLoad]{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Created {labelAnchors.Count} POI label anchors (NOT tile-culled, managed by POICanvasManager)");
-            }
+            // POILabelModifier removed (Mapbox dependency eliminated)
 
             // CHANGED: Append objects instead of overwriting
             if (!_tileObjects.ContainsKey(tileKey))
@@ -1697,7 +1676,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
             Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Rendering complete (spread across multiple frames to avoid lag)");
         }
 
-        public void UpdateForView(CanonicalTileId tile)
+        public void UpdateForView(TileId tile)
         {
             if (!_initialized) return;
             foreach (var visualizer in _visualizers.Values)
@@ -1771,7 +1750,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
         ///   Mesh Z: 0→-1 = tile north→south = Unity -Z  
         ///   Mesh Y: height in tile units → height in meters after scale
         /// </summary>
-        private void PositionTileObjectsInMercator(CanonicalTileId tile, List<GameObject> objects, string tileIndexStr = "")
+        private void PositionTileObjectsInMercator(TileId tile, List<GameObject> objects, string tileIndexStr = "")
         {
             if (objects == null || objects.Count == 0) return;
 
@@ -1816,7 +1795,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
             public double West;
         }
 
-        private TileBounds TileIdToBounds(CanonicalTileId tile)
+        private TileBounds TileIdToBounds(TileId tile)
         {
             // Convert XYZ tile coordinates to GPS bounds
             int z = tile.Z;
@@ -1835,7 +1814,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
             return new TileBounds { North = north, South = south, East = east, West = west };
         }
 
-        public void RemoveTile(CanonicalTileId tile)
+        public void RemoveTile(TileId tile)
         {
             var tileKey = $"{tile.Z}/{tile.X}/{tile.Y}";
 
@@ -1895,7 +1874,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
                     int.TryParse(parts[1], out int x) && 
                     int.TryParse(parts[2], out int y))
                 {
-                    RemoveTile(new CanonicalTileId(z, x, y));
+                    RemoveTile(new TileId(z, x, y));
                     count++;
                 }
             }
@@ -2144,8 +2123,8 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
         /// <summary>Generate extruded line mesh for river centerlines (LINESTRING). Uses same approach as roads.</summary>
         private static void GenerateRiverLineMesh(
             VectorFeatureUnity feature,
-            global::Mapbox.BaseModule.Data.MeshData md,
-            global::Mapbox.BaseModule.Map.IMapInformation mapInfo)
+            MeshData md,
+            IMapInformation mapInfo)
         {
             if (feature.Points == null || feature.Points.Count == 0) return;
 
@@ -2254,7 +2233,7 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
     // Simplified Decoder - Keeps GZIP/Deflate support just in case
     internal static class PMTilesTileDecoder
     {
-        public static bool TryParseVectorTile(byte[] payload, out global::Mapbox.VectorTile.VectorTile vectorTile)
+        public static bool TryParseVectorTile(byte[] payload, out MapboxVectorTile vectorTile)
         {
             vectorTile = null;
             if (payload == null || payload.Length == 0) return false;
@@ -2275,12 +2254,21 @@ private IEnumerator RenderTileCoroutine(CanonicalTileId tile, byte[] payload, st
             return false;
         }
 
-        private static bool TryParse(byte[] data, out global::Mapbox.VectorTile.VectorTile tile)
+        private static bool TryParse(byte[] data, out MapboxVectorTile tile)
         {
             tile = null;
             try {
-                tile = new global::Mapbox.VectorTile.VectorTile(data);
-                return true;
+                var dummyId = new global::Mapbox.BaseModule.Data.Tiles.CanonicalTileId(0, 0, 0);
+                tile = new MapboxVectorTile(dummyId, "overture");
+                // ByteData is read-only, set private field via reflection
+                var field = typeof(global::Mapbox.BaseModule.Data.Tiles.ByteArrayTile)
+                    .GetField("byteData", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                field?.SetValue(tile, data);
+                // Force parse by accessing Data property (triggers VectorTileReader creation)
+                var dataField = typeof(global::Mapbox.BaseModule.Data.Tiles.ByteArrayTile)
+                    .GetProperty("Data", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                dataField?.GetValue(tile);
+                return tile.LayerNames()?.Count > 0;
             } catch { return false; }
         }
 

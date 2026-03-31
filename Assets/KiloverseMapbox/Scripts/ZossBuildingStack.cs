@@ -1,16 +1,18 @@
+using Kiloverse.Mapbox;
 using System;
 using System.Collections.Generic;
-using Mapbox.BaseModule.Data;
-using Mapbox.BaseModule.Map;
-using Mapbox.BaseModule.Utilities;
-using Mapbox.BaseModule.Data.Interfaces;
-using Mapbox.VectorModule.MeshGeneration.MeshModifiers;
 using UnityEngine;
 
 namespace Kiloverse.Mapbox
 {
     public class ZossBuildingStack : MeshModifier
     {
+        /// <summary>Set by tile loader before processing each tile. True = distant tile, simplified geometry.</summary>
+        public static bool SimpleLOD;
+
+        /// <summary>Building height/floor corrections keyed by Overture building ID.</summary>
+        public static Dictionary<string, float[]> Corrections;
+
         private static int buildingCount = 0;
         private readonly float firstFloorHeight;
         private readonly float upperFloorHeight;
@@ -78,38 +80,41 @@ public override void Run(VectorFeatureUnity feature, MeshData md, IMapInformatio
             bool isFirstBuilding = (buildingCount == 0);
             buildingCount++;
 
-            // 1. Calculate Height
+            // 1. Calculate Height — check corrections first
             float buildingHeightMeters = 10f;
-            if (feature.Properties.ContainsKey("height"))
+            bool corrected = false;
+            if (Corrections != null && feature.Properties.ContainsKey("id"))
+            {
+                string overtureId = feature.Properties["id"].ToString();
+                if (Corrections.TryGetValue(overtureId, out float[] fix))
+                {
+                    buildingHeightMeters = fix[0]; // [0]=height, [1]=floors
+                    corrected = true;
+                }
+            }
+
+            if (!corrected && feature.Properties.ContainsKey("height"))
             {
                 buildingHeightMeters = Convert.ToSingle(feature.Properties["height"]);
 
-                // Fallback to num_floors if height is 0 or invalid
                 if (buildingHeightMeters <= 0f && feature.Properties.ContainsKey("num_floors"))
                 {
                     int numFloors = Convert.ToInt32(feature.Properties["num_floors"]);
                     buildingHeightMeters = numFloors * 3.5f;
                 }
-
-                // DEBUG: Log tall buildings
-                if (buildingHeightMeters >= 200f)
-                {
-                    UnityEngine.Debug.Log($"[ZossBuildingStack] TALL BUILDING: height={buildingHeightMeters:F1}m from feature.Properties[\"height\"] | FeatureID={feature.Data.Id}");
-                }
             }
-            else if (feature.Properties.ContainsKey("num_floors"))
+            else if (!corrected && feature.Properties.ContainsKey("num_floors"))
             {
-                // Estimate height from number of floors (3.5m per floor)
                 int numFloors = Convert.ToInt32(feature.Properties["num_floors"]);
                 buildingHeightMeters = numFloors * 3.5f;
             }
-            else if (feature.Properties.ContainsKey("render_height"))
+            else if (!corrected && feature.Properties.ContainsKey("render_height"))
             {
                 buildingHeightMeters = Convert.ToSingle(feature.Properties["render_height"]);
             }
 
             // Boost small buildings logic (optional, keeping consistent with previous logic)
-            int seed = feature.Data.Id.GetHashCode();
+            int seed = feature.FeatureId.GetHashCode();
             System.Random rng = new System.Random(seed);
 
             if (buildingHeightMeters > 2.0f && buildingHeightMeters < 4.0f)
@@ -237,19 +242,34 @@ public override void Run(VectorFeatureUnity feature, MeshData md, IMapInformatio
         private void BuildWallSegment(MeshData md, Vector3 v1, Vector3 v2, float totalHeight, float firstH, float upperH, Color wallColor, int seed)
         {
             System.Random rng = new System.Random(seed);
-            
+
             Vector3 direction = (v2 - v1).normalized;
             Vector3 normal = Vector3.Cross(direction, Vector3.up).normalized;
 
             float wallLength = Vector3.Distance(v1, v2);
-            if (wallLength < 0.001f) return; // Match FPS tolerance
+            if (wallLength < 0.001f) return;
 
-            // Create full base wall first (submesh 0)
+            // Create full base wall (submesh 0)
             AddQuad(md, v1, v1.y, v2, v1.y + totalHeight, normal, wallColor, 0);
 
-            // Offset emissive quads slightly forward to prevent z-fighting
-            Vector3 offset = normal * 0.00001f; // Very small offset to prevent z-fighting
+            Vector3 offset = normal * 0.00001f;
 
+            if (SimpleLOD)
+            {
+                // Distant LOD: single emissive quad per wall (~60% coverage)
+                // Looks like one big glowing window from afar
+                float insetH = wallLength * 0.15f;
+                float insetV = totalHeight * 0.12f;
+                float brightness = 0.5f + (float)(rng.NextDouble() * 0.5);
+                Color glowColor = Color.white * brightness;
+                AddQuad(md,
+                    v1 + offset + direction * insetH, v1.y + insetV,
+                    v2 + offset - direction * insetH, v1.y + totalHeight - insetV,
+                    normal, glowColor, 1);
+                return;
+            }
+
+            // Full detail: per-floor windows and doors
             float currentY = v1.y;
             float remainingHeight = totalHeight;
             int floorIndex = 0;
@@ -259,7 +279,6 @@ public override void Run(VectorFeatureUnity feature, MeshData md, IMapInformatio
                 float currentFloorH = (floorIndex == 0) ? firstH : upperH;
                 if (remainingHeight < currentFloorH) currentFloorH = remainingHeight;
 
-                // Build emissive windows/doors on top of base wall
                 if (floorIndex == 0)
                 {
                     BuildFirstFloorLights(md, v1 + offset, v2 + offset, currentY, currentFloorH, wallLength, direction, normal, rng);

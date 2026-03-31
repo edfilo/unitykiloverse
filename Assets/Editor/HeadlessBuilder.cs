@@ -47,7 +47,7 @@ public class HeadlessBuilder
         
         // Use Dedicated Server subtarget for Unity 6 if possible
         // In Unity 6, this is done via standaloneBuildSubtarget
-        buildPlayerOptions.subtarget = (int)StandaloneBuildSubtarget.DedicatedServer;
+        buildPlayerOptions.subtarget = (int)StandaloneBuildSubtarget.Server;
         
         buildPlayerOptions.options = BuildOptions.EnableHeadlessMode | BuildOptions.Development;
 

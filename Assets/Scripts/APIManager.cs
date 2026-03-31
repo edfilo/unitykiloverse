@@ -15,7 +15,7 @@ public class APIManager : MonoBehaviour
         Auto,
         Localhost,
         Tethered,
-        Ngrok,
+        Tunnel,
         Production
     }
 
@@ -49,16 +49,31 @@ public class APIManager : MonoBehaviour
     // Environment URLs
     private const string LOCALHOST_URL = "http://localhost:3000";
     private const string TETHERED_URL = "http://172.20.10.5:3000";
-    private const string NGROK_URL = "https://e735cc352f38.ngrok-free.app";
+    private const string TUNNEL_URL = "https://api-tunnel.kilo.gallery";
     private const string PRODUCTION_URL = "https://api.kilomeme.com";
-
-    // Cached ngrok URL from tethered API
-    private string m_dynamicNgrokURL = null;
 
     // Current environment (loaded from profile or defaults to Auto)
     private APIEnvironment m_currentEnvironment = APIEnvironment.Auto;
     private string m_activeURL = null;
-    
+
+    // PlayerPrefs key for production API override
+    private const string PREF_PRODUCTION_API = "K1L0_ProductionAPI";
+
+    /// <summary>Check if production API override is enabled.</summary>
+    public static bool IsProductionOverride()
+    {
+        return PlayerPrefs.GetInt(PREF_PRODUCTION_API, 0) == 1;
+    }
+
+    /// <summary>Set/clear production API override.</summary>
+    public static void SetProductionOverride(bool on)
+    {
+        PlayerPrefs.SetInt(PREF_PRODUCTION_API, on ? 1 : 0);
+        PlayerPrefs.Save();
+        if (Instance != null)
+            Instance.SetEnvironment(on ? APIEnvironment.Production : APIEnvironment.Auto);
+    }
+
     // Cache RenderManager to avoid repeated FindObjectOfType calls
     private KiloWorld.Rendering.Systems.RenderManager m_cachedRenderManager = null;
 
@@ -91,7 +106,7 @@ public class APIManager : MonoBehaviour
         // Try to get overrides from Profile
         string overrideLocal = null;
         string overrideTether = null;
-        string overrideNgrok = null;
+
 
         // Cache RenderManager to avoid repeated FindObjectOfType calls (can be slow)
         if (m_cachedRenderManager == null)
@@ -104,7 +119,6 @@ public class APIManager : MonoBehaviour
             var api = renderManager.profile.api;
             if (!string.IsNullOrEmpty(api.customLocalhostURL)) overrideLocal = NormalizeURL(api.customLocalhostURL);
             if (!string.IsNullOrEmpty(api.customTetheredURL)) overrideTether = NormalizeURL(api.customTetheredURL);
-            if (!string.IsNullOrEmpty(api.customNgrokURL)) overrideNgrok = NormalizeURL(api.customNgrokURL);
         }
 
         switch (m_currentEnvironment)
@@ -121,8 +135,8 @@ public class APIManager : MonoBehaviour
             case APIEnvironment.Tethered:
                 m_activeURL = overrideTether ?? TETHERED_URL;
                 break;
-            case APIEnvironment.Ngrok:
-                m_activeURL = overrideNgrok ?? (m_dynamicNgrokURL ?? NGROK_URL);
+            case APIEnvironment.Tunnel:
+                m_activeURL = TUNNEL_URL;
                 break;
             case APIEnvironment.Production:
                 m_activeURL = PRODUCTION_URL;
@@ -165,7 +179,7 @@ public class APIManager : MonoBehaviour
 
     /// <summary>
     /// Auto mode: Try environments in order until one succeeds
-    /// Localhost → Tethered → Ngrok → Production
+    /// Localhost → Tethered → Tunnel → Production
     /// </summary>
     public IEnumerator TryAutoConnect(Action<bool, string> onComplete)
     {
@@ -183,7 +197,7 @@ public class APIManager : MonoBehaviour
         // Get overrides from Profile
         string overrideLocal = null;
         string overrideTether = null;
-        string overrideNgrok = null;
+
 
         // Use cached RenderManager if available
         if (m_cachedRenderManager == null)
@@ -196,7 +210,6 @@ public class APIManager : MonoBehaviour
             var api = renderManager.profile.api;
             if (!string.IsNullOrEmpty(api.customLocalhostURL)) overrideLocal = NormalizeURL(api.customLocalhostURL);
             if (!string.IsNullOrEmpty(api.customTetheredURL)) overrideTether = NormalizeURL(api.customTetheredURL);
-            if (!string.IsNullOrEmpty(api.customNgrokURL)) overrideNgrok = NormalizeURL(api.customNgrokURL);
         }
 
         // Test order — skip localhost on iOS/Android devices (localhost = the device, not the Mac)
@@ -212,8 +225,8 @@ public class APIManager : MonoBehaviour
 #endif
         urls.Add(overrideTether ?? TETHERED_URL);
         names.Add("Tethered");
-        urls.Add(overrideNgrok ?? (m_dynamicNgrokURL ?? NGROK_URL));
-        names.Add("Ngrok");
+        urls.Add(TUNNEL_URL);
+        names.Add("Tunnel");
         urls.Add(PRODUCTION_URL);
         names.Add("Production");
 
@@ -256,60 +269,10 @@ public class APIManager : MonoBehaviour
         }
 
         float totalAutoSec = Time.realtimeSinceStartup - autoConnectStart;
-        Debug.LogWarning($"[APIManager] Auto mode: All connections failed after {totalAutoSec:F1}s. Falling back to Ngrok.");
-        m_activeURL = overrideNgrok ?? NGROK_URL;
+        Debug.LogWarning($"[APIManager] Auto mode: All connections failed after {totalAutoSec:F1}s. Falling back to Tunnel.");
+        m_activeURL = TUNNEL_URL;
         m_isConnecting = false;
         onComplete?.Invoke(false, m_activeURL);
-    }
-
-    /// <summary>
-    /// Refresh dynamic ngrok URL from tethered API
-    /// </summary>
-    public IEnumerator RefreshNgrokURL(Action<bool, string> onComplete = null)
-    {
-        string url = $"{TETHERED_URL}/ngrok-status?restart=true";
-        Debug.Log($"[APIManager] Fetching dynamic ngrok URL from: {url}");
-
-        using (UnityWebRequest www = UnityWebRequest.Get(url))
-        {
-            www.timeout = 5;
-            yield return www.SendWebRequest();
-
-            if (www.result != UnityWebRequest.Result.Success)
-            {
-                Debug.LogWarning($"[APIManager] Failed to fetch ngrok URL: {www.error}");
-                onComplete?.Invoke(false, null);
-                yield break;
-            }
-
-            try
-            {
-                var json = JsonUtility.FromJson<NgrokResponse>(www.downloadHandler.text);
-                if (json != null && !string.IsNullOrEmpty(json.url))
-                {
-                    m_dynamicNgrokURL = json.url;
-                    Debug.Log($"[APIManager] ✓ Got dynamic ngrok URL: {m_dynamicNgrokURL}");
-                    onComplete?.Invoke(true, m_dynamicNgrokURL);
-                }
-                else
-                {
-                    Debug.LogWarning("[APIManager] Invalid ngrok response format");
-                    onComplete?.Invoke(false, null);
-                }
-            }
-            catch (Exception e)
-            {
-                Debug.LogError($"[APIManager] Failed to parse ngrok response: {e.Message}");
-                onComplete?.Invoke(false, null);
-            }
-        }
-    }
-
-    [Serializable]
-    private class NgrokResponse
-    {
-        public string status;
-        public string url;
     }
 
     /// <summary>

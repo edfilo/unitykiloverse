@@ -6,7 +6,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System;
 using System.Globalization;
-using Mapbox.BaseModule.Utilities; // For GetGeoPosition
 using Kiloverse.Mapbox;
 using KiloWorld.UI.Stories;
 
@@ -150,7 +149,7 @@ public class UserPresenceManager : MonoBehaviour
         // Yield after each FindObjectOfType to prevent blocking
         var player = FindObjectOfType<KiloFirstPersonController>();
         yield return null;
-        var mapBehaviour = FindObjectOfType<Kiloverse.Mapbox.KiloverseMapInfo>();
+        var mapBehaviour = FindObjectOfType<KiloverseMapInfo>();
         yield return null;
         
         if (player != null && mapBehaviour != null && mapBehaviour.MapboxMap != null)

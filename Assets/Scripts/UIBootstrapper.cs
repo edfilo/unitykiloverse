@@ -1,23 +1,29 @@
 using UnityEngine;
 
 /// <summary>
-/// Ensures UILayoutManager exists at runtime
+/// Bootstraps K1L0 HUD and legacy UILayoutManager
 /// </summary>
 public class UIBootstrapper : MonoBehaviour
 {
     void Awake()
     {
-        // Check if UILayoutManager exists
+        // Create K1L0 HUD
+        K1L0HUD hud = FindFirstObjectByType<K1L0HUD>();
+        if (hud == null)
+        {
+            Debug.Log("[UIBootstrapper] Creating K1L0HUD");
+            GameObject hudGO = new GameObject("K1L0HUD");
+            DontDestroyOnLoad(hudGO);
+            hudGO.AddComponent<K1L0HUD>();
+        }
+
+        // Keep UILayoutManager for WeatherView/LocationLabelUI data flow
         UILayoutManager layoutManager = FindFirstObjectByType<UILayoutManager>();
         if (layoutManager == null)
         {
             Debug.Log("[UIBootstrapper] Creating UILayoutManager");
             GameObject layoutManagerGO = new GameObject("UILayoutManager");
             layoutManager = layoutManagerGO.AddComponent<UILayoutManager>();
-        }
-        else
-        {
-            Debug.Log("[UIBootstrapper] UILayoutManager already exists");
         }
 
         // Disable old PedometerCanvas if it exists

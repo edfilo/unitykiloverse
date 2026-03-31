@@ -2,12 +2,6 @@ using UnityEngine;
 
 namespace Kiloverse.Mapbox
 {
-    // Alias Mapbox types INSIDE namespace to avoid conflicts
-    using IMapInformation = global::Mapbox.BaseModule.Map.IMapInformation;
-    using MapboxVector2d = global::Mapbox.BaseModule.Data.Vector2d.Vector2d;
-    using MapboxLatLng = global::Mapbox.BaseModule.Data.Vector2d.LatitudeLongitude;
-    using MapboxConversions = global::Mapbox.BaseModule.Utilities.Conversions;
-    using CanonicalTileId = global::Mapbox.BaseModule.Data.Tiles.CanonicalTileId;
 
     /// <summary>
     /// Minimal map information class replacing MapboxMapBehaviour.
@@ -117,51 +111,51 @@ namespace Kiloverse.Mapbox
         }
 
         // Public properties for common access (avoids need to cast to IMapInformation)
-        public MapboxLatLng LatitudeLongitude => new MapboxLatLng(_map.Center.Latitude, _map.Center.Longitude);
+        public LatitudeLongitude LatitudeLongitude => new LatitudeLongitude(_map.Center.Latitude, _map.Center.Longitude);
         public float Zoom => _map.Zoom;
-        public MapboxVector2d CenterMercator
+        public Vector2d CenterMercator
         {
             get
             {
                 var ourMercator = Conversions.LatitudeLongitudeToWebMercator(Position);
-                return new MapboxVector2d(ourMercator.x, ourMercator.y);
+                return new Vector2d(ourMercator.x, ourMercator.y);
             }
         }
         public float Scale => Conversions.GetTileScaleInMeters((float)_map.Center.Latitude, _map.Zoom);
         public float WorldRelativeScale => Scale; // Alias for Scale
-        public void SetInformation(MapboxLatLng? latLng, float? pitch, float? bearing, float? zoom, float? scale)
+        public void SetInformation(LatitudeLongitude? latLng, float? pitch, float? bearing, float? zoom, float? scale)
         {
             if (latLng.HasValue) _map.SetPosition(latLng.Value.Latitude, latLng.Value.Longitude);
             if (zoom.HasValue) _map.SetZoom((int)zoom.Value);
         }
         // Overload for backward compatibility (old 2-parameter signature)
-        public void SetInformation(MapboxLatLng latLng, float zoom)
+        public void SetInformation(LatitudeLongitude latLng, float zoom)
         {
             _map.SetPosition(latLng.Latitude, latLng.Longitude);
             _map.SetZoom((int)zoom);
         }
 
         // IMapInformation implementation
-        MapboxLatLng IMapInformation.LatitudeLongitude => new MapboxLatLng(_map.Center.Latitude, _map.Center.Longitude);
+        LatitudeLongitude IMapInformation.LatitudeLongitude => new LatitudeLongitude(_map.Center.Latitude, _map.Center.Longitude);
         float IMapInformation.Pitch => 0f;
         float IMapInformation.Bearing => 0f;
         float IMapInformation.Scale => Conversions.GetTileScaleInMeters((float)_map.Center.Latitude, _map.Zoom);
         float IMapInformation.Zoom => _map.Zoom;
         int IMapInformation.AbsoluteZoom => _map.Zoom;
-        MapboxVector2d IMapInformation.CenterMercator
+        Vector2d IMapInformation.CenterMercator
         {
             get
             {
                 var ourMercator = Conversions.LatitudeLongitudeToWebMercator(Position);
-                return new MapboxVector2d(ourMercator.x, ourMercator.y);
+                return new Vector2d(ourMercator.x, ourMercator.y);
             }
         }
         float IMapInformation.GetLatitudeCompensationForLocation => (float)System.Math.Cos(_map.Center.Latitude * Mathf.Deg2Rad);
 
         void IMapInformation.Initialize() { }
-        void IMapInformation.Initialize(MapboxLatLng latLng) { _map.SetPosition(latLng.Latitude, latLng.Longitude); }
-        void IMapInformation.SetLatitudeLongitude(MapboxLatLng latLng) { _map.SetPosition(latLng.Latitude, latLng.Longitude); }
-        void IMapInformation.SetInformation(MapboxLatLng? latLng, float? pitch, float? bearing, float? zoom, float? scale)
+        void IMapInformation.Initialize(LatitudeLongitude latLng) { _map.SetPosition(latLng.Latitude, latLng.Longitude); }
+        void IMapInformation.SetLatitudeLongitude(LatitudeLongitude latLng) { _map.SetPosition(latLng.Latitude, latLng.Longitude); }
+        void IMapInformation.SetInformation(LatitudeLongitude? latLng, float? pitch, float? bearing, float? zoom, float? scale)
         {
             if (latLng.HasValue) _map.SetPosition(latLng.Value.Latitude, latLng.Value.Longitude);
             if (zoom.HasValue) _map.SetZoom((int)zoom.Value);
@@ -174,6 +168,6 @@ namespace Kiloverse.Mapbox
         event System.Action<IMapInformation> IMapInformation.LatitudeLongitudeChanged { add { } remove { } }
         event System.Action<IMapInformation> IMapInformation.WorldScaleChanged { add { } remove { } }
 
-        System.Func<CanonicalTileId, float, float, float> IMapInformation.QueryElevation { get; set; }
+        System.Func<TileId, float, float, float> IMapInformation.QueryElevation { get; set; }
     }
 }

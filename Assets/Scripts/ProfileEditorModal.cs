@@ -65,11 +65,11 @@ public class ProfileEditorModal : MonoBehaviour
         btnContainer.transform.SetParent(canvas.transform, false);
 
         RectTransform btnRect = btnContainer.AddComponent<RectTransform>();
-        btnRect.anchorMin = new Vector2(1, 0); // Bottom-right
-        btnRect.anchorMax = new Vector2(1, 0);
-        btnRect.pivot = new Vector2(1, 0);
-        btnRect.anchoredPosition = new Vector2(-20, 460); // Above A button, aligned with P button
-        btnRect.sizeDelta = new Vector2(200, 200);
+        btnRect.anchorMin = new Vector2(1, 1); // Top-right
+        btnRect.anchorMax = new Vector2(1, 1);
+        btnRect.pivot = new Vector2(1, 1);
+        btnRect.anchoredPosition = new Vector2(-20, -60);
+        btnRect.sizeDelta = new Vector2(100, 100);
 
         GameObject btnGO = new GameObject("ProfileButton");
         btnGO.transform.SetParent(btnContainer.transform, false);
@@ -96,11 +96,11 @@ public class ProfileEditorModal : MonoBehaviour
         textRT.offsetMax = Vector2.zero;
 
         Text txt = textGO.AddComponent<Text>();
-        txt.text = "U";
+        txt.text = "\u2699";
         txt.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         txt.alignment = TextAnchor.MiddleCenter;
-        txt.color = Color.white;
-        txt.fontSize = 100;
+        txt.color = new Color(1f, 1f, 1f, 0.7f);
+        txt.fontSize = 50;
 
         Debug.Log("[ProfileEditorModal] Created profile button");
     }
@@ -373,7 +373,7 @@ public class ProfileEditorModal : MonoBehaviour
                 StartCoroutine(AutoClose());
             },
             (error) => {
-                statusText.text = "✗ Save failed. Try again.";
+                statusText.text = $"✗ Save failed: {error}";
                 statusText.color = Color.red;
                 Debug.LogError($"[ProfileEditorModal] Save failed: {error}");
             }

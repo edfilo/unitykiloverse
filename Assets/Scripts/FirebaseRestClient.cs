@@ -123,6 +123,7 @@ public class FirebaseRestClient : MonoBehaviour
             if (www.result != UnityWebRequest.Result.Success)
             {
                 Debug.LogError($"[Firebase] GET Error: {www.error} ({url})");
+                Debug.LogError($"[Firebase] GET Response body: {www.downloadHandler?.text}");
                 onError?.Invoke(www.error);
             }
             else
@@ -154,8 +155,10 @@ public class FirebaseRestClient : MonoBehaviour
 
             if (www.result != UnityWebRequest.Result.Success)
             {
+                string body = www.downloadHandler?.text ?? "";
                 Debug.LogError($"[Firebase] {method} Error: {www.error} ({url})");
-                onError?.Invoke(www.error);
+                Debug.LogError($"[Firebase] {method} Response body: {body}");
+                onError?.Invoke($"{www.error} | {body}");
             }
             else
             {
@@ -202,5 +205,103 @@ public class FirebaseRestClient : MonoBehaviour
             url += $"?auth={authSecret}";
         }
         return url;
+    }
+
+    // --- SSE Streaming ---
+    private Coroutine sseCoroutine;
+    private bool sseRunning;
+
+    public void StartListening(string path, Action<string> onData)
+    {
+        StopListening();
+        sseCoroutine = StartCoroutine(SSEListenRoutine(path, onData));
+    }
+
+    public void StopListening()
+    {
+        sseRunning = false;
+        if (sseCoroutine != null)
+        {
+            StopCoroutine(sseCoroutine);
+            sseCoroutine = null;
+        }
+    }
+
+    private IEnumerator SSEListenRoutine(string path, Action<string> onData)
+    {
+        sseRunning = true;
+        float retryDelay = 1f;
+
+        while (sseRunning)
+        {
+            string url = BuildRtdbUrl(path);
+            // SSE requires orderBy for streaming
+            url += url.Contains("?") ? "&" : "?";
+
+            Debug.Log($"[Firebase SSE] Connecting to {path}...");
+
+            using (UnityWebRequest www = new UnityWebRequest(url, "GET"))
+            {
+                www.downloadHandler = new DownloadHandlerBuffer();
+                www.SetRequestHeader("Accept", "text/event-stream");
+                www.SetRequestHeader("Cache-Control", "no-cache");
+
+                var op = www.SendWebRequest();
+                float lastDataTime = Time.realtimeSinceStartup;
+                int lastLength = 0;
+
+                while (!op.isDone && sseRunning)
+                {
+                    string text = www.downloadHandler?.text ?? "";
+                    if (text.Length > lastLength)
+                    {
+                        string newData = text.Substring(lastLength);
+                        lastLength = text.Length;
+                        lastDataTime = Time.realtimeSinceStartup;
+
+                        // Parse SSE events
+                        string[] lines = newData.Split('\n');
+                        for (int i = 0; i < lines.Length; i++)
+                        {
+                            if (lines[i].StartsWith("data:"))
+                            {
+                                string data = lines[i].Substring(5).Trim();
+                                if (!string.IsNullOrEmpty(data) && data != "null")
+                                {
+                                    onData?.Invoke(data);
+                                }
+                            }
+                        }
+
+                        retryDelay = 1f; // Reset on success
+                    }
+
+                    // Timeout: reconnect if no data for 60s
+                    if (Time.realtimeSinceStartup - lastDataTime > 60f)
+                    {
+                        Debug.Log("[Firebase SSE] No data for 60s, reconnecting...");
+                        break;
+                    }
+
+                    yield return null;
+                }
+
+                if (www.result != UnityWebRequest.Result.Success && sseRunning)
+                {
+                    Debug.LogWarning($"[Firebase SSE] Connection lost: {www.error}. Retrying in {retryDelay}s...");
+                }
+            }
+
+            if (sseRunning)
+            {
+                yield return new WaitForSeconds(retryDelay);
+                retryDelay = Mathf.Min(retryDelay * 2f, 30f);
+            }
+        }
+    }
+
+    void OnDestroy()
+    {
+        StopListening();
     }
 }

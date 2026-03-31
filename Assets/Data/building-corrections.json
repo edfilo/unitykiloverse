@@ -1,0 +1,22 @@
+{
+  "08b48c689e745fff0200dba5f0149cc3": { "name": "WestStar Tower", "height": 96, "floors": 20 },
+  "08b48c689e744fff0200a18953c7029e": { "name": "One San Jacinto Plaza", "height": 85, "floors": 20 },
+  "08b48c689e74cfff02007fa285b093f5": { "name": "Wells Fargo Plaza", "height": 92, "floors": 21 },
+  "08b48c689e76afff02005f3d97f54117": { "name": "O.T. Bassett Tower", "height": 66, "floors": 15 },
+  "08b48c689e3a3fff02003af41d998784": { "name": "Hotel Paso Del Norte", "height": 70, "floors": 17 },
+  "08b48c689e776fff020081a64762e8a1": { "name": "El Paso County Courthouse", "height": 70, "floors": 14 },
+  "08b48c689e39cfff0200f8c2a62db8ce": { "name": "Plaza Hotel", "height": 73, "floors": 19 },
+  "08b48c689e2b1fff0200a29feab9ae31": { "name": "Hotel Cortez", "height": 50, "floors": 11 },
+  "08b48c689e21efff020060502a7ee628": { "name": "DoubleTree by Hilton", "height": 51, "floors": 17 },
+  "08b48c689e70cfff02006e5e1a23522c": { "name": "El Paso County Detention Facility", "height": 40, "floors": 10 },
+  "08b48c689e76efff02007e1e8569ec64": { "name": "Blue Flame Building", "height": 70, "floors": 18 },
+  "08b48c689e2b4fff0200ea2bbff87fee": { "name": "Stanton Tower", "height": 81, "floors": 18 },
+  "08b48c689e29afff0200bcd00a36e9d0": { "name": "300 East Main", "height": 55, "floors": 13 },
+  "08b48c689e295fff02006b3bcba4a8f7": { "name": "One Texas Tower", "height": 62, "floors": 15 },
+  "08b48c689e753fff0200a6ebf4ad0d41": { "name": "Mills Building", "height": 44, "floors": 12 },
+  "08b48c689e29bfff02000ed43d41eaf4": { "name": "Holiday Inn Express", "height": 38, "floors": 10 },
+  "08b48c689e203fff02008801af988906": { "name": "Courtyard by Marriott", "height": 38, "floors": 10 },
+  "08b48c689e75bfff0200cf92bb8e6538": { "name": "GECU Building", "height": 35, "floors": 8 },
+  "08b48c689e754fff0200a3905efb174d": { "name": "Hotel Indigo", "height": 45, "floors": 12 },
+  "08b48c689a961fff02009db99433105d": { "name": "Saint Patrick Cathedral", "height": 30, "floors": 1 }
+}

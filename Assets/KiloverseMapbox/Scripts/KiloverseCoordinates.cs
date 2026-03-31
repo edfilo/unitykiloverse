@@ -19,6 +19,8 @@ namespace Kiloverse.Mapbox
         }
 
         public override string ToString() => $"({Latitude:F6}, {Longitude:F6})";
+
+        // Mapbox SDK interop operators removed — SDK no longer in project
     }
 
     /// <summary>
@@ -41,7 +43,12 @@ namespace Kiloverse.Mapbox
         public static Vector2d operator *(Vector2d a, double scalar) => new Vector2d(a.x * scalar, a.y * scalar);
         public static Vector2d operator /(Vector2d a, double scalar) => new Vector2d(a.x / scalar, a.y / scalar);
 
+        public double magnitude => Math.Sqrt(x * x + y * y);
+        public double sqrMagnitude => x * x + y * y;
+
         public override string ToString() => $"({x:F6}, {y:F6})";
+
+        // Mapbox SDK interop operators removed
     }
 
     /// <summary>
@@ -64,6 +71,25 @@ namespace Kiloverse.Mapbox
         public override string ToString() => $"{Z}/{X}/{Y}";
         public override int GetHashCode() => HashCode.Combine(Z, X, Y);
         public override bool Equals(object obj) => obj is TileId other && Z == other.Z && X == other.X && Y == other.Y;
+
+        // Mapbox SDK interop operators removed
+    }
+
+    /// <summary>
+    /// Extension methods for Unity types to work with Kiloverse coordinate system.
+    /// </summary>
+    public static class KiloverseVectorExtensions
+    {
+        /// <summary>
+        /// Convert a Unity world position to GPS coordinates, given a Mercator reference point and scale.
+        /// Replaces Mapbox.BaseModule.Utilities.VectorExtensions.GetGeoPosition.
+        /// </summary>
+        public static LatitudeLongitude GetGeoPosition(this UnityEngine.Vector3 position, Vector2d refPoint, float scale = 1f)
+        {
+            var mercX = refPoint.x + (position.x / scale);
+            var mercY = refPoint.y + (position.z / scale);
+            return Conversions.WebMercatorToLatitudeLongitude(new Vector2d(mercX, mercY));
+        }
     }
 
     /// <summary>

@@ -1,9 +1,6 @@
+using Kiloverse.Mapbox;
 using System;
 using System.Collections.Generic;
-using Mapbox.BaseModule.Data;
-using Mapbox.BaseModule.Map;
-using Mapbox.BaseModule.Utilities;
-using Mapbox.VectorModule.MeshGeneration.MeshModifiers;
 using UnityEngine;
 
 namespace Kiloverse.Mapbox

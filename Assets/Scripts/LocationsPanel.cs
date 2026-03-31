@@ -3,7 +3,7 @@ using UnityEngine.UI;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using Mapbox.BaseModule.Utilities;
+using Kiloverse.Mapbox;
 
 public class LocationsPanel : MonoBehaviour
 {

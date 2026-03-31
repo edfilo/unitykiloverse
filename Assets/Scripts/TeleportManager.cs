@@ -2,12 +2,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
 using System.Collections;
-// Remove namespace import to avoid ambiguity - use alias instead
-// using Mapbox.BaseModule.Data.Vector2d;
 using Kiloverse.Mapbox;
-
-// Disambiguate coordinate types (use Mapbox types in Assembly-CSharp)
-using LatitudeLongitude = Mapbox.BaseModule.Data.Vector2d.LatitudeLongitude;
 using KiloWorld.Rendering;
 using KiloWorld.Rendering.Systems;
 
@@ -750,18 +745,8 @@ public class TeleportManager : MonoBehaviour
         Debug.Log("[TeleportManager] Calling LoadMapView()...");
         map.MapboxMap.LoadMapView();
 
-        // 4. CRITICAL: Update positions of ALL vector tiles (roads, POIs) for new map center
-        // Without this, roads from old location stay at old positions → "ghost diagonal roads"
-        var vectorModuleScripts = map.GetComponentsInChildren<Mapbox.VectorModule.Unity.VectorLayerModuleScript>();
-        foreach (var vectorModuleScript in vectorModuleScripts)
-        {
-            // Access the underlying VectorLayerModule from the wrapper script
-            if (vectorModuleScript.ModuleImplementation is Mapbox.VectorModule.VectorLayerModule vectorModule)
-            {
-                vectorModule.UpdatePositioning(map.MapInformation);
-            }
-        }
-        Debug.Log($"[TeleportManager] Updated positioning for {vectorModuleScripts.Length} vector modules");
+        // Vector module positioning update removed — Mapbox SDK eliminated, OvertureMapManager handles tile updates
+        Debug.Log("[TeleportManager] Map view reloaded (OvertureMapManager handles tile repositioning)");
 
         Debug.Log("[TeleportManager] ✓ Teleport complete!");
 

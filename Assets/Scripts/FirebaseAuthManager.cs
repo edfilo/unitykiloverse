@@ -119,15 +119,19 @@ public class FirebaseAuthManager : MonoBehaviour
         string url = $"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={firebaseApiKey}";
 
         // Build request body for Firebase OAuth sign-in
-        string requestUri = "https://kiloworld.app"; // Your app's URI (can be anything for mobile)
+        // postBody is a form-encoded string; JWTs are base64url-safe (no special JSON chars)
         string postBody = $"id_token={appleIdToken}&nonce={appleNonce}&providerId=apple.com";
+        string requestUri = "https://appleid.apple.com";
 
-        string json = $@"{{
-            ""postBody"": ""{postBody}"",
-            ""requestUri"": ""{requestUri}"",
-            ""returnSecureToken"": true,
-            ""returnIdpCredential"": true
-        }}";
+        Debug.Log($"[FirebaseAuth] idToken length={appleIdToken?.Length}, nonce length={appleNonce?.Length}");
+        Debug.Log($"[FirebaseAuth] postBody length={postBody.Length}");
+
+        string json = JsonUtility.ToJson(new FirebaseIdpRequest {
+            postBody = postBody,
+            requestUri = requestUri,
+            returnSecureToken = true,
+            returnIdpCredential = true
+        });
 
         using (UnityWebRequest www = new UnityWebRequest(url, "POST"))
         {
@@ -300,5 +304,14 @@ public class FirebaseAuthManager : MonoBehaviour
         public string expires_in;
         public string token_type;
         public string project_id;
+    }
+
+    [Serializable]
+    private class FirebaseIdpRequest
+    {
+        public string postBody;
+        public string requestUri;
+        public bool returnSecureToken;
+        public bool returnIdpCredential;
     }
 }

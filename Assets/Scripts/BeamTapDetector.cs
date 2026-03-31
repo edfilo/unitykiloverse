@@ -1,7 +1,6 @@
 using UnityEngine;
 using System.Collections;
 using System.Linq;
-using Mapbox.BaseModule.Utilities;
 using Kiloverse.Mapbox;
 
 /// <summary>
@@ -142,7 +141,7 @@ public class BeamTapDetector : MonoBehaviour
         // Get location
         double lat = 0, lon = 0;
         var player = FindObjectOfType<KiloFirstPersonController>();
-        var mapBehaviour = FindObjectOfType<Kiloverse.Mapbox.KiloverseMapInfo>();
+        var mapBehaviour = FindObjectOfType<KiloverseMapInfo>();
 
         if (player != null && mapBehaviour != null && mapBehaviour.MapboxMap != null)
         {

@@ -9,9 +9,9 @@ namespace KiloWorld.UI.Stories
     public class StoriesUIBootstrapper : MonoBehaviour
     {
         [Header("Layout")]
-        [SerializeField] private float stripHeight = 240f; // Increased from 210
+        [SerializeField] private float stripHeight = 300f;
         [SerializeField] private float topPadding = 20f;
-        [SerializeField] private float itemDiameter = 128f; // Increased from 110
+        [SerializeField] private float itemDiameter = 180f;
         [SerializeField] private float ringThickness = 10f;
         [SerializeField] private float itemSpacing = 26f;
         [SerializeField] private float titleFontSize = 28f;
@@ -20,16 +20,16 @@ namespace KiloWorld.UI.Stories
         [SerializeField] private float titleSpacing = 8f;
 
         [Header("Colors")]
-        [SerializeField] private Color stripBackground = new Color(0f, 0f, 0f, 0.25f);
-        [SerializeField] private Color unplayedRingColor = new Color(1f, 0.4f, 0.6f, 1f);
-        [SerializeField] private Color playedRingColor = new Color(0.55f, 0.55f, 0.55f, 1f);
-        [SerializeField] private Color titleColor = Color.white;
+        [SerializeField] private Color stripBackground = new Color(0.05f, 0.08f, 0.14f, 0.3f);
+        [SerializeField] private Color unplayedRingColor = new Color(0.1f, 0.85f, 1f, 0.85f);
+        [SerializeField] private Color playedRingColor = new Color(0.3f, 0.4f, 0.5f, 0.5f);
+        [SerializeField] private Color titleColor = new Color(0.82f, 0.88f, 1f, 0.85f);
 
         [Header("Progress Bar")]
-        [SerializeField] private float progressHeight = 10f;
-        [SerializeField] private float progressSpacing = 6f;
-        [SerializeField] private Color progressFillColor = Color.white;
-        [SerializeField] private Color progressBackgroundColor = new Color(1f, 1f, 1f, 0.35f);
+        [SerializeField] private float progressHeight = 6f;
+        [SerializeField] private float progressSpacing = 4f;
+        [SerializeField] private Color progressFillColor = new Color(0.7f, 0.92f, 1f, 0.9f);
+        [SerializeField] private Color progressBackgroundColor = new Color(0.15f, 0.25f, 0.4f, 0.4f);
 
         [Header("Test Data")]
         [SerializeField] private bool useTestData = false;
@@ -74,6 +74,7 @@ namespace KiloWorld.UI.Stories
             storiesStrip.ConfigureStyle(itemDiameter, ringThickness, unplayedRingColor, playedRingColor);
 
             storyViewer = CreateStoryViewer(targetCanvas.transform);
+            storyViewer.Hide(); // Start hidden — only shown when user taps a story circle
             storiesStrip.Initialize(contentRoot, itemTemplate, storyViewer, mediaLoader);
 
             if (useTestData)
@@ -87,26 +88,23 @@ namespace KiloWorld.UI.Stories
 
         private Canvas FindOrCreateCanvas()
         {
-            // Use GameObject.Find by name - much faster than FindObjectsOfType<Canvas> (searches ALL objects)
-            var pedometerGO = GameObject.Find("PedometerCanvas");
-            if (pedometerGO != null)
-            {
-                var c = pedometerGO.GetComponent<Canvas>();
-                if (c != null) return c;
-            }
-
+            // Always create a dedicated ScreenSpaceOverlay canvas for stories
+            // (PedometerCanvas may be WorldSpace/ScreenSpaceCamera and not visible)
             var storiesGO = GameObject.Find("StoriesCanvas");
             if (storiesGO != null)
             {
                 var c = storiesGO.GetComponent<Canvas>();
-                if (c != null) return c;
+                if (c != null && c.renderMode == RenderMode.ScreenSpaceOverlay) return c;
             }
 
             var canvasGO = new GameObject("StoriesCanvas");
             var canvas = canvasGO.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            canvas.sortingOrder = 3000;
-            canvasGO.AddComponent<CanvasScaler>();
+            canvas.sortingOrder = 9000;
+            var scaler = canvasGO.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1080, 1920);
+            scaler.matchWidthOrHeight = 0.5f;
             canvasGO.AddComponent<GraphicRaycaster>();
             return canvas;
         }
@@ -124,10 +122,6 @@ namespace KiloWorld.UI.Stories
 
             float safeInset = GetSafeAreaTopInset(parent.GetComponent<Canvas>());
             rect.anchoredPosition = new Vector2(0f, -(safeInset + topPadding));
-
-            var bg = root.AddComponent<Image>();
-            bg.color = stripBackground;
-            bg.raycastTarget = false;
 
             return rect;
         }
@@ -285,7 +279,7 @@ namespace KiloWorld.UI.Stories
 
             var canvas = viewerObj.AddComponent<Canvas>();
             canvas.overrideSorting = true;
-            canvas.sortingOrder = 3002;
+            canvas.sortingOrder = 10000;
             viewerObj.AddComponent<GraphicRaycaster>();
 
             var canvasGroup = viewerObj.AddComponent<CanvasGroup>();
@@ -350,10 +344,11 @@ namespace KiloWorld.UI.Stories
 
             var titleText = titleObj.AddComponent<TextMeshProUGUI>();
             titleText.text = string.Empty;
-            titleText.fontSize = 28f;
-            titleText.color = Color.white;
+            titleText.fontSize = 24f;
+            titleText.color = new Color(0.82f, 0.88f, 1f, 0.95f);
             titleText.alignment = TextAlignmentOptions.Left;
             titleText.raycastTarget = false;
+            titleText.characterSpacing = 3;
 
             var slideTextObj = new GameObject("SlideText", typeof(RectTransform));
             slideTextObj.transform.SetParent(viewerObj.transform, false);
@@ -372,25 +367,45 @@ namespace KiloWorld.UI.Stories
             slideText.enableWordWrapping = true;
             slideText.raycastTarget = false;
 
+            // Glass-style close button
             var closeObj = new GameObject("CloseButton", typeof(RectTransform));
             closeObj.transform.SetParent(viewerObj.transform, false);
             var closeRect = closeObj.GetComponent<RectTransform>();
             closeRect.anchorMin = new Vector2(1f, 1f);
             closeRect.anchorMax = new Vector2(1f, 1f);
             closeRect.pivot = new Vector2(1f, 1f);
-            closeRect.sizeDelta = new Vector2(56f, 56f);
+            closeRect.sizeDelta = new Vector2(44f, 44f);
             closeRect.anchoredPosition = new Vector2(-20f, -60f);
 
-            var closeBg = closeObj.AddComponent<Image>();
-            closeBg.sprite = solidSprite;
-            closeBg.color = new Color(0f, 0f, 0f, 0f);
-            closeBg.raycastTarget = true;
+            var glassSprite = K1L0HUD.RoundedRectSprite != null ? K1L0HUD.RoundedRectSprite : solidSprite;
+
+            // Border/glow layer
+            var closeBorderImg = closeObj.AddComponent<Image>();
+            closeBorderImg.sprite = glassSprite;
+            closeBorderImg.type = Image.Type.Sliced;
+            closeBorderImg.color = new Color(0.15f, 0.30f, 0.45f, 0.2f);
+            closeBorderImg.raycastTarget = true;
+
+            // Inner fill
+            var closeFillObj = new GameObject("Fill", typeof(RectTransform));
+            closeFillObj.transform.SetParent(closeObj.transform, false);
+            var closeFillRect = closeFillObj.GetComponent<RectTransform>();
+            closeFillRect.anchorMin = Vector2.zero;
+            closeFillRect.anchorMax = Vector2.one;
+            closeFillRect.offsetMin = new Vector2(1.5f, 1.5f);
+            closeFillRect.offsetMax = new Vector2(-1.5f, -1.5f);
+            var closeFillImg = closeFillObj.AddComponent<Image>();
+            closeFillImg.sprite = glassSprite;
+            closeFillImg.type = Image.Type.Sliced;
+            closeFillImg.color = new Color(0.05f, 0.08f, 0.14f, 0.5f);
+            closeFillImg.raycastTarget = false;
 
             var closeButton = closeObj.AddComponent<Button>();
+            closeButton.targetGraphic = closeBorderImg;
             closeButton.transition = Selectable.Transition.None;
 
             var closeLabelObj = new GameObject("Label", typeof(RectTransform));
-            closeLabelObj.transform.SetParent(closeObj.transform, false);
+            closeLabelObj.transform.SetParent(closeFillObj.transform, false);
             var closeLabelRect = closeLabelObj.GetComponent<RectTransform>();
             closeLabelRect.anchorMin = Vector2.zero;
             closeLabelRect.anchorMax = Vector2.one;
@@ -398,8 +413,8 @@ namespace KiloWorld.UI.Stories
             closeLabelRect.offsetMax = Vector2.zero;
             var closeLabel = closeLabelObj.AddComponent<TextMeshProUGUI>();
             closeLabel.text = "X";
-            closeLabel.fontSize = 30f;
-            closeLabel.color = Color.white;
+            closeLabel.fontSize = 24f;
+            closeLabel.color = new Color(0.75f, 0.85f, 1f, 0.9f);
             closeLabel.alignment = TextAlignmentOptions.Center;
             closeLabel.raycastTarget = false;
 
@@ -568,7 +583,20 @@ namespace KiloWorld.UI.Stories
             if (canvas == null) return 0f;
             float topInsetPixels = Screen.height - Screen.safeArea.yMax;
             if (topInsetPixels < 0f) topInsetPixels = 0f;
+
+            // Match UILayoutManager's CanvasScaler-aware calculation
+            CanvasScaler scaler = canvas.GetComponent<CanvasScaler>();
             float scaleFactor = canvas.scaleFactor > 0f ? canvas.scaleFactor : 1f;
+            if (scaler != null && scaler.uiScaleMode == CanvasScaler.ScaleMode.ScaleWithScreenSize)
+            {
+                float refW = scaler.referenceResolution.x;
+                float refH = scaler.referenceResolution.y;
+                float match = scaler.matchWidthOrHeight;
+                float logWidth = Mathf.Log(Screen.width / refW, 2);
+                float logHeight = Mathf.Log(Screen.height / refH, 2);
+                float logBlend = Mathf.Lerp(logWidth, logHeight, match);
+                scaleFactor = Mathf.Pow(2, logBlend);
+            }
             return topInsetPixels / scaleFactor;
         }
 

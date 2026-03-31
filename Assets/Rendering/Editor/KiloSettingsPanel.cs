@@ -171,8 +171,10 @@ namespace KiloWorld.Rendering.Editor
 
             // Refresh ngrok button
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Refresh Ngrok URL from Tethered API"))
+            if (GUILayout.Button("Refresh Tunnel URL (deprecated)"))
             {
+                Debug.Log("[KiloSettings] Ngrok URL refresh removed -- now using Tunnel environment.");
+                /* Disabled: RefreshNgrokURL no longer exists on APIManager
                 APIManager.Instance.StartCoroutine(APIManager.Instance.RefreshNgrokURL((success, url) => {
                     if (success)
                     {
@@ -185,6 +187,7 @@ namespace KiloWorld.Rendering.Editor
                         Debug.LogWarning("[KiloSettings] Failed to refresh ngrok URL");
                     }
                 }));
+                */
             }
             EditorGUILayout.EndHorizontal();
 
@@ -215,8 +218,8 @@ namespace KiloWorld.Rendering.Editor
                     return "Localhost: http://localhost:3000 (local development server)";
                 case APIManager.APIEnvironment.Tethered:
                     return "Tethered: http://172.20.10.5:3000 (iPhone hotspot connection)";
-                case APIManager.APIEnvironment.Ngrok:
-                    return "Ngrok: Dynamic tunnel URL (fetched from tethered API or hardcoded fallback)";
+                case APIManager.APIEnvironment.Tunnel:
+                    return "Tunnel: Dynamic tunnel URL (fetched from tethered API or hardcoded fallback)";
                 case APIManager.APIEnvironment.Production:
                     return "Production: https://api.kilomeme.com (live production API)";
                 default:

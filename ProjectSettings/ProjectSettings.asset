@@ -114,6 +114,7 @@ PlayerSettings:
   xboxEnableGuest: 0
   xboxEnablePIXSampling: 0
   metalFramebufferOnly: 0
+  metalUseMetalDisplayLink: 0
   xboxOneResolution: 0
   xboxOneSResolution: 0
   xboxOneXResolution: 3
@@ -872,9 +873,9 @@ PlayerSettings:
   webWasm2023: 0
   webEnableSubmoduleStrippingCompatibility: 0
   scriptingDefineSymbols:
-    1: SURFACE_CACHE
-    Standalone: APP_UI_EDITOR_ONLY
-    iPhone: APP_UI_EDITOR_ONLY
+    1: SURFACE_CACHE;MAPBOX_SDK_ENABLED
+    Standalone: APP_UI_EDITOR_ONLY;MAPBOX_SDK_ENABLED
+    iPhone: APP_UI_EDITOR_ONLY;MAPBOX_SDK_ENABLED
   additionalCompilerArguments: {}
   platformArchitecture: {}
   scriptingBackend:

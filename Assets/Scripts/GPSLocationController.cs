@@ -1,13 +1,6 @@
 using UnityEngine;
 using System.Collections;
-// Remove namespace imports to avoid ambiguity - use aliases instead
-// using Mapbox.BaseModule.Data.Vector2d;
-using Mapbox.BaseModule.Utilities;
-// using Kiloverse.Mapbox;
-
-// Disambiguate coordinate types (use Mapbox types in Assembly-CSharp)
-using LatitudeLongitude = Mapbox.BaseModule.Data.Vector2d.LatitudeLongitude;
-using Vector2d = Mapbox.BaseModule.Data.Vector2d.Vector2d;
+using Kiloverse.Mapbox;
 
 public class GPSLocationController : MonoBehaviour
 {
@@ -18,7 +11,7 @@ public class GPSLocationController : MonoBehaviour
     public float updateInterval = 1f; // Seconds
 
     [Header("References")]
-    public Kiloverse.Mapbox.KiloverseMapInfo map;
+    public KiloverseMapInfo map;
 
     [Header("Compass")]
     public bool useCompass = false;
@@ -45,7 +38,7 @@ public class GPSLocationController : MonoBehaviour
         Debug.Log($"[GPS] isMobilePlatform: {Application.isMobilePlatform}");
         Debug.Log($"[GPS] Time: {System.DateTime.Now:HH:mm:ss.fff}");
 
-        if (map == null) map = GetComponent<Kiloverse.Mapbox.KiloverseMapInfo>();
+        if (map == null) map = GetComponent<KiloverseMapInfo>();
         Debug.Log($"[GPS] Map component: {(map != null ? "FOUND" : "NULL")}");
 
         // Default to rotating the Player GameObject (not the camera)
@@ -312,7 +305,7 @@ public class GPSLocationController : MonoBehaviour
                     var playerController = targetToRotate.GetComponent<KiloFirstPersonController>();
                     if (playerController != null)
                     {
-                        playerController.playerGPS = new Mapbox.BaseModule.Data.Vector2d.LatitudeLongitude(loc.latitude, loc.longitude);
+                        playerController.playerGPS = new LatitudeLongitude(loc.latitude, loc.longitude);
                     }
                 }
 

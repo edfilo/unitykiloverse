@@ -175,6 +175,12 @@ public class WeatherView : MonoBehaviour
         }
     }
 
+    /// <summary>Returns the current combined location/weather display text.</summary>
+    public string GetDisplayText()
+    {
+        return displayText != null ? displayText.text : "";
+    }
+
     private void UpdateCombinedText()
     {
         if (displayText == null) return;

@@ -1,11 +1,7 @@
+using Kiloverse.Mapbox;
 // Force recompile v2
 using System;
 using System.Collections.Generic;
-using Mapbox.BaseModule.Data;
-using Mapbox.BaseModule.Map;
-using Mapbox.BaseModule.Utilities;
-using Mapbox.BaseModule.Data.Interfaces;
-using Mapbox.VectorModule.MeshGeneration.MeshModifiers;
 using UnityEngine;
 
 namespace Kiloverse.Mapbox
@@ -91,7 +87,7 @@ public override void Run(VectorFeatureUnity feature, MeshData md, IMapInformatio
                 return;
             }
 
-            int seed = feature.Data.Id.GetHashCode();
+            int seed = feature.Data != null ? feature.Data.GetHashCode() : 0;
             var random = new System.Random(seed);
             _currentFacade = _atlasInfo.Textures[random.Next(_atlasInfo.Textures.Count)];
             _currentTextureRect = _currentFacade.TextureRect;

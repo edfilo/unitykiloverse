@@ -1,0 +1,14 @@
+{
+    "name": "Kilo.Junk",
+    "rootNamespace": "",
+    "references": [],
+    "includePlatforms": ["Editor"],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": ["JUNK_DISABLED"],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

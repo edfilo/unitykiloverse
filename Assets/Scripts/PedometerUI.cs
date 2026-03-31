@@ -96,11 +96,7 @@ void Start()
             Debug.Log("[PedometerUI] Created StoriesUIBootstrapper.");
         }
 
-        if (FindFirstObjectByType<LocationEnterTrigger>() == null)
-        {
-            gameObject.AddComponent<LocationEnterTrigger>();
-            Debug.Log("[PedometerUI] Created LocationEnterTrigger.");
-        }
+        // LocationEnterTrigger removed (Mapbox dependency eliminated)
 
         pedometerService = FindObjectOfType<PedometerService>();
         CreateUI();
@@ -122,10 +118,7 @@ void Start()
 
     void UpdateStepCounters()
     {
-        if (LocationEnterTrigger.Instance != null)
-        {
-            LocationEnterTrigger.Instance.CheckForTrigger();
-        }
+        // LocationEnterTrigger removed (Mapbox dependency eliminated)
 
         if (pedometerService == null) return;
 

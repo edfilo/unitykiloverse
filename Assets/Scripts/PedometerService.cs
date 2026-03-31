@@ -38,6 +38,7 @@ public class PedometerService : MonoBehaviour
     // Historical Data
     public int stepsLastHour = -1;
     public int stepsLast24Hours = -1;
+    public int stepsLast48Hours = -1;
     public int stepsLast7Days = -1;
 
     // Granular step data for ping button
@@ -140,9 +141,13 @@ public class PedometerService : MonoBehaviour
         
         // Last 24 Hours
         _QueryPedometerData(now - 86400, now, OnDailyStepsReceived);
+
+        // Last 48 Hours
+        _QueryPedometerData(now - 172800, now, On48HourStepsReceived);
         #else
         // Fallback for Editor / Mac / Windows
         stepsLast24Hours = Random.Range(0, 10000);
+        stepsLast48Hours = Random.Range(5000, 20000);
         stepsLastHour = Random.Range(0, 1000);
         
         // stepsLast7Days is handled by the UI calling GetLast7DaysSteps, 
@@ -329,6 +334,17 @@ public class PedometerService : MonoBehaviour
         }
     }
     
+    [AOT.MonoPInvokeCallback(typeof(PedometerCallback))]
+    private static void On48HourStepsReceived(int steps, double distance, double start, double end)
+    {
+        var instance = FindObjectOfType<PedometerService>();
+        if (instance != null)
+        {
+            instance.stepsLast48Hours = steps;
+            Debug.Log($"[PedometerService] Steps Last 48 Hours: {steps}");
+        }
+    }
+
     [AOT.MonoPInvokeCallback(typeof(PedometerCallback))]
     private static void OnHistoryDayReceived(int steps, double distance, double start, double end)
     {

@@ -4,13 +4,7 @@ using UnityEngine.InputSystem;
 using KiloWorld.Rendering;
 using KiloWorld.Rendering.Systems;
 using System.Collections.Generic;
-// Remove namespace imports to avoid ambiguity - fully qualify types instead
-// using Mapbox.BaseModule.Data.Vector2d;
-// using Kiloverse.Mapbox;  // Contains conflicting LatitudeLongitude type
-using Mapbox.BaseModule.Utilities;
-
-// Type aliases for convenience (fully qualified everywhere to avoid ambiguity)
-using Vector2d = Mapbox.BaseModule.Data.Vector2d.Vector2d;
+using Kiloverse.Mapbox;
 
 public class KiloFirstPersonController : MonoBehaviour
 {
@@ -18,11 +12,11 @@ public class KiloFirstPersonController : MonoBehaviour
     public CharacterController controller;
     public Transform cameraTransform;
     public Animator animator;
-    public Kiloverse.Mapbox.KiloverseMapInfo map;
+    public KiloverseMapInfo map;
 
     [Header("GPS Position (Source of Truth)")]
     [Tooltip("Player's GPS position - updated by arrow keys, used to position player in Unity space")]
-    public Mapbox.BaseModule.Data.Vector2d.LatitudeLongitude playerGPS;
+    public LatitudeLongitude playerGPS;
 
     [Header("Helmet Replacement")]
     public GameObject motorcycleHelmetPrefab;
@@ -129,12 +123,12 @@ public class KiloFirstPersonController : MonoBehaviour
         }
 
         if (map == null)
-            map = FindFirstObjectByType<Kiloverse.Mapbox.KiloverseMapInfo>();
+            map = FindFirstObjectByType<KiloverseMapInfo>();
 
         // Initialize player GPS to map center
         if (map != null)
         {
-            playerGPS = map.MapInformation.LatitudeLongitude;
+            playerGPS = map.MapInformation.Position;
             Debug.Log($"[KiloFirstPersonController] Initialized player GPS: ({playerGPS.Latitude:F6}, {playerGPS.Longitude:F6})");
         }
 
@@ -269,10 +263,10 @@ public class KiloFirstPersonController : MonoBehaviour
             float cameraYaw = Mathf.Atan2(cameraForward.x, cameraForward.z) * Mathf.Rad2Deg;
 
             // Calculate offset from map center to player
-            var mapCenterGPS = new Kiloverse.Mapbox.LatitudeLongitude(map.MapInformation.LatitudeLongitude.Latitude, map.MapInformation.LatitudeLongitude.Longitude);
-            var playerGPSKiloverse = new Kiloverse.Mapbox.LatitudeLongitude(playerGPS.Latitude, playerGPS.Longitude);
-            var mapCenterMercator = Kiloverse.Mapbox.Conversions.LatitudeLongitudeToWebMercator(mapCenterGPS);
-            var playerMercator = Kiloverse.Mapbox.Conversions.LatitudeLongitudeToWebMercator(playerGPSKiloverse);
+            var mapCenterGPS = new LatitudeLongitude(map.MapInformation.Position.Latitude, map.MapInformation.Position.Longitude);
+            var playerGPSKiloverse = new LatitudeLongitude(playerGPS.Latitude, playerGPS.Longitude);
+            var mapCenterMercator = Conversions.LatitudeLongitudeToWebMercator(mapCenterGPS);
+            var playerMercator = Conversions.LatitudeLongitudeToWebMercator(playerGPSKiloverse);
             var offsetFromCenter = playerMercator - mapCenterMercator;
 
             Debug.Log($"[Player] GPS: ({playerGPS.Latitude:F6}, {playerGPS.Longitude:F6}), Unity Pos: {transform.position}, Camera Yaw: {cameraYaw:F1}°, Facing: {GetCardinalDirection(cameraYaw)}");
@@ -300,20 +294,20 @@ public class KiloFirstPersonController : MonoBehaviour
             Vector3 movementVector = transform.forward * metersToMove;
 
             // Convert current GPS to Web Mercator
-            var mapCenterLatLng = new Kiloverse.Mapbox.LatitudeLongitude(map.MapInformation.LatitudeLongitude.Latitude, map.MapInformation.LatitudeLongitude.Longitude);
-            var playerLatLng = new Kiloverse.Mapbox.LatitudeLongitude(playerGPS.Latitude, playerGPS.Longitude);
-            var mapCenterMercator = Kiloverse.Mapbox.Conversions.LatitudeLongitudeToWebMercator(mapCenterLatLng);
-            var playerMercator = Kiloverse.Mapbox.Conversions.LatitudeLongitudeToWebMercator(playerLatLng);
+            var mapCenterLatLng = new LatitudeLongitude(map.MapInformation.Position.Latitude, map.MapInformation.Position.Longitude);
+            var playerLatLng = new LatitudeLongitude(playerGPS.Latitude, playerGPS.Longitude);
+            var mapCenterMercator = Conversions.LatitudeLongitudeToWebMercator(mapCenterLatLng);
+            var playerMercator = Conversions.LatitudeLongitudeToWebMercator(playerLatLng);
 
             // Add movement in Mercator space
-            playerMercator = new Kiloverse.Mapbox.Vector2d(
+            playerMercator = new Vector2d(
                 playerMercator.x + movementVector.x,
                 playerMercator.y + movementVector.z
             );
 
             // Convert back to GPS (this is now the source of truth)
-            var latLonStruct = Kiloverse.Mapbox.Conversions.WebMercatorToLatitudeLongitude(playerMercator);
-            playerGPS = new Mapbox.BaseModule.Data.Vector2d.LatitudeLongitude(latLonStruct.Latitude, latLonStruct.Longitude);
+            var latLonStruct = Conversions.WebMercatorToLatitudeLongitude(playerMercator);
+            playerGPS = new LatitudeLongitude(latLonStruct.Latitude, latLonStruct.Longitude);
 
             // CRITICAL: Update map center immediately to player GPS (prevents drift)
             // This makes tiles reposition on THIS frame, keeping player at origin

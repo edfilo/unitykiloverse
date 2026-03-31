@@ -14,6 +14,7 @@ public class UILayoutManager : MonoBehaviour
     public StepsView stepsView;
     public LocationsPanel locationsPanel;
     public MessageView messageView;
+    public MovementPanel movementPanel;
 
     private GameObject canvasGO;
     private GameObject layoutContainerGO;
@@ -180,12 +181,12 @@ public class UILayoutManager : MonoBehaviour
             weatherView.transform.SetParent(canvasGO.transform, false); // Parent to canvas, not layout container
         }
 
-        // Position Weather at the very top with safe area
+        // Position Weather at the very top, pinned to safe area
         RectTransform weatherRect = weatherView.GetComponent<RectTransform>();
         if (weatherRect != null)
         {
             float safeAreaOffset = GetSafeAreaOffset();
-            float topEdgePadding = 50f; // Increased top padding (was 0)
+            float topEdgePadding = 0f; // Flush to safe area
             weatherRect.anchorMin = new Vector2(0, 1);
             weatherRect.anchorMax = new Vector2(0, 1);
             weatherRect.pivot = new Vector2(0, 1);
@@ -197,46 +198,51 @@ public class UILayoutManager : MonoBehaviour
         Debug.Log("[UILayoutManager] Starting IntegrateStoriesButton coroutine...");
         StartCoroutine(IntegrateStoriesButton());
 
-        // 3. Steps View (positioned separately at top-right)
-        if (stepsView == null)
+        // 3. Steps View — disabled (replaced by MovementPanel in lower right)
+        if (stepsView != null)
+            stepsView.gameObject.SetActive(false);
+
+        // 3b. Movement Panel (lower-right, 48h steps / 15000 progress bar)
+        if (movementPanel == null)
         {
-            GameObject stepsGO = new GameObject("StepsView");
-            stepsGO.AddComponent<RectTransform>(); // Add RectTransform for UI
-            stepsGO.transform.SetParent(canvasGO.transform, false); // Parent to canvas
-            stepsView = stepsGO.AddComponent<StepsView>();
+            GameObject movGO = new GameObject("MovementPanel");
+            movGO.AddComponent<RectTransform>();
+            movGO.transform.SetParent(canvasGO.transform, false);
+            movementPanel = movGO.AddComponent<MovementPanel>();
         }
         else
         {
-            stepsView.transform.SetParent(canvasGO.transform, false);
+            movementPanel.transform.SetParent(canvasGO.transform, false);
         }
 
-        // Position Steps at the top-right
-        RectTransform stepsRect = stepsView.GetComponent<RectTransform>();
-        if (stepsRect != null)
+        RectTransform movRect = movementPanel.GetComponent<RectTransform>();
+        if (movRect != null)
         {
-            float safeAreaOffset = GetSafeAreaOffset();
-            float topEdgePadding = 50f; // Increased top padding (was 0)
-            stepsRect.anchorMin = new Vector2(1, 1); // Top-right
-            stepsRect.anchorMax = new Vector2(1, 1);
-            stepsRect.pivot = new Vector2(1, 1);
-            stepsRect.anchoredPosition = new Vector2(-20, -(safeAreaOffset + topEdgePadding));
-            Debug.Log($"[UILayoutManager] StepsView positioned at {stepsRect.anchoredPosition}");
+            float bottomSafeArea = Screen.safeArea.yMin;
+            RectTransform canvasRect = canvasGO.GetComponent<RectTransform>();
+            float canvasHeight = canvasRect != null ? canvasRect.rect.height : 1920f;
+            float bottomOffset = (bottomSafeArea / Screen.height) * canvasHeight;
+            movRect.anchorMin = new Vector2(1, 0); // Bottom-right
+            movRect.anchorMax = new Vector2(1, 0);
+            movRect.pivot = new Vector2(1, 0);
+            movRect.anchoredPosition = new Vector2(-20, bottomOffset + 20);
+            Debug.Log($"[UILayoutManager] MovementPanel positioned at {movRect.anchoredPosition}");
         }
 
         // 4. Locations Panel - deferred to DeferredLocationsPanel() coroutine (avoids boot lockup)
 
-        // 5. Message View (bottom)
+        // 5. Message View (positioned independently below stories, not in layout container)
         if (messageView == null)
         {
             Debug.Log("[UILayoutManager] Creating new MessageView...");
             GameObject messageGO = new GameObject("MessageView");
             messageGO.AddComponent<RectTransform>(); // Add RectTransform for UI
-            messageGO.transform.SetParent(layoutContainerGO.transform, false);
+            messageGO.transform.SetParent(canvasGO.transform, false);
             messageView = messageGO.AddComponent<MessageView>();
         }
         else
         {
-            messageView.transform.SetParent(layoutContainerGO.transform, false);
+            messageView.transform.SetParent(canvasGO.transform, false);
         }
 
         Debug.Log("[UILayoutManager] InstantiateViews: Complete.");
@@ -246,7 +252,7 @@ public class UILayoutManager : MonoBehaviour
     {
         // Calculate safe area offset for top of screen
         float topInset = GetSafeAreaOffset();
-        float topEdgePadding = 50f; // Match InstantiateViews() padding
+        float topEdgePadding = 0f; // Match InstantiateViews() padding
 
         // Update Weather position (it's at the very top)
         if (weatherView != null)
@@ -313,24 +319,49 @@ public class UILayoutManager : MonoBehaviour
                 Debug.Log($"[UILayoutManager] Positioned Stories at Y={storiesRect.anchoredPosition.y}, height={stripHeight}");
             }
 
-            // Position our vertical layout container below Stories strip
+            // Position MessageView 30px below Stories strip
+            float storiesBottom = Mathf.Abs(storiesRect != null ? storiesRect.anchoredPosition.y : 0f) + stripHeight;
+            if (messageView != null)
+            {
+                RectTransform msgRect = messageView.GetComponent<RectTransform>();
+                if (msgRect != null)
+                {
+                    msgRect.anchorMin = new Vector2(0, 1);
+                    msgRect.anchorMax = new Vector2(0, 1);
+                    msgRect.pivot = new Vector2(0, 1);
+                    msgRect.anchoredPosition = new Vector2(20, -(storiesBottom + 30f));
+                    Debug.Log($"[UILayoutManager] Positioned MessageView at Y={msgRect.anchoredPosition.y}");
+                }
+            }
+
+            // Position vertical layout container below MessageView
             if (layoutContainerRect != null)
             {
-                float storiesBottom = Mathf.Abs(storiesRect != null ? storiesRect.anchoredPosition.y : 0f) + stripHeight;
                 float totalOffset = storiesBottom + storiesToLayoutGap;
                 layoutContainerRect.anchoredPosition = new Vector2(20, -totalOffset);
                 Debug.Log($"[UILayoutManager] Positioned layout container at Y={-totalOffset}");
             }
 
-            Debug.Log("[UILayoutManager] Layout order: SafeArea -> Weather -> Stories -> Steps/Locations/Message");
+            Debug.Log("[UILayoutManager] Layout order: SafeArea -> Weather/Steps -> Stories -> Message -> Locations");
         }
         else
         {
-            // No Stories strip, position layout container below Weather only
+            // No Stories strip, position message and layout below Weather
+            float belowWeather = safeAreaOffset + topEdgePadding + weatherHeight;
+            if (messageView != null)
+            {
+                RectTransform msgRect = messageView.GetComponent<RectTransform>();
+                if (msgRect != null)
+                {
+                    msgRect.anchorMin = new Vector2(0, 1);
+                    msgRect.anchorMax = new Vector2(0, 1);
+                    msgRect.pivot = new Vector2(0, 1);
+                    msgRect.anchoredPosition = new Vector2(20, -(belowWeather + 30f));
+                }
+            }
             if (layoutContainerRect != null)
             {
-                float totalOffset = safeAreaOffset + topEdgePadding + weatherHeight + 40f;
-                layoutContainerRect.anchoredPosition = new Vector2(20, -totalOffset);
+                layoutContainerRect.anchoredPosition = new Vector2(20, -(belowWeather + 40f));
                 Debug.Log("[UILayoutManager] No Stories found, positioned layout below Weather");
             }
         }
@@ -371,11 +402,13 @@ public class UILayoutManager : MonoBehaviour
 
     float GetSafeAreaOffset()
     {
-        float topInsetPixels = Screen.height - Screen.safeArea.yMax;
-        if (topInsetPixels < 0f) topInsetPixels = 0f;
+        // Convert top safe-area inset from screen pixels to canvas units
+        // using normalized coordinates — works correctly with any CanvasScaler mode
+        float topInsetNormalized = 1f - (Screen.safeArea.yMax / Screen.height);
+        if (topInsetNormalized < 0f) topInsetNormalized = 0f;
 
-        Canvas canvas = canvasGO.GetComponent<Canvas>();
-        float scaleFactor = canvas != null && canvas.scaleFactor > 0f ? canvas.scaleFactor : 1f;
-        return topInsetPixels / scaleFactor;
+        RectTransform canvasRect = canvasGO.GetComponent<RectTransform>();
+        float canvasHeight = canvasRect != null ? canvasRect.rect.height : 1920f;
+        return topInsetNormalized * canvasHeight;
     }
 }

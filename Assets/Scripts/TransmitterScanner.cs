@@ -4,14 +4,7 @@ using System.Globalization;
 using System.Linq;
 using UnityEngine;
 using System;
-// Remove namespace import to avoid ambiguity - use alias instead
-// using Mapbox.BaseModule.Data.Vector2d;
-using Mapbox.BaseModule.Utilities;
-using Mapbox.Example.Scripts.Map; // For MapboxMapBehaviour
-using Kiloverse.Mapbox; // For OvertureMapManager
-
-// Disambiguate coordinate types (use Mapbox types in Assembly-CSharp)
-using Vector2d = Mapbox.BaseModule.Data.Vector2d.Vector2d;
+using Kiloverse.Mapbox;
 
 public class TransmitterScanner : MonoBehaviour
 {
@@ -50,6 +43,8 @@ public class TransmitterScanner : MonoBehaviour
         public Vector2d GeoLocation; // Latitude/Longitude
         public float Distance;
         public string Direction;
+        public Vector3 WorldPosition; // Cached world position (set by UI code)
+        public bool HasWorldPosition; // Whether WorldPosition is valid
     }
 
     private List<TransmitterData> _allTransmitters = new List<TransmitterData>();
@@ -332,7 +327,7 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
             }
             else
             {
-                double metersMoved = Kiloverse.Mapbox.Conversions.GeoDistance(
+                double metersMoved = Conversions.GeoDistance(
                     _lastPlacesFetchGPS.y,
                     _lastPlacesFetchGPS.x,
                     playerGPS.Longitude,
@@ -523,15 +518,15 @@ private IEnumerator UpdateDistancesAndSortCoroutine()
         {
             // Use Haversine for Distance (Km -> Meters) - GPS coordinates are source of truth
             // t.GeoLocation: x=Lat, y=Lon
-            t.Distance = (float)Kiloverse.Mapbox.Conversions.GeoDistance(playerGPS.Longitude, playerGPS.Latitude, t.GeoLocation.y, t.GeoLocation.x) * 1000f;
+            t.Distance = (float)Conversions.GeoDistance(playerGPS.Longitude, playerGPS.Latitude, t.GeoLocation.y, t.GeoLocation.x) * 1000f;
 
             if (hasMapInfo)
             {
                 // Use World Vector for Direction (Relative Bearing)
                 // Convert stored Geo -> Relative World (Relative to Map Center)
                 // t.GeoLocation: x=Lat, y=Lon
-                var centerMercator = new Kiloverse.Mapbox.Vector2d(mapInfo.CenterMercator.x, mapInfo.CenterMercator.y);
-                Vector3 relativePos = Kiloverse.Mapbox.Conversions.LatitudeLongitudeToWorldPosition(t.GeoLocation.x, t.GeoLocation.y, centerMercator, mapInfo.Scale);
+                var centerMercator = new Vector2d(mapInfo.CenterMercator.x, mapInfo.CenterMercator.y);
+                Vector3 relativePos = Conversions.LatitudeLongitudeToWorldPosition(t.GeoLocation.x, t.GeoLocation.y, centerMercator, mapInfo.Scale);
                 
                 // Convert to Absolute World Position (Add Map Root Offset)
                 Vector3 targetWorldPos = relativePos + _cachedOvertureManager.map.transform.position;

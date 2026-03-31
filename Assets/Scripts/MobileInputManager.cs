@@ -1,9 +1,13 @@
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
+using System.Collections.Generic;
 
 public class MobileInputManager : MonoBehaviour
 {
+    private static MobileInputManager instance;
+    private static float lastCameraToggleTime = -10f;
+
     [Header("Settings")]
     public bool forceMobileMode = false;
     public float joystickSize = 150f;
@@ -20,6 +24,17 @@ public class MobileInputManager : MonoBehaviour
 
     private float currentRotateVelocity = 0f;
     private bool isTouching = false;
+
+    void Awake()
+    {
+        if (instance != null && instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        instance = this;
+    }
 
     void Start()
     {
@@ -128,9 +143,20 @@ public class MobileInputManager : MonoBehaviour
             if (rotate != 0) currentRotateVelocity = rotate; // Capture velocity
         };
         handler.OnStateChange = (dragging) => { isTouching = dragging; };
-        handler.OnTap = () => 
+        handler.OnTap = () =>
         {
-            if (playerController != null) playerController.ToggleCameraView();
+            if (playerController == null)
+                return;
+
+            if (Time.unscaledTime - lastCameraToggleTime < 0.35f)
+            {
+                Debug.Log("[MobileInput] Ignoring duplicate camera toggle tap.");
+                return;
+            }
+
+            lastCameraToggleTime = Time.unscaledTime;
+            playerController.ToggleCameraView();
+            Debug.Log("[MobileInput] Non-HUD tap toggled camera view.");
         };
     }
 
@@ -148,8 +174,8 @@ public class MobileInputManager : MonoBehaviour
         private enum Axis { None, Horizontal, Vertical }
         private Axis lockedAxis = Axis.None;
         private const float LOCK_THRESHOLD_PX = 5f; 
-        private const float TAP_THRESHOLD_PX = 50f; // Increased for easier tapping
-        private const float TAP_TIME = 0.3f;
+        private const float TAP_THRESHOLD_PX = 15f; // Tight threshold — swipes must not trigger tap
+        private const float TAP_TIME = 0.25f;
 
         private GPSLocationController gps;
 
@@ -163,14 +189,19 @@ public class MobileInputManager : MonoBehaviour
         {
             Debug.Log($"[MobileInput] Pointer Down on: {eventData.pointerEnter?.name}");
 
-            // Check if we hit a UI button - if so, DON'T start dragging
+            if (ShouldPassTouchToHud(eventData))
+            {
+                Debug.Log("[MobileInput] HUD element detected in raycast stack - passing through touch");
+                isDragging = false;
+                return;
+            }
+
+            // Fallback: direct button ancestry check on the pointer target
             if (eventData.pointerEnter != null)
             {
-                // Check if we hit a button or any child of a button
                 var button = eventData.pointerEnter.GetComponentInParent<Button>();
                 if (button != null)
                 {
-                    // Let the button handle this touch, don't drag
                     Debug.Log($"[MobileInput] Button detected: {button.name} - passing through touch");
                     isDragging = false;
                     return;
@@ -182,6 +213,31 @@ public class MobileInputManager : MonoBehaviour
             isDragging = true;
             lockedAxis = Axis.None;
             OnStateChange?.Invoke(true);
+        }
+
+        bool ShouldPassTouchToHud(PointerEventData eventData)
+        {
+            if (EventSystem.current == null)
+                return false;
+
+            var results = new List<RaycastResult>(16);
+            EventSystem.current.RaycastAll(eventData, results);
+
+            foreach (RaycastResult result in results)
+            {
+                GameObject go = result.gameObject;
+                if (go == null || go == gameObject)
+                    continue;
+
+                if (go.GetComponentInParent<Button>() != null)
+                    return true;
+
+                Transform hudRoot = go.transform.GetComponentInParent<Canvas>()?.transform;
+                if (hudRoot != null && hudRoot.name == "K1L0_Canvas")
+                    return true;
+            }
+
+            return false;
         }
 
         public void OnDrag(PointerEventData eventData)
@@ -243,7 +299,7 @@ public class MobileInputManager : MonoBehaviour
                 float dur = Time.time - startTime;
                 if (dur < TAP_TIME && dist < TAP_THRESHOLD_PX)
                 {
-                    Debug.Log("[MobileInput] Tap Detected!");
+                    Debug.Log("[MobileInput] Tap detected on touch panel.");
                     OnTap?.Invoke();
                 }
             }

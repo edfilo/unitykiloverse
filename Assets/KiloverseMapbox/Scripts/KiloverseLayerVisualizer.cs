@@ -1,8 +1,9 @@
+using Kiloverse.Mapbox;
 using System.Collections.Generic;
 using UnityEngine;
-using Mapbox.VectorTile;
-using Mapbox.BaseModule.Map;
-using Mapbox.BaseModule.Data;
+using global::Mapbox.VectorTile;
+using global::Mapbox.BaseModule.Map;
+using global::Mapbox.BaseModule.Data;
 
 namespace Kiloverse.Mapbox
 {

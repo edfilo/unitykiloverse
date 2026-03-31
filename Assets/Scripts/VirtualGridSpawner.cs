@@ -4,13 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System;
 using System.Reflection;
-using Mapbox.BaseModule.Utilities;
-// Remove namespace import to avoid ambiguity - use alias instead
-// using Mapbox.BaseModule.Data.Vector2d;
 using Kiloverse.Mapbox;
-
-// Disambiguate coordinate types (use Mapbox types in Assembly-CSharp)
-using Vector2d = Mapbox.BaseModule.Data.Vector2d.Vector2d;
 
 /// <summary>
 /// Spawns 9 light beams (one per virtual grid cell) by pooling all road geometry points.
@@ -92,15 +86,22 @@ public class VirtualGridSpawner : MonoBehaviour
 
     void Start()
     {
-        // Find map
-        map = FindFirstObjectByType<KiloverseMapInfo>();
-        if (map == null)
-        {
-            Debug.LogError("[VirtualGridSpawner] KiloverseMapInfo not found!");
-            enabled = false;
-            return;
-        }
+        StartCoroutine(WaitForMapAndInitialize());
+    }
 
+    private System.Collections.IEnumerator WaitForMapAndInitialize()
+    {
+        while (map == null)
+        {
+            map = FindFirstObjectByType<KiloverseMapInfo>();
+            if (map == null) yield return new WaitForSeconds(1f);
+        }
+        Debug.Log("[VirtualGridSpawner] KiloverseMapInfo found, initializing beams...");
+        InitializeBeams();
+    }
+
+    private void InitializeBeams()
+    {
         // Create container
         GameObject runtimeRoot = GameObject.Find("RuntimeObjectsRoot");
         beamContainer = new GameObject("VirtualGridBeams").transform;
@@ -612,9 +613,8 @@ public class VirtualGridSpawner : MonoBehaviour
     // Convert Unity world position to Mercator coordinates
     private Vector2d UnityToMercator(Vector3 unityPosition)
     {
-        var mapLatLng = map.MapInformation.LatitudeLongitude;
-        var centerLatLng = new Kiloverse.Mapbox.LatitudeLongitude(mapLatLng.Latitude, mapLatLng.Longitude);
-        var centerMercator = Kiloverse.Mapbox.Conversions.LatitudeLongitudeToWebMercator(centerLatLng);
+        var centerLatLng = map.MapInformation.Position;
+        var centerMercator = Conversions.LatitudeLongitudeToWebMercator(centerLatLng);
         return new Vector2d(
             centerMercator.x + unityPosition.x,
             centerMercator.y + unityPosition.z
@@ -624,9 +624,8 @@ public class VirtualGridSpawner : MonoBehaviour
     // Convert Mercator coordinates to Unity world position
     private Vector3 MercatorToUnity(Vector2d mercatorPosition)
     {
-        var mapLatLng = map.MapInformation.LatitudeLongitude;
-        var centerLatLng = new Kiloverse.Mapbox.LatitudeLongitude(mapLatLng.Latitude, mapLatLng.Longitude);
-        var centerMercator = Kiloverse.Mapbox.Conversions.LatitudeLongitudeToWebMercator(centerLatLng);
+        var centerLatLng = map.MapInformation.Position;
+        var centerMercator = Conversions.LatitudeLongitudeToWebMercator(centerLatLng);
         return new Vector3(
             (float)(mercatorPosition.x - centerMercator.x),
             0,
@@ -639,7 +638,7 @@ public class VirtualGridSpawner : MonoBehaviour
     {
         if (map == null || map.MapInformation == null)
         {
-            return Vector2d.zero;
+            return new Vector2d(0, 0);
         }
         // In Editor mode: GPS is static, player moves in Unity space
         // On Mobile: GPS updates, player is relatively static in Unity space

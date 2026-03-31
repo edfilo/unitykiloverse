@@ -1,0 +1,18 @@
+﻿<Solution>
+  <Project Path="MapboxVectorModule.csproj" />
+  <Project Path="Assembly-CSharp.csproj" />
+  <Project Path="MapboxBaseModule.csproj" />
+  <Project Path="Unity.RenderPipelines.Universal.Runtime.csproj" />
+  <Project Path="UnityMapModule.csproj" />
+  <Project Path="MapboxDebug.csproj" />
+  <Project Path="Assembly-CSharp-Editor.csproj" />
+  <Project Path="MapboxDirectionsApi.csproj" />
+  <Project Path="MapboxLocationModule.csproj" />
+  <Project Path="MapboxExamples.csproj" />
+  <Project Path="MapboxExamples.Editor.csproj" />
+  <Project Path="MapboxImageryModule.csproj" />
+  <Project Path="MapboxGeocodingApi.csproj" />
+  <Project Path="MapboxDebug.Editor.csproj" />
+  <Project Path="MapboxVectorModule.Editor.csproj" />
+  <Project Path="MapboxUnitySDK.Editor.csproj" />
+</Solution>
