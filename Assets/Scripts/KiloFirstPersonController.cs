@@ -75,13 +75,23 @@ public class KiloFirstPersonController : MonoBehaviour
         if (controller == null)
             controller = GetComponent<CharacterController>();
 
-        // ROBUSTNESS: Configure controller to avoid getting stuck on small geometry seams
+        // On mobile, CharacterController capsule collider interacts with map tile geometry,
+        // pushing player up/down when rotating near colliders → visible camera bob on touch release.
+        // Disable it on mobile (not needed — movement is GPS-driven).
         if (controller != null)
         {
-            controller.stepOffset = 0.6f; // Can step up curb-heights easily
-            controller.skinWidth = 0.08f; // Standard robust skin width
-            controller.minMoveDistance = 0f; // Prevent micro-stutter optimization blocks
-            controller.slopeLimit = 50f; // Allow slightly steeper traversal
+            if (Application.isMobilePlatform)
+            {
+                Debug.Log("[KiloFirstPersonController] Mobile: disabling CharacterController (causes camera drift)");
+                controller.enabled = false;
+            }
+            else
+            {
+                controller.stepOffset = 0.6f;
+                controller.skinWidth = 0.08f;
+                controller.minMoveDistance = 0f;
+                controller.slopeLimit = 50f;
+            }
         }
 
         if (animator == null)
@@ -96,7 +106,14 @@ public class KiloFirstPersonController : MonoBehaviour
         }
         else
         {
-            // Debug.Log($"[KiloFirstPersonController] Animator found: {animator.gameObject.name}, RuntimeController: {(animator.runtimeAnimatorController != null ? animator.runtimeAnimatorController.name : "NULL")}");
+            // Disable root motion — it moves the player transform each frame,
+            // causing camera lift/tilt on touch release
+            if (animator.applyRootMotion)
+            {
+                Debug.Log("[KiloFirstPersonController] Disabling Animator root motion (prevents camera drift)");
+                animator.applyRootMotion = false;
+            }
+
             if (animator.runtimeAnimatorController != null)
             {
                 CacheAnimatorParameters();
