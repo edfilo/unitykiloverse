@@ -13,7 +13,7 @@ PROJECT="/Users/kiloverse/unitykiloverse"
 IOS_BUILD="/Users/kiloverse/unitykiloverse/Builds/iOS"
 BUNDLE_ID="com.filowatt.K1L0"
 TEAM_ID="7R2746UPX7"
-APP_NAME="K1L0"
+APP_NAME="kiloverse"
 LOG="/tmp/k1l0_unity_build.log"
 OTA_DIR="/tmp/tedfred_ota"
 OTA_URL="https://tunnel.kilo.gallery/ota/latest"
@@ -88,6 +88,18 @@ printf '#!/bin/sh\nexit 0\n' > "$IOS_BUILD/process_symbols.sh"
 chmod +x "$IOS_BUILD/process_symbols.sh"
 sed -i "" "s/CYE232ULMR/$TEAM_ID/g" "$IOS_BUILD/Unity-iPhone.xcodeproj/project.pbxproj"
 
+# Strip Location Push entitlement (requires special provisioning profile)
+if [ -f "$IOS_BUILD/Unity-iPhone.entitlements" ]; then
+  cat > "$IOS_BUILD/Unity-iPhone.entitlements" << 'ENTITLEMENTS'
+<?xml version="1.0" encoding="utf-8"?>
+<plist version="1.0">
+  <dict>
+  </dict>
+</plist>
+ENTITLEMENTS
+  echo "  Stripped Location Push entitlement"
+fi
+
 STEP_START=$(date +%s)
 
 if [[ "$MODE" == "ota" ]]; then
@@ -146,25 +158,28 @@ PLIST
 else
     # Device: Build directly to device
     DEVICE_IDS=$(detect_device)
-    if [ -z "$DEVICE_IDS" ]; then
-      echo "  No iOS device detected — building generic, opening Xcode"
-      xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" \
-        -scheme Unity-iPhone -configuration Debug \
-        -destination "generic/platform=iOS" -allowProvisioningUpdates \
-        build 2>&1 | tail -5
+    XCODE_LOG="/tmp/k1l0_xcode_build.log"
 
+    # Build with -sdk iphoneos + explicit signing (avoids destination resolver requiring simulator runtime)
+    echo "  Building with -sdk iphoneos..."
+    xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" \
+      -scheme Unity-iPhone -configuration Debug \
+      -sdk iphoneos -arch arm64 \
+      -allowProvisioningUpdates \
+      ONLY_ACTIVE_ARCH=YES \
+      CODE_SIGN_STYLE=Automatic \
+      DEVELOPMENT_TEAM=$TEAM_ID \
+      CODE_SIGN_IDENTITY="Apple Development" \
+      build > "$XCODE_LOG" 2>&1 || true
+
+    if [ -z "$DEVICE_IDS" ]; then
+      echo "  No iOS device detected — opening Xcode"
       echo "  ✓ Xcode: $(($(date +%s) - STEP_START))s (no device)"
       open "$IOS_BUILD/Unity-iPhone.xcodeproj"
     else
       XCODE_ID=$(echo "$DEVICE_IDS" | cut -d'|' -f1)
       DEVCTL_ID=$(echo "$DEVICE_IDS" | cut -d'|' -f2)
       echo "  Device: $XCODE_ID (xcode) / $DEVCTL_ID (devicectl)"
-
-      XCODE_LOG="/tmp/k1l0_xcode_build.log"
-      xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" \
-        -scheme Unity-iPhone -configuration Debug \
-        -destination "id=$XCODE_ID" -allowProvisioningUpdates \
-        build > "$XCODE_LOG" 2>&1 || true
 
       if grep -q "BUILD SUCCEEDED" "$XCODE_LOG"; then
         echo "  ✓ Xcode: $(($(date +%s) - STEP_START))s"

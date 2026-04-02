@@ -145,18 +145,8 @@ public class MobileInputManager : MonoBehaviour
         handler.OnStateChange = (dragging) => { isTouching = dragging; };
         handler.OnTap = () =>
         {
-            if (playerController == null)
-                return;
-
-            if (Time.unscaledTime - lastCameraToggleTime < 0.35f)
-            {
-                Debug.Log("[MobileInput] Ignoring duplicate camera toggle tap.");
-                return;
-            }
-
-            lastCameraToggleTime = Time.unscaledTime;
-            playerController.ToggleCameraView();
-            Debug.Log("[MobileInput] Non-HUD tap toggled camera view.");
+            // God mode toggle disabled — was triggering on pans
+            // TODO: Add a dedicated UI button for god mode if needed
         };
     }
 
@@ -171,11 +161,12 @@ public class MobileInputManager : MonoBehaviour
         private Vector2 startPos;
         private float startTime;
         private bool isDragging = false;
+        private bool hasMoved = false; // True if any OnDrag was received
         private enum Axis { None, Horizontal, Vertical }
         private Axis lockedAxis = Axis.None;
-        private const float LOCK_THRESHOLD_PX = 5f; 
-        private const float TAP_THRESHOLD_PX = 15f; // Tight threshold — swipes must not trigger tap
-        private const float TAP_TIME = 0.25f;
+        private const float LOCK_THRESHOLD_PX = 5f;
+        private const float TAP_TIME = 0.2f;
+        private const float TAP_THRESHOLD_PX = 10f; // Must be nearly stationary
 
         private GPSLocationController gps;
 
@@ -211,6 +202,7 @@ public class MobileInputManager : MonoBehaviour
             startPos = eventData.position;
             startTime = Time.time;
             isDragging = true;
+            hasMoved = false;
             lockedAxis = Axis.None;
             OnStateChange?.Invoke(true);
         }
@@ -243,6 +235,7 @@ public class MobileInputManager : MonoBehaviour
         public void OnDrag(PointerEventData eventData)
         {
             if (!isDragging) return;
+            hasMoved = true;
             Vector2 currentPos = eventData.position;
             Vector2 delta = currentPos - startPos;
             
@@ -292,12 +285,17 @@ public class MobileInputManager : MonoBehaviour
 
         public void OnPointerUp(PointerEventData eventData)
         {
-            // Check for Tap
+            // Tap detection: must be short duration AND finger barely moved
             if (isDragging)
             {
-                float dist = Vector2.Distance(eventData.position, startPos);
+                Vector2 totalDelta = eventData.position - startPos;
                 float dur = Time.time - startTime;
-                if (dur < TAP_TIME && dist < TAP_THRESHOLD_PX)
+                // A tap is: very short hold, AND less than 3px movement in any direction
+                // Any horizontal or vertical movement = swipe, not tap
+                bool isTap = dur < TAP_TIME
+                    && Mathf.Abs(totalDelta.x) < 3f
+                    && Mathf.Abs(totalDelta.y) < 3f;
+                if (isTap)
                 {
                     Debug.Log("[MobileInput] Tap detected on touch panel.");
                     OnTap?.Invoke();

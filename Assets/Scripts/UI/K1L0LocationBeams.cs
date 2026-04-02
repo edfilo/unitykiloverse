@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using Kiloverse.Mapbox;
-using Kiloverse.Mapbox;
 
 /// <summary>
 /// Spawns thin red particle beams at nearby TransmitterScanner locations with labels.
@@ -16,9 +15,17 @@ public class K1L0LocationBeams : MonoBehaviour
     private const int ParticleCount = 150;
     private const float ParticleSpeed = 8f;
     private const float LabelHeight = 4f;
+    private const float LabelFadeDistance = 800f;
+    private const float LabelMaxDistance = 1600f;
 
-    private static readonly Color BeamColor = new Color(1f, 0.15f, 0.05f, 1f);
-    private static readonly Color LabelColor = new Color(1f, 0.4f, 0.3f, 0.9f);
+    // Category beam colors
+    private static readonly Color BeamColorCoffee = new Color(0.2f, 0.9f, 0.4f, 1f);       // Green
+    private static readonly Color BeamColorBar = new Color(1f, 0.15f, 0.05f, 1f);           // Red
+    private static readonly Color BeamColorFood = new Color(0.3f, 0.5f, 1f, 1f);            // Blue
+    private static readonly Color BeamColorConvenience = new Color(1f, 0.6f, 0.1f, 1f);     // Orange
+    private static readonly Color BeamColorDefault = new Color(0.6f, 0.8f, 1f, 1f);         // Light cyan
+
+    private static readonly Color LabelColor = new Color(1f, 1f, 1f, 0.9f);
 
     private readonly List<BeamEntry> pool = new List<BeamEntry>();
     private TMP_FontAsset font;
@@ -34,6 +41,19 @@ public class K1L0LocationBeams : MonoBehaviour
         public ParticleSystem particles;
         public TextMeshPro label;
         public string currentName;
+        public string currentCategory;
+    }
+
+    static Color CategoryColor(string group)
+    {
+        switch (group)
+        {
+            case "coffee": return BeamColorCoffee;
+            case "bar": return BeamColorBar;
+            case "food": return BeamColorFood;
+            case "convenience": return BeamColorConvenience;
+            default: return BeamColorDefault;
+        }
     }
 
     public void Initialize(TMP_FontAsset monoFont)
@@ -92,6 +112,9 @@ public class K1L0LocationBeams : MonoBehaviour
             Debug.Log($"[K1L0LocationBeams] Placing {unique.Count} beams. mapPos={mapPos}. First: {unique[0].Name}");
         }
 
+        Camera cam = Camera.main;
+        Plane[] frustumPlanes = cam != null ? GeometryUtility.CalculateFrustumPlanes(cam) : null;
+
         for (int i = 0; i < pool.Count; i++)
         {
             var entry = pool[i];
@@ -122,13 +145,63 @@ public class K1L0LocationBeams : MonoBehaviour
                     entry.particles.Play();
                 }
 
-                if (entry.currentName != data.Name)
+                // Update name, distance, and category color
+                string catGroup = data.MainCategoryGroup ?? "other";
+                if (entry.currentName != data.Name || entry.currentCategory != catGroup)
                 {
                     entry.currentName = data.Name;
+                    entry.currentCategory = catGroup;
+
                     string dist = data.Distance < 200f
                         ? $"{Mathf.RoundToInt(data.Distance)}m"
                         : $"{data.Distance / 1609.34f:F1}mi";
                     entry.label.text = $"{data.Name.ToUpperInvariant()}\n<size=70%>{dist}</size>";
+
+                    // Set beam particle color by category
+                    Color catColor = CategoryColor(catGroup);
+                    var main = entry.particles.main;
+                    main.startColor = catColor;
+
+                    // Update gradient
+                    var col = entry.particles.colorOverLifetime;
+                    Gradient grad = new Gradient();
+                    grad.SetKeys(
+                        new GradientColorKey[] {
+                            new GradientColorKey(catColor, 0f),
+                            new GradientColorKey(Color.Lerp(catColor, Color.white, 0.2f), 0.5f),
+                            new GradientColorKey(Color.Lerp(catColor, Color.white, 0.35f), 1f)
+                        },
+                        new GradientAlphaKey[] {
+                            new GradientAlphaKey(0f, 0f),
+                            new GradientAlphaKey(0.8f, 0.05f),
+                            new GradientAlphaKey(0.6f, 0.5f),
+                            new GradientAlphaKey(0f, 1f)
+                        }
+                    );
+                    col.color = grad;
+
+                    entry.label.color = new Color(catColor.r, catColor.g, catColor.b, 0.9f);
+                }
+
+                // Frustum cull + distance fade for labels
+                if (cam != null && entry.label != null)
+                {
+                    float distToCamera = Vector3.Distance(cam.transform.position, pos);
+                    bool inFrustum = frustumPlanes != null &&
+                        GeometryUtility.TestPlanesAABB(frustumPlanes, new Bounds(pos + Vector3.up * LabelHeight, Vector3.one * 5f));
+
+                    if (inFrustum && distToCamera < LabelMaxDistance)
+                    {
+                        float alpha = distToCamera < LabelFadeDistance ? 0.9f :
+                            Mathf.Lerp(0.9f, 0f, (distToCamera - LabelFadeDistance) / (LabelMaxDistance - LabelFadeDistance));
+                        Color c = entry.label.color;
+                        entry.label.color = new Color(c.r, c.g, c.b, alpha);
+                        entry.label.gameObject.SetActive(true);
+                    }
+                    else
+                    {
+                        entry.label.gameObject.SetActive(false);
+                    }
                 }
             }
             else if (entry.root.activeSelf)
@@ -136,6 +209,7 @@ public class K1L0LocationBeams : MonoBehaviour
                 entry.particles.Stop();
                 entry.root.SetActive(false);
                 entry.currentName = null;
+                entry.currentCategory = null;
             }
         }
     }
@@ -165,7 +239,7 @@ public class K1L0LocationBeams : MonoBehaviour
         main.startLifetime = lifetime;
         main.startSpeed = ParticleSpeed;
         main.startSize = new ParticleSystem.MinMaxCurve(0.4f, 1.0f);
-        main.startColor = BeamColor;
+        main.startColor = BeamColorDefault;
         main.maxParticles = ParticleCount + 50;
         main.simulationSpace = ParticleSystemSimulationSpace.Local;
         main.gravityModifier = 0f;
@@ -183,9 +257,9 @@ public class K1L0LocationBeams : MonoBehaviour
         Gradient grad = new Gradient();
         grad.SetKeys(
             new GradientColorKey[] {
-                new GradientColorKey(BeamColor, 0f),
-                new GradientColorKey(new Color(1f, 0.3f, 0.1f), 0.5f),
-                new GradientColorKey(new Color(1f, 0.5f, 0.2f), 1f)
+                new GradientColorKey(BeamColorDefault, 0f),
+                new GradientColorKey(Color.Lerp(BeamColorDefault, Color.white, 0.2f), 0.5f),
+                new GradientColorKey(Color.Lerp(BeamColorDefault, Color.white, 0.35f), 1f)
             },
             new GradientAlphaKey[] {
                 new GradientAlphaKey(0f, 0f),
@@ -235,8 +309,8 @@ public class K1L0LocationBeams : MonoBehaviour
         if (loaded != null)
         {
             Material mat = new Material(loaded);
-            mat.SetColor("_BaseColor", BeamColor);
-            mat.SetColor("_EmissionColor", BeamColor * 10f);
+            mat.SetColor("_BaseColor", Color.white); // White base — particle system tints per-category
+            mat.SetColor("_EmissionColor", Color.white * 5f);
             return mat;
         }
 
@@ -245,7 +319,7 @@ public class K1L0LocationBeams : MonoBehaviour
         if (shader == null) shader = Shader.Find("Particles/Standard Unlit");
         Material fallback = new Material(shader);
         fallback.SetTexture("_BaseMap", beamTexture);
-        fallback.SetColor("_BaseColor", BeamColor);
+        fallback.SetColor("_BaseColor", Color.white);
         fallback.SetFloat("_Surface", 1f);
         fallback.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
         fallback.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);

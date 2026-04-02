@@ -1404,22 +1404,14 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                             // Other layers (roads, buildings) need GameObject modifiers to run AFTER CreateGo
                             if (sourceLayer == "place" || sourceLayer == "poi_label" || sourceLayer == "poi")
                             {
-                                if (i == 0) // Log once per tile
-                                {
-                                    Debug.Log($"[TileLoad] {layerName}{tileIndexStr}: Running POI modifiers for sourceLayer='{sourceLayer}'");
-                                }
-
-                                var vectorEntity = new VectorEntity();
-                                vectorEntity.Feature = featureUnity;
-                                vectorEntity.GameObject = null; // POI modifiers create their own anchors
-
+                                // Register POI with TransmitterScanner directly (POILabelModifier removed)
                                 try
                                 {
-                                    stack.RunGoModifiers(vectorEntity, _map.MapInformation);
+                                    RegisterPOIWithScanner(featureUnity, tile);
                                 }
                                 catch (System.Exception modEx)
                                 {
-                                    Debug.LogError($"[TileLoad] POI modifier failed for '{sourceLayer}': {modEx.Message}\n{modEx.StackTrace}");
+                                    Debug.LogError($"[TileLoad] POI registration failed: {modEx.Message}");
                                 }
                             }
 
@@ -2213,6 +2205,80 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
             var cls = GetWaterClass(properties);
             var sub = GetWaterSubtype(properties);
             return cls == "ocean" || cls == "sea" || sub == "ocean" || sub == "sea";
+        }
+
+        /// <summary>
+        /// Register a POI feature with TransmitterScanner for location beams/nearby panel.
+        /// Replaces the old POILabelModifier pipeline.
+        /// </summary>
+        private void RegisterPOIWithScanner(VectorFeatureUnity feature, TileId tile)
+        {
+            if (TransmitterScanner.Instance == null) return;
+
+            // Extract name
+            string poiName = "Unknown";
+            if (feature.Properties.ContainsKey("names"))
+            {
+                try
+                {
+                    string namesJson = feature.Properties["names"].ToString();
+                    // Simple JSON parse for {"primary":"..."}
+                    int idx = namesJson.IndexOf("\"primary\":\"");
+                    if (idx >= 0)
+                    {
+                        idx += 11;
+                        int end = namesJson.IndexOf("\"", idx);
+                        if (end > idx) poiName = namesJson.Substring(idx, end - idx);
+                    }
+                }
+                catch { }
+            }
+            if (poiName == "Unknown" && feature.Properties.ContainsKey("name"))
+                poiName = feature.Properties["name"].ToString();
+
+            // Extract category
+            string primaryCategory = "";
+            string mainGroup = "other";
+            if (feature.Properties.ContainsKey("categories"))
+            {
+                try
+                {
+                    string catJson = feature.Properties["categories"].ToString();
+                    int idx = catJson.IndexOf("\"primary\":\"");
+                    if (idx >= 0)
+                    {
+                        idx += 11;
+                        int end = catJson.IndexOf("\"", idx);
+                        if (end > idx) primaryCategory = catJson.Substring(idx, end - idx);
+                    }
+                }
+                catch { }
+            }
+
+            // Map to main category group (same logic as old POILabelModifier)
+            if (primaryCategory.Contains("cafe") || primaryCategory.Contains("coffee") || primaryCategory.Contains("tea"))
+                mainGroup = "coffee";
+            else if (primaryCategory.Contains("bar") || primaryCategory.Contains("pub") || primaryCategory.Contains("brew"))
+                mainGroup = "bar";
+            else if (primaryCategory.Contains("restaurant") || primaryCategory.Contains("food") || primaryCategory.Contains("pizza") ||
+                     primaryCategory.Contains("burger") || primaryCategory.Contains("diner") || primaryCategory.Contains("bakery"))
+                mainGroup = "food";
+            else if (primaryCategory.Contains("convenience") || primaryCategory.Contains("gas_station"))
+                mainGroup = "convenience";
+
+            // Calculate GPS from tile coordinates
+            Vector2d latLon = new Vector2d();
+            if (feature.Points != null && feature.Points.Count > 0 && feature.Points[0].Count > 0)
+            {
+                var point = feature.Points[0][0];
+                double n = System.Math.Pow(2, tile.Z);
+                double lon = (tile.X + point.x) / n * 360.0 - 180.0;
+                double latRad = System.Math.Atan(System.Math.Sinh(System.Math.PI * (1 - 2 * (tile.Y + point.z) / n)));
+                double lat = latRad * 180.0 / System.Math.PI;
+                latLon = new Vector2d(lat, lon);
+            }
+
+            TransmitterScanner.Instance.RegisterTransmitter(poiName, primaryCategory, mainGroup, latLon);
         }
 
         private static string GetWaterClass(Dictionary<string, object> properties)
