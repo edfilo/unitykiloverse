@@ -1,11 +1,15 @@
-using Kiloverse.Mapbox;
+// Mapbox SDK types for modifier pipeline compatibility
+using MapboxMeshMod = global::Mapbox.VectorModule.MeshGeneration.MeshModifiers.MeshModifier;
+using MapboxFeature = global::Mapbox.BaseModule.Utilities.VectorFeatureUnity;
+using MapboxMD = global::Mapbox.BaseModule.Data.MeshData;
+using MapboxMapInfo = global::Mapbox.BaseModule.Map.IMapInformation;
 using System;
 using System.Collections.Generic;
 using UnityEngine;
 
 namespace Kiloverse.Mapbox
 {
-    public class ZossBuildingStack : MeshModifier
+    public class ZossBuildingStack : MapboxMeshMod
     {
         /// <summary>Set by tile loader before processing each tile. True = distant tile, simplified geometry.</summary>
         public static bool SimpleLOD;
@@ -73,7 +77,7 @@ public ZossBuildingStack(
 
 
 
-public override void Run(VectorFeatureUnity feature, MeshData md, IMapInformation mapInfo)
+public override void Run(MapboxFeature feature, MapboxMD md, MapboxMapInfo mapInfo)
         {
             if (md.Vertices.Count == 0 || feature == null) return;
 
@@ -239,7 +243,7 @@ public override void Run(VectorFeatureUnity feature, MeshData md, IMapInformatio
             }
         }
 
-        private void BuildWallSegment(MeshData md, Vector3 v1, Vector3 v2, float totalHeight, float firstH, float upperH, Color wallColor, int seed)
+        private void BuildWallSegment(MapboxMD md, Vector3 v1, Vector3 v2, float totalHeight, float firstH, float upperH, Color wallColor, int seed)
         {
             System.Random rng = new System.Random(seed);
 
@@ -294,7 +298,7 @@ public override void Run(VectorFeatureUnity feature, MeshData md, IMapInformatio
             }
         }
 
-private void BuildFirstFloorLights(MeshData md, Vector3 v1, Vector3 v2, float yBottom, float height, float length, Vector3 dir, Vector3 normal, System.Random rng)
+private void BuildFirstFloorLights(MapboxMD md, Vector3 v1, Vector3 v2, float yBottom, float height, float length, Vector3 dir, Vector3 normal, System.Random rng)
         {
             float doorRatio = (float)(rng.NextDouble() * 0.2 + 0.2);
             float doorWidth = length * doorRatio;
@@ -317,7 +321,7 @@ private void BuildFirstFloorLights(MeshData md, Vector3 v1, Vector3 v2, float yB
                 normal, doorColor, 1);
         }
 
-private void BuildUpperFloorLights(MeshData md, Vector3 v1, Vector3 v2, float yBottom, float height, float length, Vector3 dir, Vector3 normal, System.Random rng)
+private void BuildUpperFloorLights(MapboxMD md, Vector3 v1, Vector3 v2, float yBottom, float height, float length, Vector3 dir, Vector3 normal, System.Random rng)
         {
             int windowCount = rng.Next(1, 5);
 
@@ -357,7 +361,7 @@ private void BuildUpperFloorLights(MeshData md, Vector3 v1, Vector3 v2, float yB
             }
         }
 
-private void AddQuad(MeshData md, Vector3 bottomLeft, float yBottom, Vector3 bottomRight, float yTop, Vector3 normal, Color color, int submeshIndex)
+private void AddQuad(MapboxMD md, Vector3 bottomLeft, float yBottom, Vector3 bottomRight, float yTop, Vector3 normal, Color color, int submeshIndex)
         {
             // DEBUG: Log first wall quad for tall buildings
             if (submeshIndex == 0 && md.Vertices.Count < 100 && (yTop - yBottom) > 0.1f)
@@ -426,7 +430,7 @@ private void AddQuad(MeshData md, Vector3 bottomLeft, float yBottom, Vector3 bot
         }
     
 
-private void AddWindowGrid(MeshData md, Vector3 bottomLeft, float yBottom, Vector3 bottomRight, float yTop, Vector3 normal, Color color, int submeshIndex, int columns = 4, int rows = 6)
+private void AddWindowGrid(MapboxMD md, Vector3 bottomLeft, float yBottom, Vector3 bottomRight, float yTop, Vector3 normal, Color color, int submeshIndex, int columns = 4, int rows = 6)
         {
             // PERFORMANCE NOTE: columns=1, rows=1 creates single solid window (4 vertices)
             // vs columns=2, rows=3 creates 6-pane grid (24 vertices) = 6x memory cost

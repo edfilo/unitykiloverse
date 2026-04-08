@@ -58,7 +58,7 @@ public class KiloFirstPersonController : MonoBehaviour
     private KiloWorldMasterProfile profile;
 
     private bool isGodViewActive = false; // Toggles between default and God View
-    private float currentCameraTransitionTime = 0f;
+    private float currentCameraTransitionTime = 1f; // Start completed (no animation until tap triggers it)
     private Vector3 cameraInitialLocalPos;
     private Quaternion cameraInitialLocalRot;
 
@@ -446,24 +446,26 @@ public class KiloFirstPersonController : MonoBehaviour
     {
         isGodViewActive = !isGodViewActive;
         currentCameraTransitionTime = 0f;
-        Debug.Log($"[Camera] Toggled to {(isGodViewActive ? "GOD VIEW" : "FIRST PERSON")}");
+        Debug.Log($"[Camera] Toggled to {(isGodViewActive ? "GOD VIEW" : "FIRST PERSON")}\n{UnityEngine.StackTraceUtility.ExtractStackTrace()}");
     }
 
     private void ApplyCameraRotation()
     {
         if (cameraTransform == null || profile == null) return;
 
+        // Only animate while transition is in progress
+        if (currentCameraTransitionTime >= 1f) return;
+
         // Animate camera position and rotation
-        float transitionSpeed = 1.0f / Mathf.Max(0.1f, profile.camera.transitionTime); // Speed based on desired transition duration
+        float transitionSpeed = 1.0f / Mathf.Max(0.1f, profile.camera.transitionTime);
         currentCameraTransitionTime += Time.deltaTime * transitionSpeed;
-        float t = Mathf.Clamp01(currentCameraTransitionTime); // Normalized transition factor
+        float t = Mathf.Clamp01(currentCameraTransitionTime);
 
         Vector3 targetPos;
         Quaternion targetRot;
 
         if (isGodViewActive)
         {
-            // Target God View settings
             targetPos = new Vector3(
                 0f,
                 profile.camera.godPositionY,
@@ -477,7 +479,6 @@ public class KiloFirstPersonController : MonoBehaviour
         }
         else
         {
-            // Target Default settings
             targetPos = cameraInitialLocalPos;
             targetRot = cameraInitialLocalRot;
         }

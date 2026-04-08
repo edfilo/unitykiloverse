@@ -1,0 +1,43 @@
+[2026-04-07 04:39:17] Boot log started (editor=True)
+Log file: /Users/kiloverse/unitykiloverse/BootLog.txt
+If the editor locks up, the LAST line above is where it froze.
+---
+0.000s f0 AfterSceneLoad
+0.001s f0 BootSequence Init
+0.171s f1 TeleportManager.Start
+0.174s f1 TeleportManager editor init done
+0.278s f1 GPS Start allowed
+0.278s f1 GPS.Start begin
+0.287s f1 GPS editor ready
+0.288s f1 OvertureMapManager.Start
+0.335s f1 OvertureMapManager sync init done
+0.360s f1 RenderManager.Start
+0.363s f1 RenderManager.Start complete
+1.080s f1 PedometerService.Start
+1.098s f1 GPSLocationController first Update after AllowPlayer
+1.111s f1 BootDiagnostics first Update after AllowPlayer
+1.111s f1 BootWatchdog first Update after AllowPlayer
+1.111s f1 PlayerBootGate first Update after AllowPlayer
+4.144s f1 Overture.Update first
+4.144s f1 OvertureMapManager first Update after AllowPlayer
+4.162s f1 BootSequence start
+4.163s f1 BootTask completed wait for AllowRender
+4.163s f1 BootTask completed wait for AllowGPS
+4.163s f1 BootTask completed wait for AllowTeleport
+4.163s f1 BootTask completed wait for AllowMap
+4.163s f1 BootSequence editor bypass - skip tiles wait
+4.163s f1 BootState AllowPlayer
+4.163s f1 BootTask completed wait for AllowPlayer
+4.163s f1 BootSequence complete (editor)
+42.108s f2 PostBoot grace period ended - map/building load can start
+42.282s f2 UserPresenceManager.Start
+42.283s f2 UserPresenceManager.DeferredStart
+42.497s f3 UserPresenceManager.userId
+42.541s f4 UserPresenceManager.pedometer
+42.646s f5 UserPresenceManager.gps
+42.735s f6 UserPresenceManager.coroutines queued
+42.735s f6 UserPresenceManager.FetchStories skipped
+42.881s f8 UserPresenceManager.Presence tick
+42.885s f8 UserPresenceManager.coroutines started
+47.755s f219 UserPresenceManager.Heartbeat start
+47.766s f219 Presence.SendHeartbeat begin

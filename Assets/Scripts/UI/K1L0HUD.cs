@@ -150,8 +150,7 @@ public class K1L0HUD : MonoBehaviour
         RoundedRectSprite = K1L0GlassFactory.RoundedRectSprite;
 
         K1L0SceneCapture.EnsureExists();
-        DestroyExistingCanvas();
-        CreateCanvas();
+        UseSharedCanvas();
         EnsureEventSystem();
         CreateSceneDimmer();
         CreateWeatherBar();
@@ -172,34 +171,11 @@ public class K1L0HUD : MonoBehaviour
 #endif
     }
 
-    void CreateCanvas()
+    void UseSharedCanvas()
     {
-        GameObject go = new GameObject("K1L0_Canvas");
-        go.transform.SetParent(transform, false);
-        canvas = go.AddComponent<Canvas>();
-
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.overrideSorting = true;
-        canvas.sortingOrder = 5000;
-
-        CanvasScaler scaler = go.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(390, 844);
-        scaler.matchWidthOrHeight = 1f;
-
-        go.AddComponent<GraphicRaycaster>();
-
-        GameObject safeGO = new GameObject("SafeArea");
-        safeGO.transform.SetParent(go.transform, false);
-        safeArea = safeGO.AddComponent<RectTransform>();
-
-        Rect safe = Screen.safeArea;
-        Vector2 anchorMin = safe.position / new Vector2(Screen.width, Screen.height);
-        Vector2 anchorMax = (safe.position + safe.size) / new Vector2(Screen.width, Screen.height);
-        safeArea.anchorMin = anchorMin;
-        safeArea.anchorMax = anchorMax;
-        safeArea.offsetMin = Vector2.zero;
-        safeArea.offsetMax = Vector2.zero;
+        canvas = K1L0CanvasRoot.HUDCanvas;
+        safeArea = K1L0CanvasRoot.HUD;
+        Debug.Log("[K1L0HUD] Using K1L0CanvasRoot.HUD");
     }
 
     void EnsureEventSystem()

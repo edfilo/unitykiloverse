@@ -50,13 +50,10 @@ public class POILabelBridge : MonoBehaviour
         _instance = this;
         DontDestroyOnLoad(gameObject);
 
-        var canvasGO = new GameObject("POILabelCanvas");
-        canvasGO.transform.SetParent(transform);
-        _canvas = canvasGO.AddComponent<Canvas>();
-        _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        _canvas.sortingOrder = 100;
+        // Use shared canvas from K1L0CanvasRoot instead of creating our own
+        _canvas = K1L0CanvasRoot.WorldCanvas;
 
-        Debug.Log("[POILabelBridge] Started v9 - Update() tick (works on device + editor)");
+        Debug.Log("[POILabelBridge] Started v10 - using K1L0CanvasRoot.World");
     }
 
     void Update()
@@ -236,7 +233,7 @@ public class POILabelBridge : MonoBehaviour
     private void CreateLabelUI(POIEntry entry)
     {
         GameObject labelGO = new GameObject($"Label_{entry.name}");
-        labelGO.transform.SetParent(_canvas.transform, false);
+        labelGO.transform.SetParent(_canvas != null ? _canvas.transform : transform, false);
 
         RectTransform rt = labelGO.AddComponent<RectTransform>();
         rt.sizeDelta = new Vector2(300, 50);

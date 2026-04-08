@@ -218,7 +218,7 @@ MonoBehaviour:
     nearClipPlane: 0.3
     farClipPlane: 2500
   startupLocation:
-    startupLocation: 7
+    startupLocation: 3
     randomizeTucson: 1
     stCharlesLatitude: 32.202284641379315
     stCharlesLongitude: -110.96580091943918

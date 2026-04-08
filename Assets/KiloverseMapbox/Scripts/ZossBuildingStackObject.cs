@@ -4,12 +4,15 @@ using global::Mapbox.BaseModule.Unity;
 using global::Mapbox.VectorModule.MeshGeneration.Unity;
 using global::Mapbox.VectorModule.MeshGeneration.MeshModifiers;
 using UnityEngine;
+// Mapbox SDK base types for modifier pipeline compatibility
+using MbxScriptMM = global::Mapbox.VectorModule.MeshGeneration.Unity.ScriptableMeshModifierObject;
+using MbxMeshMod = global::Mapbox.VectorModule.MeshGeneration.MeshModifiers.MeshModifier;
 
 namespace Kiloverse.Mapbox
 {
     [DisplayName("Zoss Building Stack")]
     [CreateAssetMenu(menuName = "KiloWorld/Modifiers/Zoss Building Stack")]
-    public class ZossBuildingStackObject : ScriptableMeshModifierObject
+    public class ZossBuildingStackObject : MbxScriptMM
     {
         [Header("Floor Settings")]
         public float firstFloorHeight = 4.5f;
@@ -46,9 +49,9 @@ namespace Kiloverse.Mapbox
         public int windowVarianceSeed = 0;
 
         private ZossBuildingStack _implementation;
-        protected override MeshModifier _meshModifierImplementation => _implementation;
+        protected override MbxMeshMod _meshModifierImplementation => _implementation;
 
-public override void ConstructModifier(UnityContext unityContext)
+public override void ConstructModifier(global::Mapbox.BaseModule.Unity.UnityContext unityContext)
         {
             _implementation = new ZossBuildingStack(
                 firstFloorHeight,

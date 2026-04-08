@@ -29,8 +29,8 @@ public class VirtualGridSpawner : MonoBehaviour
     [Tooltip("Offset to side of road (meters)")]
     public float sideOffset = 1.5f;
 
-    [Tooltip("Height offset above road")]
-    public float spawnHeight = 0.02f;
+    [Tooltip("Height offset above road (must be above ground plane at y~0.15)")]
+    public float spawnHeight = 1.0f;
 
     [Header("Proximity Detection")]
     [Tooltip("Trigger alert when player is within this distance of a beam (meters)")]
@@ -122,9 +122,16 @@ public class VirtualGridSpawner : MonoBehaviour
 
         if (beamPrefab == null)
         {
-            Debug.LogError("[VirtualGridSpawner] Beam prefab not assigned!");
-            enabled = false;
-            return;
+            beamPrefab = Resources.Load<GameObject>("BeamAvatar");
+        }
+        if (beamPrefab == null)
+        {
+            // Last resort: create a primitive sphere with BeamAvatar component
+            Debug.LogWarning("[VirtualGridSpawner] Beam prefab not assigned! Creating fallback sphere.");
+            beamPrefab = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            beamPrefab.AddComponent<BeamAvatar>();
+            beamPrefab.SetActive(false);
+            beamPrefab.name = "BeamAvatarFallback";
         }
 
         Debug.Log($"[VirtualGridSpawner] Beam prefab assigned: {beamPrefab.name}");
@@ -207,12 +214,17 @@ public class VirtualGridSpawner : MonoBehaviour
             EnsureTapCollider(beams[i]);
         }
 
-        // Cache road layer folder reference (reuse runtimeRoot from above)
+        // Cache road layer folder reference — it may be a child of runtimeRoot OR at scene root
         if (runtimeRoot != null)
         {
             roadLayerFolder = runtimeRoot.transform.Find("road layer objects");
-            Debug.Log($"[VirtualGridSpawner] roadLayerFolder found: {roadLayerFolder != null}");
         }
+        if (roadLayerFolder == null)
+        {
+            var roadObj = GameObject.Find("road layer objects");
+            if (roadObj != null) roadLayerFolder = roadObj.transform;
+        }
+        Debug.Log($"[VirtualGridSpawner] roadLayerFolder found: {roadLayerFolder != null}, childCount: {(roadLayerFolder != null ? roadLayerFolder.childCount : 0)}");
 
         // Load proximity settings and respawn timing from profile
         if (profile != null)
@@ -227,6 +239,7 @@ public class VirtualGridSpawner : MonoBehaviour
         currentPlayerCell = GridCell.FromMercatorPosition(playerMercator, cellSize);
     }
     private float lastDiagnosticTime = -999f;
+    private bool _loggedGeometryOnce = false;
 
     void Update()
     {
@@ -271,6 +284,9 @@ public class VirtualGridSpawner : MonoBehaviour
             LogBeamDiagnostics();
         }
         */
+
+        // Reposition active beams every frame (floating origin: world shifts around player)
+        RepositionActiveBeams();
 
         // Grid updates can be slower (every 1s)
         if (Time.time - lastCheckTime < 1f) return;
@@ -665,6 +681,23 @@ public class VirtualGridSpawner : MonoBehaviour
         cachedOrbComponents[index].SetAvatarUrl(avatarUrl);
     }
 
+    private void RepositionActiveBeams()
+    {
+        // Floating origin: player stays at (0,0,0), world shifts every frame.
+        // Recalculate beam world positions from cached Mercator coords each frame.
+        for (int i = 0; i < 9; i++)
+        {
+            if (beams[i] == null || !beams[i].activeSelf) continue;
+            if (currentBeamMercatorTargets[i].x == 0 && currentBeamMercatorTargets[i].y == 0) continue;
+            Vector3 pos = MercatorToUnity(currentBeamMercatorTargets[i]);
+            pos.y += spawnHeight;
+            if (cachedOrbComponents[i] != null)
+                cachedOrbComponents[i].SetPosition(pos);
+            else
+                beams[i].transform.position = pos;
+        }
+    }
+
     private void UpdateAllBeams()
     {
         // Debug.Log("[VirtualGridSpawner] UpdateAllBeams() CALLED");
@@ -682,12 +715,15 @@ public class VirtualGridSpawner : MonoBehaviour
 
         // Get geometry (Mercator)
         Dictionary<string, List<Vector2d>> cellGeometry = GetCachedRoadGeometry();
-        // Debug.Log($"[VirtualGridSpawner] UpdateAllBeams: cellGeometry has {cellGeometry.Count} cells, {cellGeometry.Values.Sum(v => v.Count)} total points");
 
-        // ALWAYS log player cell and sample cells
-        var sampleCells = cellGeometry.Keys.Take(5).ToList();
-        string samplesStr = string.Join(", ", sampleCells);
-        // Debug.Log("[VirtualGridSpawner] Player Mercator: " + playerMercator.x.ToString("F1") + "," + playerMercator.y.ToString("F1") + " -> cell: " + playerCell.GetCellId() + ", Sample cells: " + samplesStr);
+        // One-time diagnostic
+        if (!_loggedGeometryOnce)
+        {
+            _loggedGeometryOnce = true;
+            var sampleCells = cellGeometry.Keys.Take(5).ToList();
+            string samplesStr = string.Join(", ", sampleCells);
+            Debug.Log($"[VirtualGridSpawner] cellGeometry: {cellGeometry.Count} cells, player cell: {GridCell.FromMercatorPosition(playerMercator, cellSize).GetCellId()}, samples: {samplesStr}");
+        }
 
         string date = DateTime.UtcNow.ToString("yyyyMMdd");
 
@@ -723,16 +759,20 @@ public class VirtualGridSpawner : MonoBehaviour
                                          (cellTimeSlot == currentBeamTimeSlots[beamIndex]) &&
                                          beam.activeSelf;
 
-                if (keepCurrentPosition)
+                if (keepCurrentPosition || beam.activeSelf)
                 {
-                    // FAST PATH: Just update Unity world position from cached Mercator (handles floating origin)
-                    Vector3 finalPos = MercatorToUnity(currentBeamMercatorTargets[beamIndex]);
-                    finalPos.y += spawnHeight;
-
-                    if (cachedOrbComponents[beamIndex] != null)
-                        cachedOrbComponents[beamIndex].SetPosition(finalPos);
-                    else
-                        beam.transform.position = finalPos;
+                    // FAST PATH: Recalculate world position from cached Mercator coords.
+                    // Player is always at origin (0,0,0) and the world shifts around them,
+                    // so we must update beam positions every frame to stay in sync.
+                    if (currentBeamMercatorTargets[beamIndex].x != 0 || currentBeamMercatorTargets[beamIndex].y != 0)
+                    {
+                        Vector3 finalPos = MercatorToUnity(currentBeamMercatorTargets[beamIndex]);
+                        finalPos.y += spawnHeight;
+                        if (cachedOrbComponents[beamIndex] != null)
+                            cachedOrbComponents[beamIndex].SetPosition(finalPos);
+                        else
+                            beam.transform.position = finalPos;
+                    }
                 }
                 else if (cellGeometry.ContainsKey(cellId) && cellGeometry[cellId].Count > 0)
                 {
@@ -844,10 +884,6 @@ public class VirtualGridSpawner : MonoBehaviour
                     beam.SetActive(false);
                     // Reset cache for this index so we retry next time
                     currentBeamCellIds[beamIndex] = "";
-                    if (beamIndex < 3) // Log first 3 beams
-                    {
-                        // Debug.Log("[VirtualGridSpawner] Beam " + beamIndex + " HIDDEN: no roads in cell " + cellId);
-                    }
                 }
                 beamIndex++;
             }
@@ -858,11 +894,19 @@ public class VirtualGridSpawner : MonoBehaviour
     {
         if (roadLayerFolder == null)
         {
-            if (Time.frameCount % 300 == 0)
+            // Retry finding road layer (may not have been created at init time)
+            var roadObj = GameObject.Find("road layer objects");
+            if (roadObj != null)
             {
-                Debug.LogWarning("[VirtualGridSpawner] roadLayerFolder is NULL - cannot cache roads");
+                roadLayerFolder = roadObj.transform;
+                Debug.Log($"[VirtualGridSpawner] roadLayerFolder found on retry, childCount: {roadLayerFolder.childCount}");
             }
-            return new Dictionary<string, List<Vector2d>>();
+            else
+            {
+                if (Time.frameCount % 300 == 0)
+                    Debug.LogWarning("[VirtualGridSpawner] roadLayerFolder is NULL - cannot cache roads");
+                return new Dictionary<string, List<Vector2d>>();
+            }
         }
 
         // Check if road mesh count changed
@@ -887,22 +931,25 @@ public class VirtualGridSpawner : MonoBehaviour
     {
         Dictionary<string, List<Vector2d>> cellGeometry = new Dictionary<string, List<Vector2d>>();
 
-        // Find RuntimeObjectsRoot
+        // Find road layer objects — may be under RuntimeObjectsRoot or at scene root
+        Transform roadFolder = null;
         GameObject runtimeRoot = GameObject.Find("RuntimeObjectsRoot");
-        if (runtimeRoot == null)
+        if (runtimeRoot != null)
         {
-            Debug.LogWarning("[VirtualGridSpawner] RuntimeObjectsRoot not found!");
-            return cellGeometry;
+            roadFolder = runtimeRoot.transform.Find("road layer objects");
         }
-
-        Transform roadLayerFolder = runtimeRoot.transform.Find("road layer objects");
-        if (roadLayerFolder == null)
+        if (roadFolder == null)
+        {
+            var roadObj = GameObject.Find("road layer objects");
+            if (roadObj != null) roadFolder = roadObj.transform;
+        }
+        if (roadFolder == null)
         {
             Debug.LogWarning("[VirtualGridSpawner] 'road layer objects' not found!");
             return cellGeometry;
         }
 
-        MeshFilter[] allRoadMeshes = roadLayerFolder.GetComponentsInChildren<MeshFilter>(true);
+        MeshFilter[] allRoadMeshes = roadFolder.GetComponentsInChildren<MeshFilter>(true);
         int processedRoads = 0;
 
         foreach (MeshFilter mf in allRoadMeshes)

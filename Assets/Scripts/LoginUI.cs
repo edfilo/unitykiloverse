@@ -44,7 +44,6 @@ public class LoginUI : MonoBehaviour
         Debug.Log("[LoginUI] Not authenticated, showing login screen");
         CreateLoginUI();
         ShowLogin();
-        StartCoroutine(EnsureOnTop());
     }
 
     void OnDestroy()
@@ -71,35 +70,13 @@ public class LoginUI : MonoBehaviour
             eventSystem.AddComponent<UnityEngine.EventSystems.StandaloneInputModule>();
         }
 
-        // Create full-screen canvas
-        loginCanvas = new GameObject("LoginCanvas");
-        Canvas canvas = loginCanvas.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.sortingOrder = short.MaxValue;
-        canvas.overrideSorting = true;
-        canvas.additionalShaderChannels = AdditionalCanvasShaderChannels.None;
-        DontDestroyOnLoad(loginCanvas);
+        // Use shared Modal canvas — no private canvas
+        loginCanvas = K1L0CanvasRoot.ModalCanvas.gameObject;
 
-        CanvasScaler scaler = loginCanvas.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1080, 1920);
-
-        GraphicRaycaster raycaster = loginCanvas.AddComponent<GraphicRaycaster>();
-        raycaster.blockingObjects = GraphicRaycaster.BlockingObjects.None;
-
-        // Go above all existing canvases
-        Canvas[] allCanvases = FindObjectsOfType<Canvas>();
-        int maxOrder = 0;
-        foreach (var c in allCanvases)
-        {
-            if (c != canvas && c.sortingOrder > maxOrder) maxOrder = c.sortingOrder;
-        }
-        canvas.sortingOrder = maxOrder + 1;
-
-        // Dark background panel
+        // Dark background panel — parent to Modal canvas directly (needs full screen coverage)
         loginPanel = new GameObject("LoginPanel");
         loginPanel.layer = 5; // UI layer
-        loginPanel.transform.SetParent(loginCanvas.transform, false);
+        loginPanel.transform.SetParent(K1L0CanvasRoot.ModalCanvas.transform, false);
 
         Image bg = loginPanel.AddComponent<Image>();
 
@@ -428,13 +405,13 @@ public class LoginUI : MonoBehaviour
     {
         isShowing = false;
 
-        if (loginCanvas != null)
+        // Destroy the panel, NOT the shared canvas
+        if (loginPanel != null)
         {
-            Destroy(loginCanvas);
-            loginCanvas = null;
+            Destroy(loginPanel);
+            loginPanel = null;
         }
 
-        loginPanel = null;
         _statusTMP = null;
     }
 

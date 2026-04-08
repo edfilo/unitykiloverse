@@ -55,7 +55,7 @@ public class POICanvasManager : MonoBehaviour
             return;
         }
         Instance = this;
-        
+
         EnsureCanvas();
         if (labelPrefab == null) CreateDefaultLabelPrefab();
     }

@@ -566,52 +566,9 @@ namespace Kiloverse.Mapbox
 
     // ── VectorLayerVisualizerObject (ScriptableObject) ──────────────
 
-    public abstract class LayerVisualizerConstructor : ScriptableObject
-    {
-        public abstract IVectorLayerVisualizer ConstructLayerVisualizer(IMapInformation mapInformation, UnityContext unityContext);
-    }
-
-    [CreateAssetMenu(menuName = "Kiloverse/Layer Visualizers/Vector Layer Visualizer")]
-    public class VectorLayerVisualizerObject : LayerVisualizerConstructor
-    {
-        [SerializeField] private string _vectorLayerName;
-        [SerializeField] private VectorLayerVisualizerSettings _settings;
-        [SerializeField] private List<ModifierStackObject> _modifierStackObjects;
-        private VectorLayerVisualizer _layerVisualizer;
-
-        public string VectorLayerName => _vectorLayerName;
-
-        public virtual IVectorLayerVisualizer GetLayerVisualizer() => _layerVisualizer;
-
-        public override IVectorLayerVisualizer ConstructLayerVisualizer(IMapInformation mapInformation, UnityContext unityContext)
-        {
-            _layerVisualizer = new VectorLayerVisualizer(_vectorLayerName, mapInformation, unityContext, _settings);
-
-            if (_modifierStackObjects != null)
-            {
-                var stacks = new List<ModifierStack>();
-                foreach (var stackObj in _modifierStackObjects)
-                {
-                    if (stackObj != null)
-                    {
-                        stackObj.Initialize(unityContext);
-                        stacks.Add(stackObj.GetModifierStack);
-                    }
-                }
-                _layerVisualizer.AddModifierStack(stacks);
-            }
-
-            return _layerVisualizer;
-        }
-    }
-
-    // ── VectorLayerModuleScript (MonoBehaviour) ─────────────────────
-
-    public class VectorLayerModuleScript : MonoBehaviour
-    {
-        [SerializeField] private List<VectorLayerVisualizerObject> _layerVisualizers;
-
-        public List<VectorLayerVisualizerObject> LayerVisualizers => _layerVisualizers;
-    }
+    // VectorLayerModuleScript, VectorLayerVisualizerObject, LayerVisualizerConstructor
+    // are NOT defined here — they come from the Mapbox SDK package (mapbox-unity-sdk-v3).
+    // The scene has a VectorLayerModuleScript component with serialized visualizer configs.
+    // OvertureMapManager uses FindFirstObjectByType to find the Mapbox component at runtime.
 }
 

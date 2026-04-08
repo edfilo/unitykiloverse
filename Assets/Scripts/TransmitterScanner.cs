@@ -133,6 +133,21 @@ private void Awake()
         }
         yield return new WaitForSeconds(5f); // Extra buffer after AllowPlayer
         Debug.Log("[TransmitterScanner] Starting Places API (deferred after boot)");
+        _placesApiRunning = true;
+        StartCoroutine(PlacesPollRoutine());
+    }
+
+    private bool _placesApiRunning = false;
+
+    /// <summary>
+    /// Force-start the Places API polling if it hasn't started yet.
+    /// Useful when TransmitterScanner is auto-created as a singleton (Start may not fire).
+    /// </summary>
+    public void EnsurePlacesApiRunning()
+    {
+        if (!usePlacesApi || _placesApiRunning) return;
+        _placesApiRunning = true;
+        Debug.Log("[TransmitterScanner] EnsurePlacesApiRunning: force-starting Places API");
         StartCoroutine(PlacesPollRoutine());
     }
 

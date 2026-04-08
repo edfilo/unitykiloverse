@@ -40,7 +40,7 @@ public class MobileInputManager : MonoBehaviour
     {
         // Check if we should enable mobile controls
         bool isMobile = Application.isMobilePlatform || forceMobileMode;
-        
+
         if (!isMobile)
         {
             Destroy(this);
@@ -104,7 +104,7 @@ public class MobileInputManager : MonoBehaviour
         canvasGO = new GameObject("MobileControlsCanvas");
         Canvas canvas = canvasGO.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.sortingOrder = -1; // Very low order to ensure Buttons (100+) are on top
+        canvas.sortingOrder = -1; // Low order so HUD buttons (100+) stay on top
         
         CanvasScaler scaler = canvasGO.AddComponent<CanvasScaler>();
         scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
@@ -145,8 +145,10 @@ public class MobileInputManager : MonoBehaviour
         handler.OnStateChange = (dragging) => { isTouching = dragging; };
         handler.OnTap = () =>
         {
-            // God mode toggle disabled — was triggering on pans
-            // TODO: Add a dedicated UI button for god mode if needed
+            if (playerController == null) return;
+            if (Time.unscaledTime - lastCameraToggleTime < 0.35f) return;
+            lastCameraToggleTime = Time.unscaledTime;
+            playerController.ToggleCameraView();
         };
     }
 
@@ -162,6 +164,7 @@ public class MobileInputManager : MonoBehaviour
         private float startTime;
         private bool isDragging = false;
         private bool hasMoved = false; // True if any OnDrag was received
+        private float lastDragEndTime = -1f; // Cooldown to ignore phantom taps after drags
         private enum Axis { None, Horizontal, Vertical }
         private Axis lockedAxis = Axis.None;
         private const float LOCK_THRESHOLD_PX = 5f;
@@ -292,12 +295,19 @@ public class MobileInputManager : MonoBehaviour
                 float dur = Time.time - startTime;
                 // A tap is: very short hold, AND less than 3px movement in any direction
                 // Any horizontal or vertical movement = swipe, not tap
-                bool isTap = dur < TAP_TIME
+                // Ignore phantom zero-duration taps that fire immediately after a drag release
+                float timeSinceLastDrag = Time.time - lastDragEndTime;
+                bool isTap = !hasMoved
+                    && dur < TAP_TIME
+                    && dur > 0.01f // Must have actual duration (phantom taps have dur=0)
+                    && timeSinceLastDrag > 0.15f // Cooldown after drags
                     && Mathf.Abs(totalDelta.x) < 3f
                     && Mathf.Abs(totalDelta.y) < 3f;
+                Debug.Log($"[MobileInput] PointerUp: hasMoved={hasMoved} dur={dur:F3}s delta=({totalDelta.x:F1},{totalDelta.y:F1}) dragCooldown={timeSinceLastDrag:F3}s isTap={isTap}");
+                if (hasMoved) lastDragEndTime = Time.time;
                 if (isTap)
                 {
-                    Debug.Log("[MobileInput] Tap detected on touch panel.");
+                    Debug.Log("[MobileInput] ✓ TAP → ToggleCameraView");
                     OnTap?.Invoke();
                 }
             }

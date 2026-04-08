@@ -1,5 +1,8 @@
 using System.Collections;
 using UnityEngine;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 /// <summary>
 /// Boot is coroutine-based: it only enqueues fast tasks (set flags) and yields between them.
@@ -38,15 +41,48 @@ public class BootSequence : MonoBehaviour
 
     private void Start()
     {
+#if UNITY_EDITOR
+        // Editor: run boot synchronously via EditorApplication.update since coroutines freeze after frame 2
+        EditorApplication.update += EditorBootOnce;
+#else
         StartCoroutine(Run());
+#endif
     }
+
+#if UNITY_EDITOR
+    private void EditorBootOnce()
+    {
+        EditorApplication.update -= EditorBootOnce;
+        if (!Application.isPlaying) return;
+
+        BootDiagnostics.SetMinimalBootLog(true);
+        BootDiagnostics.Mark("BootSequence start");
+        BootDiagnostics.Mark("BootSequence editor sync boot");
+
+        BootState.SetRenderAllowed();
+        BootDiagnostics.Mark("BootTask completed wait for AllowRender");
+
+        BootState.SetGPSAllowed();
+        BootDiagnostics.Mark("BootTask completed wait for AllowGPS");
+
+        BootState.SetTeleportAllowed();
+        BootDiagnostics.Mark("BootTask completed wait for AllowTeleport");
+
+        BootState.SetMapAllowed();
+        BootDiagnostics.Mark("BootTask completed wait for AllowMap");
+
+        BootDiagnostics.Mark("BootSequence editor bypass - skip tiles wait");
+
+        BootState.SetPlayerAllowed();
+        BootDiagnostics.Mark("BootTask completed wait for AllowPlayer");
+
+        BootDiagnostics.Mark("BootSequence complete (editor)");
+        Debug.Log("[BootSequence] Editor sync boot complete — all states allowed.");
+    }
+#endif
 
     private IEnumerator Run()
     {
-#if UNITY_EDITOR
-        if (skipTilesWaitInEditor)
-            BootDiagnostics.SetMinimalBootLog(true);
-#endif
         BootDiagnostics.Mark("BootSequence start");
 
         // Ensure one frame for scene objects to Awake
@@ -59,56 +95,6 @@ public class BootSequence : MonoBehaviour
         BootDiagnostics.Mark("BootSequence before AllowGPS");
         yield return BootTaskQueue.Enqueue("AllowGPS", () => BootState.SetGPSAllowed());
         BootDiagnostics.Mark("BootSequence after AllowGPS");
-
-        BootDiagnostics.Mark($"BootSequence checking platform: isMobilePlatform={Application.isMobilePlatform}");
-        if (!Application.isMobilePlatform)
-        {
-            BootDiagnostics.Mark("BootSequence editor fast path");
-            BootDiagnostics.Mark("BootSequence before AllowTeleport");
-            yield return BootTaskQueue.Enqueue("AllowTeleport", () => BootState.SetTeleportAllowed());
-            BootDiagnostics.Mark("BootSequence after AllowTeleport");
-            
-            BootDiagnostics.Mark("BootSequence before AllowMap");
-            yield return BootTaskQueue.Enqueue("AllowMap", () => BootState.SetMapAllowed());
-            BootDiagnostics.Mark("BootSequence after AllowMap - waiting for first tiles");
-
-#if UNITY_EDITOR
-            // EDITOR BYPASS: skip waiting for tiles so we can test skybox + player without map lockup
-            if (skipTilesWaitInEditor)
-            {
-                BootDiagnostics.Mark("BootSequence editor bypass - skip tiles wait");
-            }
-            else
-#endif
-            {
-                // Keep boot "going" until first tiles are on screen (so loading runs during boot, not after)
-                const float tilesWaitTimeout = 90f;
-                float tilesWaitStart = Time.realtimeSinceStartup;
-                while (!BootState.FirstTilesLoaded)
-                {
-                    float elapsed = Time.realtimeSinceStartup - tilesWaitStart;
-                    if (elapsed > tilesWaitTimeout)
-                    {
-                        BootDiagnostics.Mark("BootSequence tiles timeout - completing anyway");
-                        Debug.LogWarning($"[BootSequence] No tiles loaded after {tilesWaitTimeout}s - completing boot anyway.");
-                        break;
-                    }
-                    BootDiagnostics.Mark($"Waiting for tiles... {(int)elapsed}s");
-                    yield return new WaitForSeconds(0.5f);
-                    BootDiagnostics.Mark("Waiting for tiles loop resume");
-                }
-                if (BootState.FirstTilesLoaded)
-                    BootDiagnostics.Mark("BootSequence first tiles loaded");
-            }
-
-            BootDiagnostics.Mark("BootSequence before AllowPlayer");
-            yield return BootTaskQueue.Enqueue("AllowPlayer", () => BootState.SetPlayerAllowed());
-            BootDiagnostics.Mark("BootSequence after AllowPlayer");
-            // Yield one frame so "complete" and all other Updates don't pile in the same frame (lockup started after we broke up boot)
-            yield return null;
-            BootDiagnostics.Mark("BootSequence complete (editor)");
-            yield break;
-        }
 
         // Wait for GPS (or timeout) before teleport + map
         float start = Time.realtimeSinceStartup;

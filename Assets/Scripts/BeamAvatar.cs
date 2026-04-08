@@ -41,6 +41,7 @@ public class BeamAvatar : MonoBehaviour
     private LineRenderer beamRenderer;
     private Vector3 startPosition;
     private float timeOffset;
+    private bool externallyPositioned;
     
     [Header("Magical Particles")]
     public Material particleBeamMaterial; // Assign ParticleBeam.mat in inspector
@@ -179,6 +180,10 @@ public class BeamAvatar : MonoBehaviour
 
         // Apply dynamic settings
         ApplyParticleSettings();
+
+        // Force play — playOnAwake may not trigger if parent was inactive
+        magicalParticles.Play();
+        Debug.Log($"[BeamAvatar] Particle system created and playing: particleCount={magicalParticles.particleCount}, isPlaying={magicalParticles.isPlaying}, emission={magicalParticles.emission.rateOverTime.constant:F0}");
     }
 
     /// <summary>
@@ -386,6 +391,7 @@ public class BeamAvatar : MonoBehaviour
     {
         startPosition = newPosition;
         transform.position = newPosition;
+        externallyPositioned = true;
     }
 
     void Update()
@@ -397,8 +403,8 @@ public class BeamAvatar : MonoBehaviour
 
         UpdateAvatarVisual();
 
-        // Float animation
-        if (floatAnimation)
+        // Float animation — only if not externally positioned (VirtualGridSpawner calls SetPosition every frame)
+        if (floatAnimation && !externallyPositioned)
         {
             float yOffset = Mathf.Sin((Time.time + timeOffset) * floatSpeed) * floatHeight;
             transform.position = startPosition + Vector3.up * yOffset;

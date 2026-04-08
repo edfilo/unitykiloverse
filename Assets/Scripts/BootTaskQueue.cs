@@ -2,6 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 /// <summary>
 /// Boot tasks run one-by-one; each task's Action runs synchronously on the main thread.
@@ -48,6 +51,14 @@ public class BootTaskQueue : MonoBehaviour
     public static IEnumerator Enqueue(string label, Action action)
     {
         EnsureInstance();
+#if UNITY_EDITOR
+        // Editor: execute task synchronously to avoid coroutine stall when Update() stops
+        BootDiagnostics.Mark($"BootTask start {label} (editor sync)");
+        try { action?.Invoke(); }
+        catch (Exception e) { Debug.LogError($"[BootTaskQueue] Task '{label}' failed: {e.Message}"); }
+        BootDiagnostics.Mark($"BootTask completed wait for {label}");
+        yield return null;
+#else
         var task = new BootTask { Label = label, Action = action, Done = false };
         _instance._queue.Enqueue(task);
         BootDiagnostics.Mark($"BootTask enqueued {label} (queue size: {_instance._queue.Count})");
@@ -56,13 +67,14 @@ public class BootTaskQueue : MonoBehaviour
         while (!task.Done)
         {
             waitFrames++;
-            if (waitFrames % 60 == 0) // Log every second if waiting too long
+            if (waitFrames % 60 == 0)
             {
                 Debug.LogWarning($"[BootTaskQueue] Waiting for task '{label}' to complete (waited {waitFrames} frames, queue size: {_instance._queue.Count}, running: {_instance._running})");
             }
             yield return null;
         }
         BootDiagnostics.Mark($"BootTask completed wait for {label}");
+#endif
     }
 
     private static void EnsureInstance()

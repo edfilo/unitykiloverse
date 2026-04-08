@@ -7,6 +7,17 @@ public class UIBootstrapper : MonoBehaviour
 {
     void Awake()
     {
+        // Ensure boot state is set (BootSequence/MinimalBoot not in scene after recovery)
+        if (!BootState.AllowMap)
+        {
+            Debug.Log("[UIBootstrapper] Triggering MinimalBoot (BootSequence not in scene)");
+            BootState.SetRenderAllowed();
+            BootState.SetGPSAllowed();
+            BootState.SetTeleportAllowed();
+            BootState.SetMapAllowed();
+            BootState.SetPlayerAllowed();
+        }
+
         // Create K1L0 HUD
         K1L0HUD hud = FindFirstObjectByType<K1L0HUD>();
         if (hud == null)
@@ -17,13 +28,12 @@ public class UIBootstrapper : MonoBehaviour
             hudGO.AddComponent<K1L0HUD>();
         }
 
-        // Keep UILayoutManager for WeatherView/LocationLabelUI data flow
+        // Disable old UILayoutManager if it exists (K1L0HUD replaces it)
         UILayoutManager layoutManager = FindFirstObjectByType<UILayoutManager>();
-        if (layoutManager == null)
+        if (layoutManager != null)
         {
-            Debug.Log("[UIBootstrapper] Creating UILayoutManager");
-            GameObject layoutManagerGO = new GameObject("UILayoutManager");
-            layoutManager = layoutManagerGO.AddComponent<UILayoutManager>();
+            Debug.Log("[UIBootstrapper] Disabling old UILayoutManager (K1L0HUD replaces it)");
+            layoutManager.enabled = false;
         }
 
         // Disable old PedometerCanvas if it exists
