@@ -296,6 +296,7 @@ public class PingButton : MonoBehaviour
     {
         public bool ok;
         public string message;
+        public string city;
         public WeatherData weather;
     }
 

@@ -31,7 +31,7 @@ public class AppleSignInHandler : MonoBehaviour
         }
     }
 
-    public event Action<string, string, string> OnAppleSignInSuccess; // idToken, nonce, fullName
+    public event Action<string, string, string, string> OnAppleSignInSuccess; // idToken, nonce, fullName, appleUserId
     public event Action<string> OnAppleSignInFailed;
 
     private void Awake()
@@ -94,9 +94,10 @@ public class AppleSignInHandler : MonoBehaviour
                 string idToken = parts[0];
                 string nonce = parts[1];
                 string fullName = parts.Length > 2 ? parts[2] : "";
+                string appleUserId = parts.Length > 3 ? parts[3] : "";
 
-                Debug.Log($"[AppleSignIn] ✓ Sign-in successful for: {fullName}");
-                OnAppleSignInSuccess?.Invoke(idToken, nonce, fullName);
+                Debug.Log($"[AppleSignIn] ✓ Sign-in successful for: {fullName}, appleUserId: {appleUserId}");
+                OnAppleSignInSuccess?.Invoke(idToken, nonce, fullName, appleUserId);
             }
             else
             {
@@ -130,7 +131,7 @@ public class AppleSignInHandler : MonoBehaviour
         string fakeName = "Test User";
 
         Debug.Log($"[AppleSignIn] [EDITOR] Simulating sign-in with fake credentials");
-        OnAppleSignInSuccess?.Invoke(fakeIdToken, fakeNonce, fakeName);
+        OnAppleSignInSuccess?.Invoke(fakeIdToken, fakeNonce, fakeName, "EDITOR_APPLE_USER");
         #endif
     }
 }

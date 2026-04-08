@@ -29,9 +29,15 @@ public class LoginUI : MonoBehaviour
         return;
 #endif
 
+        // Always subscribe to auth events so we can re-show login if token refresh fails
+        FirebaseAuthManager.Instance.OnAuthStateChanged += OnAuthStateChanged;
+        FirebaseAuthManager.Instance.OnAuthError += OnAuthError;
+        AppleSignInHandler.Instance.OnAppleSignInSuccess += OnAppleSignInSuccess;
+        AppleSignInHandler.Instance.OnAppleSignInFailed += OnAppleSignInFailed;
+
         if (FirebaseAuthManager.Instance != null && FirebaseAuthManager.Instance.isAuthenticated)
         {
-            Debug.Log("[LoginUI] Already authenticated, skipping login");
+            Debug.Log("[LoginUI] Already authenticated, waiting for token refresh...");
             return;
         }
 
@@ -39,12 +45,6 @@ public class LoginUI : MonoBehaviour
         CreateLoginUI();
         ShowLogin();
         StartCoroutine(EnsureOnTop());
-
-        FirebaseAuthManager.Instance.OnAuthStateChanged += OnAuthStateChanged;
-        FirebaseAuthManager.Instance.OnAuthError += OnAuthError;
-
-        AppleSignInHandler.Instance.OnAppleSignInSuccess += OnAppleSignInSuccess;
-        AppleSignInHandler.Instance.OnAppleSignInFailed += OnAppleSignInFailed;
     }
 
     void OnDestroy()
@@ -324,19 +324,22 @@ public class LoginUI : MonoBehaviour
         OnAuthStateChanged(true);
     }
 
-    void OnAppleSignInSuccess(string idToken, string nonce, string fullName)
+    void OnAppleSignInSuccess(string idToken, string nonce, string fullName, string appleUserId)
     {
-        Debug.Log("[LoginUI] Apple sign-in successful, exchanging for Firebase token...");
-        SetStatus("COMPLETING SIGN-IN...", Color.yellow);
+        Debug.Log($"[LoginUI] Apple sign-in successful! appleUserId={appleUserId}, name={fullName}");
+        SetStatus("SIGNED IN", Color.green);
 
-        #if UNITY_EDITOR
-        FirebaseAuthManager.Instance.userId = "EDITOR_TEST_USER";
-        FirebaseAuthManager.Instance.isAuthenticated = true;
-        FirebaseAuthManager.Instance.displayName = fullName;
+        // Use Apple user ID directly — no Firebase token exchange needed
+        // Server /ping doesn't verify tokens, just needs a stable userId
+        var auth = FirebaseAuthManager.Instance;
+        auth.userId = !string.IsNullOrEmpty(appleUserId) ? $"apple_{appleUserId}" : $"apple_{System.Guid.NewGuid()}";
+        auth.displayName = fullName ?? "";
+        auth.isAuthenticated = true;
+        auth.idToken = idToken; // Store in case server needs it later
+        auth.SaveAuthPublic();
+
+        Debug.Log($"[LoginUI] Authenticated as {auth.userId}");
         OnAuthStateChanged(true);
-        #else
-        FirebaseAuthManager.Instance.SignInWithApple(idToken, nonce, fullName);
-        #endif
     }
 
     void OnAppleSignInFailed(string error)
@@ -348,16 +351,35 @@ public class LoginUI : MonoBehaviour
     void OnAuthError(string error)
     {
         Debug.LogError($"[LoginUI] Firebase auth failed: {error}");
-        SetStatus($"AUTH FAILED: {error}", Color.red);
+        // Show full error with word wrap — status text should show it all
+        if (_statusTMP != null)
+        {
+            _statusTMP.enableWordWrapping = true;
+            _statusTMP.overflowMode = TMPro.TextOverflowModes.Overflow;
+            _statusTMP.fontSize = 16;
+            var rt = _statusTMP.GetComponent<RectTransform>();
+            if (rt != null) rt.sizeDelta = new Vector2(800, 300);
+        }
+        SetStatus($"AUTH FAILED:\n{error}", Color.red);
     }
 
-    void OnAuthStateChanged(bool isAuthenticated)
+    void OnAuthStateChanged(bool authenticated)
     {
-        if (isAuthenticated)
+        Debug.Log($"[LoginUI] OnAuthStateChanged({authenticated}), isShowing={isShowing}");
+        if (authenticated)
         {
-            Debug.Log("[LoginUI] Authentication successful, hiding login");
-            SetStatus("SIGNED IN", Color.green);
-            Invoke("HideLogin", 1f);
+            // Only hide if we're actually showing the login screen
+            if (isShowing)
+            {
+                Debug.Log("[LoginUI] Authentication successful, hiding login");
+                SetStatus("SIGNED IN", Color.green);
+                Invoke("HideLogin", 1f);
+            }
+        }
+        else
+        {
+            Debug.Log("[LoginUI] Signed out / token refresh failed");
+            // Don't auto-show — let the profile screen's Login button handle it
         }
     }
 
@@ -372,6 +394,10 @@ public class LoginUI : MonoBehaviour
 
     public void ShowLogin()
     {
+        // Cancel any pending HideLogin from a previous auth success
+        CancelInvoke("HideLogin");
+        isShowing = true;
+
         if (loginPanel == null)
         {
             CreateLoginUI();

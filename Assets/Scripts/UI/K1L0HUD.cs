@@ -12,6 +12,24 @@ public class K1L0HUD : MonoBehaviour
     private TextMeshProUGUI weatherText;
     private TextMeshProUGUI memText;
 
+    public static K1L0HUD Instance { get; private set; }
+
+    /// <summary>Set the city/weather text directly from ping response.</summary>
+    public void SetWeatherText(string city, string weatherInfo)
+    {
+        Debug.Log($"[K1L0HUD] SetWeatherText called: city='{city}', weather='{weatherInfo}', weatherText null={weatherText == null}");
+        if (weatherText == null) return;
+        string display = "";
+        if (!string.IsNullOrEmpty(city)) display = city;
+        if (!string.IsNullOrEmpty(weatherInfo))
+            display = string.IsNullOrEmpty(display) ? weatherInfo : $"{display} · {weatherInfo}";
+        if (!string.IsNullOrEmpty(display))
+        {
+            weatherText.text = display.ToUpper();
+            Debug.Log($"[K1L0HUD] Set weatherText to: '{weatherText.text}'");
+        }
+    }
+
     private K1L0Dock dock;
 
     // Each mode has its own panel
@@ -56,6 +74,8 @@ public class K1L0HUD : MonoBehaviour
         DoInitialize();
     }
 
+    private float _lastWeatherPoll = -999f;
+
     void Update()
     {
         if (!oldUIHidden)
@@ -73,12 +93,48 @@ public class K1L0HUD : MonoBehaviour
                 sceneDimmer.color = c;
             }
         }
+
+        // Poll city/weather from Update (coroutines unreliable in this project)
+        if (weatherText != null && Time.realtimeSinceStartup - _lastWeatherPoll > 5f)
+        {
+            _lastWeatherPoll = Time.realtimeSinceStartup;
+            PollWeatherText();
+        }
+    }
+
+    void PollWeatherText()
+    {
+        string result = null;
+
+        var wv = FindFirstObjectByType<WeatherView>();
+        if (wv != null)
+        {
+            string txt = wv.GetDisplayText();
+            if (!string.IsNullOrEmpty(txt) && txt != "Finding location...")
+                result = txt;
+        }
+
+        if (result == null)
+        {
+            var ll = FindFirstObjectByType<LocationLabelUI>();
+            if (ll != null)
+            {
+                string city = ll.GetCityName();
+                if (!string.IsNullOrEmpty(city))
+                    result = city;
+            }
+        }
+
+        Debug.Log($"[K1L0HUD] PollWeatherText: result='{result}', weatherText null={weatherText == null}, wv exists={wv != null}");
+        if (result != null && weatherText != null)
+            weatherText.text = result.ToUpper();
     }
 
     void DoInitialize()
     {
         if (initialized) return;
         initialized = true;
+        Instance = this;
         monoFont = Resources.Load<TMP_FontAsset>("Fonts/IBMPlexMono-Regular SDF");
         monoFontLight = Resources.Load<TMP_FontAsset>("Fonts/IBMPlexMono-Light SDF");
         if (monoFont == null)
@@ -93,6 +149,7 @@ public class K1L0HUD : MonoBehaviour
 
         RoundedRectSprite = K1L0GlassFactory.RoundedRectSprite;
 
+        K1L0SceneCapture.EnsureExists();
         DestroyExistingCanvas();
         CreateCanvas();
         EnsureEventSystem();
@@ -222,8 +279,6 @@ public class K1L0HUD : MonoBehaviour
         weatherText.color = new Color(0.75f, 0.85f, 1f, 0.7f);
         weatherText.alignment = TextAlignmentOptions.TopLeft;
         weatherText.text = "";
-
-        StartCoroutine(PollWeather());
     }
 
     void CreateMemLabel()
@@ -508,33 +563,6 @@ public class K1L0HUD : MonoBehaviour
         dimmerTarget = anyOpen ? DimmerAlpha : 0f;
     }
 
-    IEnumerator PollWeather()
-    {
-        while (true)
-        {
-            yield return new WaitForSeconds(10f);
-            if (weatherText == null) continue;
-
-            var wv = FindFirstObjectByType<WeatherView>();
-            if (wv != null)
-            {
-                string txt = wv.GetDisplayText();
-                if (!string.IsNullOrEmpty(txt))
-                {
-                    weatherText.text = txt.ToUpper();
-                    continue;
-                }
-            }
-
-            var ll = FindFirstObjectByType<LocationLabelUI>();
-            if (ll != null)
-            {
-                string city = ll.GetCityName();
-                if (!string.IsNullOrEmpty(city))
-                    weatherText.text = city.ToUpper();
-            }
-        }
-    }
 
 #if UNITY_EDITOR
     private float demoTimer = -1f;

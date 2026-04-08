@@ -106,11 +106,11 @@ public class K1L0StatusMode : MonoBehaviour
         sb.AppendLine();
         sb.AppendLine(BuildMetricLine("HYDRATION", simulatedHydration, $"{Mathf.RoundToInt(simulatedHydration * 100f)}%"));
         sb.AppendLine(BuildMetricLine("SIGNAL", signal, $"{Mathf.RoundToInt(signal * 100f)}%"));
-        sb.AppendLine(BuildMetricLine("MOVEMENT", movement, steps24 > 0 ? $"{steps24:N0} steps" : "pending"));
+        sb.AppendLine(BuildMetricLine("24H STEPS", movement, steps24 > 0 ? $"{steps24:N0}" : "pending"));
         sb.AppendLine(BuildMetricLine("DUST", simulatedDust, $"{Mathf.RoundToInt(Mathf.Lerp(28f, 420f, simulatedDust))}g"));
         sb.AppendLine();
-        sb.Append("<color=#73FF88>> seven day movement cache: ");
-        sb.Append(steps7d > 0 ? $"{steps7d:N0} steps</color>" : "pending</color>");
+        sb.Append("<color=#73FF88>> 7 day steps: ");
+        sb.Append(steps7d > 0 ? $"{steps7d:N0}</color>" : "pending</color>");
 
         bodyText.text = sb.ToString();
         UpdateLineBackgrounds();

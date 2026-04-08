@@ -27,11 +27,14 @@
             fullName = [nameParts componentsJoinedByString:@" "];
         }
 
-        // Build result string: "idToken|nonce|fullName"
-        NSString *result = [NSString stringWithFormat:@"%@|%@|%@",
+        NSString *appleUserId = appleIDCredential.user ?: @"";
+
+        // Build result string: "idToken|nonce|fullName|appleUserId"
+        NSString *result = [NSString stringWithFormat:@"%@|%@|%@|%@",
                           idToken ?: @"",
                           self.currentNonce ?: @"",
-                          fullName];
+                          fullName,
+                          appleUserId];
 
         // Send to Unity
         UnitySendMessage([self.callbackObject UTF8String],

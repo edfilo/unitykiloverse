@@ -431,6 +431,7 @@ public class UserPresenceManager : MonoBehaviour
     {
         public WeatherData weather;
         public string message;
+        public string city;
         public BeamInfo[] beams;
     }
 
@@ -479,6 +480,18 @@ public class UserPresenceManager : MonoBehaviour
                         ui.UpdateWeather(data.weather.icon, data.weather.glyph, data.weather.temperatureF);
                     }
                 }
+            }
+
+            // Set city/weather on standalone persistent overlay (K1L0HUD canvas unreliable)
+            Debug.Log($"[Presence] Parsed city='{data?.city}', weather={(data?.weather != null)}");
+            if (data != null)
+            {
+                string weatherStr = null;
+                // JsonUtility deserializes "weather":null as empty object, check icon to confirm real data
+                if (data.weather != null && !string.IsNullOrEmpty(data.weather.icon))
+                    weatherStr = $"{Mathf.RoundToInt(data.weather.temperatureF)}°F";
+                if (!string.IsNullOrEmpty(data.city) || weatherStr != null)
+                    CityWeatherOverlay.Show(data.city, weatherStr);
             }
 
             if (data != null && !string.IsNullOrEmpty(data.message))

@@ -88,16 +88,20 @@ printf '#!/bin/sh\nexit 0\n' > "$IOS_BUILD/process_symbols.sh"
 chmod +x "$IOS_BUILD/process_symbols.sh"
 sed -i "" "s/CYE232ULMR/$TEAM_ID/g" "$IOS_BUILD/Unity-iPhone.xcodeproj/project.pbxproj"
 
-# Strip Location Push entitlement (requires special provisioning profile)
+# Strip Location Push entitlement but keep Sign in with Apple
 if [ -f "$IOS_BUILD/Unity-iPhone.entitlements" ]; then
   cat > "$IOS_BUILD/Unity-iPhone.entitlements" << 'ENTITLEMENTS'
 <?xml version="1.0" encoding="utf-8"?>
 <plist version="1.0">
   <dict>
+    <key>com.apple.developer.applesignin</key>
+    <array>
+      <string>Default</string>
+    </array>
   </dict>
 </plist>
 ENTITLEMENTS
-  echo "  Stripped Location Push entitlement"
+  echo "  Kept Sign in with Apple entitlement, stripped Location Push"
 fi
 
 STEP_START=$(date +%s)
