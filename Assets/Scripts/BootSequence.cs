@@ -21,6 +21,10 @@ public class BootSequence : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Init()
     {
+#if UNITY_STANDALONE_OSX && !UNITY_EDITOR
+        // Mac: start at a Maps-like window size
+        Screen.SetResolution(1280, 900, false);
+#endif
 #if DEVELOPMENT_BUILD || UNITY_EDITOR
         BootDiagnostics.Mark("BootSequence Init");
 #endif

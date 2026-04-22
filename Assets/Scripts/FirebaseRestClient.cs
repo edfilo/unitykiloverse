@@ -1,8 +1,14 @@
 using UnityEngine;
 using UnityEngine.Networking;
 using System.Collections;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System;
+using System.IO;
+using System.Net.Http;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 public class FirebaseRestClient : MonoBehaviour
 {
@@ -200,103 +206,224 @@ public class FirebaseRestClient : MonoBehaviour
     {
         if (!path.StartsWith("/")) path = "/" + path;
         string url = $"{databaseUrl}{path}.json";
-        if (!string.IsNullOrEmpty(authSecret))
+        // RTDB REST auth — idToken takes priority over legacy secret. SSE streams
+        // only accept auth via query string (the Authorization header we use for
+        // one-shot REST calls doesn't apply here), so rules-protected paths need
+        // the token inlined in the URL or the stream delivers empty data.
+        string token = FirebaseAuthManager.Instance != null ? FirebaseAuthManager.Instance.idToken : null;
+        if (!string.IsNullOrEmpty(token))
+        {
+            url += $"?auth={token}";
+        }
+        else if (!string.IsNullOrEmpty(authSecret))
         {
             url += $"?auth={authSecret}";
         }
         return url;
     }
 
-    // --- SSE Streaming ---
-    private Coroutine sseCoroutine;
-    private bool sseRunning;
+    // --- SSE Streaming (multi-listener, true streaming via HttpClient) ---
+    //
+    // Unity's DownloadHandlerScript on macOS standalone buffers chunked responses
+    // and only delivers ~1 ReceiveData call per SSE connection, so subsequent
+    // Firebase RTDB "put" events never surface. We use System.Net.Http.HttpClient
+    // on a background Task with HttpCompletionOption.ResponseHeadersRead and a
+    // StreamReader that yields one SSE line at a time. Lines are handed off to
+    // the main thread via a ConcurrentQueue which a coroutine drains.
+    private class ListenerState
+    {
+        public CancellationTokenSource cts;
+        public Task task;
+        public Coroutine drainCoroutine;
+        public bool running;
+        public Action<string> onData;
+        public readonly ConcurrentQueue<QueueItem> queue = new ConcurrentQueue<QueueItem>();
+    }
+
+    private enum QueueItemKind { Meta, Line, Error, Reconnect }
+    private struct QueueItem
+    {
+        public QueueItemKind kind;
+        public string payload;
+    }
+
+    private static readonly HttpClient sseHttpClient = CreateSseHttpClient();
+    private readonly Dictionary<string, ListenerState> listeners = new Dictionary<string, ListenerState>();
+
+    private static HttpClient CreateSseHttpClient()
+    {
+        var handler = new HttpClientHandler { AllowAutoRedirect = true };
+        var client = new HttpClient(handler)
+        {
+            // SSE connections are long-lived. Effectively no timeout — the
+            // server sends keep-alives every 30s and we handle reconnects.
+            Timeout = Timeout.InfiniteTimeSpan
+        };
+        return client;
+    }
 
     public void StartListening(string path, Action<string> onData)
     {
-        StopListening();
-        sseCoroutine = StartCoroutine(SSEListenRoutine(path, onData));
+        StopListening(path);
+        var state = new ListenerState
+        {
+            running = true,
+            cts = new CancellationTokenSource(),
+            onData = onData
+        };
+        listeners[path] = state;
+        state.drainCoroutine = StartCoroutine(DrainQueueRoutine(path, state));
+        state.task = Task.Run(() => SSEStreamLoopAsync(path, state));
+    }
+
+    public void StopListening(string path)
+    {
+        if (!listeners.TryGetValue(path, out var state)) return;
+        state.running = false;
+        try { state.cts?.Cancel(); } catch { }
+        if (state.drainCoroutine != null) StopCoroutine(state.drainCoroutine);
+        listeners.Remove(path);
     }
 
     public void StopListening()
     {
-        sseRunning = false;
-        if (sseCoroutine != null)
+        foreach (var kv in listeners)
         {
-            StopCoroutine(sseCoroutine);
-            sseCoroutine = null;
+            kv.Value.running = false;
+            try { kv.Value.cts?.Cancel(); } catch { }
+            if (kv.Value.drainCoroutine != null) StopCoroutine(kv.Value.drainCoroutine);
         }
+        listeners.Clear();
     }
 
-    private IEnumerator SSEListenRoutine(string path, Action<string> onData)
+    private async Task SSEStreamLoopAsync(string path, ListenerState state)
     {
-        sseRunning = true;
-        float retryDelay = 1f;
+        string url = BuildRtdbUrl(path);
+        float retryDelaySec = 1f;
 
-        while (sseRunning)
+        while (state.running && !state.cts.IsCancellationRequested)
         {
-            string url = BuildRtdbUrl(path);
-            // SSE requires orderBy for streaming
-            url += url.Contains("?") ? "&" : "?";
+            state.queue.Enqueue(new QueueItem { kind = QueueItemKind.Meta, payload = "connecting" });
 
-            Debug.Log($"[Firebase SSE] Connecting to {path}...");
-
-            using (UnityWebRequest www = new UnityWebRequest(url, "GET"))
+            try
             {
-                www.downloadHandler = new DownloadHandlerBuffer();
-                www.SetRequestHeader("Accept", "text/event-stream");
-                www.SetRequestHeader("Cache-Control", "no-cache");
-
-                var op = www.SendWebRequest();
-                float lastDataTime = Time.realtimeSinceStartup;
-                int lastLength = 0;
-
-                while (!op.isDone && sseRunning)
+                using (var req = new HttpRequestMessage(HttpMethod.Get, url))
                 {
-                    string text = www.downloadHandler?.text ?? "";
-                    if (text.Length > lastLength)
-                    {
-                        string newData = text.Substring(lastLength);
-                        lastLength = text.Length;
-                        lastDataTime = Time.realtimeSinceStartup;
+                    req.Headers.TryAddWithoutValidation("Accept", "text/event-stream");
+                    req.Headers.TryAddWithoutValidation("Cache-Control", "no-cache");
 
-                        // Parse SSE events
-                        string[] lines = newData.Split('\n');
-                        for (int i = 0; i < lines.Length; i++)
+                    using (var resp = await sseHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, state.cts.Token).ConfigureAwait(false))
+                    {
+                        string ct = resp.Content.Headers.ContentType?.ToString() ?? "?";
+                        state.queue.Enqueue(new QueueItem
                         {
-                            if (lines[i].StartsWith("data:"))
+                            kind = QueueItemKind.Meta,
+                            payload = $"HTTP {(int)resp.StatusCode} ct={ct}"
+                        });
+
+                        if (!resp.IsSuccessStatusCode)
+                        {
+                            state.queue.Enqueue(new QueueItem
                             {
-                                string data = lines[i].Substring(5).Trim();
-                                if (!string.IsNullOrEmpty(data) && data != "null")
+                                kind = QueueItemKind.Error,
+                                payload = $"status {(int)resp.StatusCode}"
+                            });
+                        }
+                        else
+                        {
+                            using (var stream = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false))
+                            using (var reader = new StreamReader(stream, Encoding.UTF8))
+                            {
+                                retryDelaySec = 1f;
+                                while (state.running && !state.cts.IsCancellationRequested)
                                 {
-                                    onData?.Invoke(data);
+                                    string line;
+                                    try
+                                    {
+                                        line = await reader.ReadLineAsync().ConfigureAwait(false);
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        state.queue.Enqueue(new QueueItem { kind = QueueItemKind.Error, payload = "read: " + e.Message });
+                                        break;
+                                    }
+
+                                    if (line == null)
+                                    {
+                                        state.queue.Enqueue(new QueueItem { kind = QueueItemKind.Reconnect, payload = "eof" });
+                                        break;
+                                    }
+
+                                    state.queue.Enqueue(new QueueItem { kind = QueueItemKind.Line, payload = line });
                                 }
                             }
                         }
-
-                        retryDelay = 1f; // Reset on success
                     }
-
-                    // Timeout: reconnect if no data for 60s
-                    if (Time.realtimeSinceStartup - lastDataTime > 60f)
-                    {
-                        Debug.Log("[Firebase SSE] No data for 60s, reconnecting...");
-                        break;
-                    }
-
-                    yield return null;
-                }
-
-                if (www.result != UnityWebRequest.Result.Success && sseRunning)
-                {
-                    Debug.LogWarning($"[Firebase SSE] Connection lost: {www.error}. Retrying in {retryDelay}s...");
                 }
             }
-
-            if (sseRunning)
+            catch (OperationCanceledException)
             {
-                yield return new WaitForSeconds(retryDelay);
-                retryDelay = Mathf.Min(retryDelay * 2f, 30f);
+                break;
             }
+            catch (Exception e)
+            {
+                state.queue.Enqueue(new QueueItem { kind = QueueItemKind.Error, payload = e.Message });
+            }
+
+            if (!state.running || state.cts.IsCancellationRequested) break;
+            try { await Task.Delay(TimeSpan.FromSeconds(retryDelaySec), state.cts.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { break; }
+            retryDelaySec = Math.Min(retryDelaySec * 2f, 30f);
+        }
+    }
+
+    private IEnumerator DrainQueueRoutine(string path, ListenerState state)
+    {
+        string currentEvent = null;
+        int lineCount = 0;
+        int dataCount = 0;
+
+        while (state.running)
+        {
+            while (state.queue.TryDequeue(out QueueItem item))
+            {
+                switch (item.kind)
+                {
+                    case QueueItemKind.Meta:
+                        Debug.Log($"[Firebase SSE] {path} {item.payload}");
+                        break;
+                    case QueueItemKind.Error:
+                        Debug.LogWarning($"[Firebase SSE] {path} error: {item.payload}");
+                        break;
+                    case QueueItemKind.Reconnect:
+                        Debug.Log($"[Firebase SSE] {path} reconnect ({item.payload}) — lines={lineCount} data={dataCount}");
+                        currentEvent = null;
+                        break;
+                    case QueueItemKind.Line:
+                        lineCount++;
+                        string line = item.payload;
+                        if (string.IsNullOrEmpty(line))
+                        {
+                            currentEvent = null;
+                            break;
+                        }
+                        if (line.StartsWith("event:"))
+                        {
+                            currentEvent = line.Substring(6).Trim();
+                        }
+                        else if (line.StartsWith("data:"))
+                        {
+                            string data = line.Substring(5).Trim();
+                            if (string.IsNullOrEmpty(data) || data == "null") break;
+                            if (currentEvent == "keep-alive") break;
+                            dataCount++;
+                            try { state.onData?.Invoke(data); }
+                            catch (Exception e) { Debug.LogError($"[Firebase SSE] onData handler threw: {e}"); }
+                        }
+                        break;
+                }
+            }
+            yield return null;
         }
     }
 

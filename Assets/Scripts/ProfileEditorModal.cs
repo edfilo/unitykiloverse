@@ -1,5 +1,8 @@
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.Profiling;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using System.Collections;
 
 /// <summary>
@@ -16,6 +19,11 @@ public class ProfileEditorModal : MonoBehaviour
     public Color cancelButtonColor = new Color(0.6f, 0.1f, 0.1f); // Red
     public bool showDebugButton = true; // Enabled by default to show "U" button
 
+    // ── Dev overlay toggles (off by default, toggled in settings) ──
+    public static bool ShowPerfOverlay { get; private set; }
+    public static bool ShowBeamDebug { get; private set; }
+    public static event System.Action OnDebugTogglesChanged;
+
     private GameObject canvasGO;
     private GameObject modalOverlay;
     private InputField firstNameInput;
@@ -24,8 +32,26 @@ public class ProfileEditorModal : MonoBehaviour
     private InputField webInput;
     private InputField bioInput;
     private Text statusText;
+    private Text perfToggleLabel;
+    private Text beamToggleLabel;
     private bool isOpen = false;
     private Button openButton;
+
+    // Perf stats
+    private Text perfStatsText;
+    private Coroutine perfUpdateRoutine;
+
+    // Saturation slider
+    private Slider saturationSlider;
+    private Text saturationValueText;
+    public static float SaturationOverride
+    {
+        get
+        {
+            var rm = KiloWorld.Rendering.Systems.RenderManager.Instance;
+            return rm != null ? rm.profile.postFX.saturation : -100f;
+        }
+    }
 
     void Start()
     {
@@ -120,10 +146,28 @@ public class ProfileEditorModal : MonoBehaviour
         overlayRect.offsetMin = Vector2.zero;
         overlayRect.offsetMax = Vector2.zero;
 
-        // Center panel
+        // Scroll view — full-screen viewport for scrolling
+        var scrollGO = new GameObject("ScrollView");
+        scrollGO.transform.SetParent(modalOverlay.transform, false);
+        var scrollRt = scrollGO.AddComponent<RectTransform>();
+        scrollRt.anchorMin = Vector2.zero;
+        scrollRt.anchorMax = Vector2.one;
+        scrollRt.offsetMin = Vector2.zero;
+        scrollRt.offsetMax = Vector2.zero;
+        var scrollImg = scrollGO.AddComponent<Image>();
+        scrollImg.color = Color.clear;
+        scrollImg.raycastTarget = true;
+        var scrollRect = scrollGO.AddComponent<ScrollRect>();
+        scrollRect.horizontal = false;
+        scrollRect.vertical = true;
+        scrollRect.movementType = ScrollRect.MovementType.Elastic;
+        scrollRect.scrollSensitivity = 40f;
+        scrollGO.AddComponent<Mask>().showMaskGraphic = false;
+
+        // Content panel — centered, taller than screen so it scrolls
         GameObject panel = new GameObject("ProfilePanel");
-        RectTransform panelRect = panel.AddComponent<RectTransform>(); // Add RectTransform FIRST
-        panel.transform.SetParent(modalOverlay.transform, false);
+        RectTransform panelRect = panel.AddComponent<RectTransform>();
+        panel.transform.SetParent(scrollGO.transform, false);
 
         Image panelBg = panel.AddComponent<Image>();
         panelBg.color = panelColor;
@@ -131,13 +175,15 @@ public class ProfileEditorModal : MonoBehaviour
         panelRect.anchorMax = new Vector2(0.5f, 0.5f);
         panelRect.pivot = new Vector2(0.5f, 0.5f);
         panelRect.anchoredPosition = Vector2.zero;
-        panelRect.sizeDelta = new Vector2(900, 1400);
+        panelRect.sizeDelta = new Vector2(900, 2200);
+
+        scrollRect.content = panelRect;
 
         // Header
-        CreateText(panel.transform, "Header", "Edit Profile", 60, new Vector2(0, 600), new Vector2(800, 100), TextAnchor.MiddleCenter);
+        CreateText(panel.transform, "Header", "Edit Profile", 60, new Vector2(0, 1000), new Vector2(800, 100), TextAnchor.MiddleCenter);
 
         // Input fields with labels
-        float yPos = 480;
+        float yPos = 880;
         float spacing = 160;
 
         CreateLabeledInput(panel.transform, "FirstName", "First Name:", ref firstNameInput, new Vector2(0, yPos), false);
@@ -153,15 +199,52 @@ public class ProfileEditorModal : MonoBehaviour
         yPos -= spacing;
 
         CreateLabeledInput(panel.transform, "Bio", "Bio:", ref bioInput, new Vector2(0, yPos), true, 300);
+        yPos -= 360;
+
+        // ── Performance Stats section ──
+        CreateText(panel.transform, "PerfHeader", "Performance", 44, new Vector2(0, yPos), new Vector2(800, 60), TextAnchor.MiddleCenter);
+        yPos -= 20;
+
+        var perfGO = CreateText(panel.transform, "PerfStats", "loading...", 28, new Vector2(0, yPos), new Vector2(800, 180), TextAnchor.UpperLeft);
+        perfStatsText = perfGO.GetComponent<Text>();
+        perfStatsText.color = new Color(0.5f, 1f, 0.55f, 0.9f);
+        yPos -= 200;
+
+        // ── Saturation slider ──
+        CreateText(panel.transform, "SatLabel", "Saturation", 44, new Vector2(0, yPos), new Vector2(800, 60), TextAnchor.MiddleCenter);
+        yPos -= 60;
+        CreateSaturationSlider(panel.transform, new Vector2(0, yPos));
+        yPos -= 80;
+
+        // ── Dev Overlays section ──
+        CreateText(panel.transform, "DevHeader", "Dev Overlays", 44, new Vector2(0, yPos), new Vector2(800, 60), TextAnchor.MiddleCenter);
+        yPos -= 80;
+
+        var perfBtnGO = CreateToggleRow(panel.transform, "PerfToggle", "Performance Stats", new Vector2(0, yPos), ShowPerfOverlay, out perfToggleLabel);
+        perfBtnGO.GetComponent<Button>().onClick.AddListener(() => {
+            ShowPerfOverlay = !ShowPerfOverlay;
+            perfToggleLabel.text = ToggleText("Performance Stats", ShowPerfOverlay);
+            OnDebugTogglesChanged?.Invoke();
+        });
+        yPos -= 80;
+
+        var beamBtnGO = CreateToggleRow(panel.transform, "BeamToggle", "Beam / Signal Debug", new Vector2(0, yPos), ShowBeamDebug, out beamToggleLabel);
+        beamBtnGO.GetComponent<Button>().onClick.AddListener(() => {
+            ShowBeamDebug = !ShowBeamDebug;
+            beamToggleLabel.text = ToggleText("Beam / Signal Debug", ShowBeamDebug);
+            OnDebugTogglesChanged?.Invoke();
+        });
+        yPos -= 100;
 
         // Status text
-        GameObject statusGO = CreateText(panel.transform, "StatusText", "", 32, new Vector2(0, -420), new Vector2(800, 60), TextAnchor.MiddleCenter);
+        GameObject statusGO = CreateText(panel.transform, "StatusText", "", 32, new Vector2(0, yPos), new Vector2(800, 60), TextAnchor.MiddleCenter);
         statusText = statusGO.GetComponent<Text>();
         statusText.color = Color.yellow;
+        yPos -= 80;
 
         // Buttons
-        CreateButton(panel.transform, "SaveButton", "Save", new Vector2(-200, -580), new Vector2(300, 100), buttonColor, OnSaveClick);
-        CreateButton(panel.transform, "CancelButton", "Cancel", new Vector2(200, -580), new Vector2(300, 100), cancelButtonColor, CloseModal);
+        CreateButton(panel.transform, "SaveButton", "Save", new Vector2(-200, yPos), new Vector2(300, 100), buttonColor, OnSaveClick);
+        CreateButton(panel.transform, "CancelButton", "Cancel", new Vector2(200, yPos), new Vector2(300, 100), cancelButtonColor, CloseModal);
 
         Debug.Log("[ProfileEditorModal] Created modal UI");
     }
@@ -256,6 +339,153 @@ public class ProfileEditorModal : MonoBehaviour
         CreateText(btnGO.transform, "Text", label, 40, Vector2.zero, Vector2.zero, TextAnchor.MiddleCenter, false);
     }
 
+    static string ToggleText(string label, bool on) => $"{label}: {(on ? "ON" : "OFF")}";
+
+    GameObject CreateToggleRow(Transform parent, string name, string label, Vector2 position, bool initialState, out Text labelOut)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+
+        var rt = go.AddComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0.5f, 0.5f);
+        rt.anchorMax = new Vector2(0.5f, 0.5f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = position;
+        rt.sizeDelta = new Vector2(700, 60);
+
+        var bg = go.AddComponent<Image>();
+        bg.color = inputFieldColor;
+
+        go.AddComponent<Button>();
+
+        var textGO = CreateText(go.transform, "Label", ToggleText(label, initialState), 36, Vector2.zero, Vector2.zero, TextAnchor.MiddleCenter, false);
+        labelOut = textGO.GetComponent<Text>();
+        return go;
+    }
+
+    void CreateSaturationSlider(Transform parent, Vector2 position)
+    {
+        // Slider container
+        var sliderGO = new GameObject("SaturationSlider");
+        sliderGO.transform.SetParent(parent, false);
+        var sliderRt = sliderGO.AddComponent<RectTransform>();
+        sliderRt.anchorMin = new Vector2(0.5f, 0.5f);
+        sliderRt.anchorMax = new Vector2(0.5f, 0.5f);
+        sliderRt.pivot = new Vector2(0.5f, 0.5f);
+        sliderRt.anchoredPosition = position;
+        sliderRt.sizeDelta = new Vector2(600, 40);
+
+        // Background track
+        var bgGO = new GameObject("Background");
+        bgGO.transform.SetParent(sliderGO.transform, false);
+        var bgRt = bgGO.AddComponent<RectTransform>();
+        bgRt.anchorMin = Vector2.zero;
+        bgRt.anchorMax = Vector2.one;
+        bgRt.offsetMin = new Vector2(0, 15);
+        bgRt.offsetMax = new Vector2(0, -15);
+        var bgImg = bgGO.AddComponent<Image>();
+        bgImg.color = new Color(0.15f, 0.15f, 0.15f, 1f);
+
+        // Fill area
+        var fillAreaGO = new GameObject("FillArea");
+        fillAreaGO.transform.SetParent(sliderGO.transform, false);
+        var fillAreaRt = fillAreaGO.AddComponent<RectTransform>();
+        fillAreaRt.anchorMin = Vector2.zero;
+        fillAreaRt.anchorMax = Vector2.one;
+        fillAreaRt.offsetMin = new Vector2(0, 15);
+        fillAreaRt.offsetMax = new Vector2(0, -15);
+
+        var fillGO = new GameObject("Fill");
+        fillGO.transform.SetParent(fillAreaGO.transform, false);
+        var fillRt = fillGO.AddComponent<RectTransform>();
+        fillRt.anchorMin = Vector2.zero;
+        fillRt.anchorMax = Vector2.one;
+        fillRt.offsetMin = Vector2.zero;
+        fillRt.offsetMax = Vector2.zero;
+        var fillImg = fillGO.AddComponent<Image>();
+        fillImg.color = new Color(0.47f, 1f, 0.54f, 0.6f);
+
+        // Handle slide area
+        var handleAreaGO = new GameObject("HandleSlideArea");
+        handleAreaGO.transform.SetParent(sliderGO.transform, false);
+        var handleAreaRt = handleAreaGO.AddComponent<RectTransform>();
+        handleAreaRt.anchorMin = Vector2.zero;
+        handleAreaRt.anchorMax = Vector2.one;
+        handleAreaRt.offsetMin = Vector2.zero;
+        handleAreaRt.offsetMax = Vector2.zero;
+
+        var handleGO = new GameObject("Handle");
+        handleGO.transform.SetParent(handleAreaGO.transform, false);
+        var handleRt = handleGO.AddComponent<RectTransform>();
+        handleRt.sizeDelta = new Vector2(30, 40);
+        var handleImg = handleGO.AddComponent<Image>();
+        handleImg.color = new Color(0.47f, 1f, 0.54f, 1f);
+
+        // Slider component
+        saturationSlider = sliderGO.AddComponent<Slider>();
+        saturationSlider.fillRect = fillRt;
+        saturationSlider.handleRect = handleRt;
+        saturationSlider.targetGraphic = handleImg;
+        saturationSlider.minValue = -100f;
+        saturationSlider.maxValue = 100f;
+        saturationSlider.wholeNumbers = true;
+        saturationSlider.value = SaturationOverride;
+
+        // Value label to the right
+        var valGO = CreateText(parent, "SatValue", SaturationOverride <= -100 ? "B&W" : $"{SaturationOverride:F0}", 32,
+            position + new Vector2(370, 0), new Vector2(100, 40), TextAnchor.MiddleCenter);
+        saturationValueText = valGO.GetComponent<Text>();
+        saturationValueText.color = new Color(0.47f, 1f, 0.54f, 0.9f);
+
+        saturationSlider.onValueChanged.AddListener((val) => {
+            if (saturationValueText != null)
+                saturationValueText.text = val <= -100 ? "B&W" : $"{val:F0}";
+            var rm = KiloWorld.Rendering.Systems.RenderManager.Instance;
+            if (rm != null)
+            {
+                rm.profile.postFX.saturation = val;
+                PlayerPrefs.SetFloat("k1lo_saturation", val);
+            }
+        });
+    }
+
+    IEnumerator UpdatePerfStats()
+    {
+        while (isOpen)
+        {
+            if (perfStatsText != null)
+            {
+                float fps = 1f / Time.unscaledDeltaTime;
+                long allocMB = Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024);
+                long reservedMB = Profiler.GetTotalReservedMemoryLong() / (1024 * 1024);
+                float bat = SystemInfo.batteryLevel;
+                string batStr = bat >= 0 ? $"{bat * 100f:F0}%" : "N/A";
+
+                string thermal = "N/A";
+#if UNITY_IOS && !UNITY_EDITOR
+                thermal = "iOS";
+#elif UNITY_EDITOR
+                thermal = "EDITOR";
+#elif UNITY_STANDALONE_OSX
+                thermal = "MAC";
+#endif
+
+                int rendererCount = 0;
+                var renderers = FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None);
+                for (int i = 0; i < renderers.Length; i++)
+                    if (renderers[i].isVisible) rendererCount++;
+
+                perfStatsText.text =
+                    $"FPS: {fps:F0}   MEM: {allocMB}MB / {reservedMB}MB\n" +
+                    $"BAT: {batStr}   THERMAL: {thermal}\n" +
+                    $"RENDERERS: {rendererCount} visible / {renderers.Length} total\n" +
+                    $"GPU: {SystemInfo.graphicsDeviceName}\n" +
+                    $"SCREEN: {Screen.width}x{Screen.height} @ {Screen.currentResolution.refreshRateRatio.value:F0}Hz";
+            }
+            yield return new WaitForSecondsRealtime(1f);
+        }
+    }
+
     public void OpenModal()
     {
         if (isOpen) return;
@@ -263,6 +493,9 @@ public class ProfileEditorModal : MonoBehaviour
         isOpen = true;
         modalOverlay.SetActive(true);
         statusText.text = "";
+
+        // Start perf stats updates
+        perfUpdateRoutine = StartCoroutine(UpdatePerfStats());
 
         // Load current profile data
         StartCoroutine(LoadProfileData());
@@ -273,6 +506,11 @@ public class ProfileEditorModal : MonoBehaviour
     public void CloseModal()
     {
         isOpen = false;
+        if (perfUpdateRoutine != null)
+        {
+            StopCoroutine(perfUpdateRoutine);
+            perfUpdateRoutine = null;
+        }
         modalOverlay.SetActive(false);
         Debug.Log("[ProfileEditorModal] Modal closed");
     }

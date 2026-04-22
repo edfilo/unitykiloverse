@@ -36,12 +36,18 @@ public class K1L0GlassPanel : MonoBehaviour, IDragHandler, IPointerDownHandler
 
     public void InitializeVisual(TMP_FontAsset font, Vector4 contentPadding, bool addInnerAccent = true)
     {
+        // Canvas override so panels render in front of teasers
+        var panelCanvas = gameObject.AddComponent<Canvas>();
+        panelCanvas.overrideSorting = true;
+        panelCanvas.sortingOrder = 1200; // Above dock (1100) and HUD (1000)
+        gameObject.AddComponent<GraphicRaycaster>();
+
         chrome = K1L0GlassFactory.AttachChrome(transform, "Panel", K1L0GlassFactory.PanelStyle);
         background = chrome.blurFill;
         chrome.blurFill.material = null;
-        chrome.blurFill.color = new Color(0f, 0f, 0f, 0f);
+        chrome.blurFill.color = new Color(0f, 0f, 0f, 0.55f); // Semi-transparent
         chrome.overlay.color = new Color(0f, 0f, 0f, 0f);
-        chrome.border.color = new Color(0f, 0f, 0f, 0f);
+        chrome.border.color = TerminalBorder;
         chrome.shadow.color = new Color(0f, 0f, 0f, 0f);
         chrome.accent.color = new Color(0f, 0f, 0f, 0f);
         chrome.sheen.color = new Color(0f, 0f, 0f, 0f);

@@ -109,6 +109,16 @@ public class TeleportManager : MonoBehaviour
         // Editor/Desktop: skip heavy UI/bootstrap and just apply startup location.
         if (!Application.isMobilePlatform)
         {
+            // Firebase + label plumbing still has to come up on desktop — without
+            // RuntimeLabelSetup running, FirebaseRestClient.Instance stays null and
+            // TransmissionManager can't open the SSE listener that delivers shot
+            // images. This used to only run on the mobile branch (line ~150), which
+            // left Mac standalone builds permanently stuck on loading placeholders.
+            if (FirebaseRestClient.Instance == null)
+            {
+                new GameObject("AutoBootstrapper").AddComponent<RuntimeLabelSetup>().Setup();
+            }
+
             if (map == null)
             {
                 map = FindObjectOfType<KiloverseMapInfo>();

@@ -216,7 +216,9 @@ public class APIManager : MonoBehaviour
         var urls = new List<string>();
         var names = new List<string>();
 
-#if UNITY_EDITOR
+#if UNITY_EDITOR || UNITY_STANDALONE_OSX
+        // Editor + Mac standalone both run on the same machine as the API server,
+        // so localhost is reachable. Only device builds (iOS/Android) need to skip it.
         urls.Add(overrideLocal ?? LOCALHOST_URL);
         names.Add("Localhost");
 #else
@@ -294,7 +296,8 @@ public class APIManager : MonoBehaviour
 
         string url = $"{GetBaseURL()}{endpoint}";
         Debug.Log($"[APIManager] Sending POST to {url}");
-        int timeoutSec = Application.isEditor ? 10 : 30;
+        // LLM-backed endpoints can take 15-25s; editor used 10s which was too tight.
+        int timeoutSec = 30;
 
         using (UnityWebRequest www = new UnityWebRequest(url, "POST"))
         {

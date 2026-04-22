@@ -78,9 +78,6 @@ namespace KiloWorld.Rendering
                 new TeleportSlot() { name = "Point State Park", latitude = 40.441794818874946, longitude = -80.0132127760516 }
             };
 
-            // Legacy fields for backwards compatibility (deprecated - use locations list instead)
-            [HideInInspector] public TeleportSlot teleportA;
-            [HideInInspector] public TeleportSlot teleportB;
         }
 
         [System.Serializable]
@@ -109,14 +106,6 @@ namespace KiloWorld.Rendering
             [Range(0.01f, 2f)] public float ssaoRadius = 0.3f;
             [Range(0, 1)] public float ssaoDirectLightingStrength = 0.05f;
             public SampleCount ssaoSamples = SampleCount.High;
-
-            [Header("Screen Space Global Illumination (SSGI) - NOT AVAILABLE IN UNITY 6")]
-            [Tooltip("SSGI is not available in Unity 6000.2.12f1 - Use Bloom + SSR + High Ambient instead")]
-            public bool ssgiEnabled = false; // NOT FUNCTIONAL - Feature doesn't exist in Unity 6
-            public Quality ssgiQuality = Quality.Medium;
-            public float ssgiThickness = 1.0f;
-            public bool ssgiMultiBounce = true;
-            public float ssgiIntensity = 1.0f;
 
             [Header("Screen Space Reflections (SSR)")]
             public bool ssrEnabled = true;
@@ -336,8 +325,6 @@ namespace KiloWorld.Rendering
             [Range(0, 1)] public float bloomScatter = 0.95f; // Increased for wider glow
             public Texture2D lensDirtTexture; // Subtle lens dirt overlay
             [Range(0, 10)] public float lensDirtIntensity = 2.0f; // Subtle dirt effect
-            [Range(0, 100)] public float bloomClampBeforeBloom = 20.0f; // Clamp emissive to prevent blowout
-            [Range(0, 1)] public float anamorphicIntensity = 0.1f; // Horizontal stretch (5-10% = 0.05-0.1)
             public Color bloomTint = Color.white;
 
             [Header("Tonemapping")]
@@ -403,13 +390,10 @@ namespace KiloWorld.Rendering
             public bool motionBlurEnabled = false;
             public UnityEngine.Rendering.Universal.MotionBlurQuality motionBlurQuality = UnityEngine.Rendering.Universal.MotionBlurQuality.Medium;
             [Range(0, 1)] public float motionBlurIntensity = 0.5f;
-            [Range(2, 32)] public int motionBlurSampleCount = 8;
-
             [Header("Ambient Occlusion (SSAO)")]
             public bool ambientOcclusionEnabled = true;
             [Range(0, 4)] public float aoIntensity = 0.5f;
             [Range(0.25f, 5f)] public float aoRadius = 0.5f; // Sample radius
-            public bool aoDirectLightingStrength = false; // Affect direct lighting
 
             [Header("Film Grain")]
             public bool filmGrainEnabled = false;
@@ -506,7 +490,6 @@ namespace KiloWorld.Rendering
             [Header("Road Advanced")]
             public Texture2D roadOcclusionMap;
             public Texture2D roadHeightMap; // Height/displacement map
-            public Texture2D roadRoughnessMap; // Roughness (inverted smoothness)
             [Range(0, 1)] public float roadOcclusionStrength = 1.0f;
             [Range(0, 0.1f)] public float roadHeightScale = 0.02f; // Parallax height
             public bool roadEnvironmentReflections = true;
@@ -577,8 +560,6 @@ namespace KiloWorld.Rendering
             public bool windowEnvironmentReflections = true; // Enable reflections for glass
             public bool windowSpecularHighlights = true; // Enable specular for glass
 
-            [Header("Mapbox Modifiers")]
-            public float buildingHeightScale = 1.0f;
         }
 
         [System.Serializable]
@@ -779,8 +760,6 @@ namespace KiloWorld.Rendering
             [Tooltip("Override tethered URL (default: http://172.20.10.5:3000)")]
             public string customTetheredURL = "";
 
-            [Tooltip("Override ngrok URL (default: hardcoded in APIManager)")]
-            public string customNgrokURL = "";
         }
     }
 }

@@ -16,9 +16,12 @@ public class LoginUI : MonoBehaviour
 
     void Start()
     {
-#if UNITY_EDITOR
-        // Auto-skip login in Editor so we don't have to click every time
-        Debug.Log("[LoginUI] Editor detected — auto-skipping login");
+#if UNITY_EDITOR || UNITY_STANDALONE_OSX
+        // Auto-skip login in Editor + Mac standalone dev builds. Apple Sign-In
+        // requires provisioning we don't have on the Mac target, and without a
+        // completed sign-in FirebaseAuthManager never authenticates — which blocks
+        // the Firebase SSE listener that delivers transmission images.
+        Debug.Log("[LoginUI] Editor/Mac build — auto-skipping login");
         var auth = FirebaseAuthManager.Instance;
         if (auth != null && !auth.isAuthenticated)
         {

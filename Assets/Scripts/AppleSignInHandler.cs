@@ -1,11 +1,10 @@
 using UnityEngine;
 using System.Runtime.InteropServices;
 using System;
+#if UNITY_STANDALONE_OSX && !UNITY_EDITOR
+using AOT;
+#endif
 
-/// <summary>
-/// Handles Apple Sign-In for iOS
-/// Uses native iOS code to trigger Sign in with Apple
-/// </summary>
 public class AppleSignInHandler : MonoBehaviour
 {
     #if UNITY_IOS && !UNITY_EDITOR
@@ -14,6 +13,32 @@ public class AppleSignInHandler : MonoBehaviour
 
     [DllImport("__Internal")]
     private static extern bool _IsAppleSignInAvailable();
+    #elif UNITY_STANDALONE_OSX && !UNITY_EDITOR
+    private delegate void AppleSignInCallback(IntPtr resultPtr);
+
+    [DllImport("AppleSignIn")]
+    private static extern void _SignInWithApple(AppleSignInCallback onSuccess, AppleSignInCallback onError);
+
+    [DllImport("AppleSignIn")]
+    private static extern bool _IsAppleSignInAvailable();
+
+    // Keep delegate refs alive — IL2CPP won't pin lambdas.
+    private static readonly AppleSignInCallback _successDelegate = OnNativeSuccess;
+    private static readonly AppleSignInCallback _errorDelegate = OnNativeError;
+
+    [MonoPInvokeCallback(typeof(AppleSignInCallback))]
+    private static void OnNativeSuccess(IntPtr resultPtr)
+    {
+        string result = resultPtr != IntPtr.Zero ? Marshal.PtrToStringAnsi(resultPtr) : "";
+        if (_instance != null) _instance.OnAppleSignInCallback(result);
+    }
+
+    [MonoPInvokeCallback(typeof(AppleSignInCallback))]
+    private static void OnNativeError(IntPtr errorPtr)
+    {
+        string error = errorPtr != IntPtr.Zero ? Marshal.PtrToStringAnsi(errorPtr) : "Unknown error";
+        if (_instance != null) _instance.OnAppleSignInError(error);
+    }
     #endif
 
     private static AppleSignInHandler _instance;
@@ -31,7 +56,7 @@ public class AppleSignInHandler : MonoBehaviour
         }
     }
 
-    public event Action<string, string, string, string> OnAppleSignInSuccess; // idToken, nonce, fullName, appleUserId
+    public event Action<string, string, string, string> OnAppleSignInSuccess;
     public event Action<string> OnAppleSignInFailed;
 
     private void Awake()
@@ -45,37 +70,29 @@ public class AppleSignInHandler : MonoBehaviour
         DontDestroyOnLoad(gameObject);
     }
 
-    /// <summary>
-    /// Check if Sign in with Apple is available on this device
-    /// </summary>
     public bool IsAvailable()
     {
-        #if UNITY_IOS && !UNITY_EDITOR
+        #if (UNITY_IOS || UNITY_STANDALONE_OSX) && !UNITY_EDITOR
         return _IsAppleSignInAvailable();
         #else
         return false;
         #endif
     }
 
-    /// <summary>
-    /// Trigger Sign in with Apple flow
-    /// </summary>
     public void SignIn()
     {
         #if UNITY_IOS && !UNITY_EDITOR
         _SignInWithApple(gameObject.name);
         Debug.Log("[AppleSignIn] Triggered native Sign in with Apple");
+        #elif UNITY_STANDALONE_OSX && !UNITY_EDITOR
+        _SignInWithApple(_successDelegate, _errorDelegate);
+        Debug.Log("[AppleSignIn] Triggered native Sign in with Apple (Mac)");
         #else
         Debug.LogWarning("[AppleSignIn] Not available in Editor - simulating success");
-        // Simulate success in Editor for testing
         SimulateEditorSignIn();
         #endif
     }
 
-    /// <summary>
-    /// Called by native iOS code when sign-in succeeds
-    /// Message format: "idToken|nonce|fullName"
-    /// </summary>
     public void OnAppleSignInCallback(string result)
     {
         Debug.Log($"[AppleSignIn] Received callback: {result}");
@@ -111,18 +128,12 @@ public class AppleSignInHandler : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// Called by native iOS code when sign-in fails
-    /// </summary>
     public void OnAppleSignInError(string error)
     {
         Debug.LogError($"[AppleSignIn] Error: {error}");
         OnAppleSignInFailed?.Invoke(error);
     }
 
-    /// <summary>
-    /// Simulate Apple Sign-In in Unity Editor for testing
-    /// </summary>
     private void SimulateEditorSignIn()
     {
         #if UNITY_EDITOR

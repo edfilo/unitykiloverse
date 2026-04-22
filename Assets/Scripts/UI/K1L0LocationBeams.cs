@@ -15,8 +15,8 @@ public class K1L0LocationBeams : MonoBehaviour
     private const int ParticleCount = 150;
     private const float ParticleSpeed = 8f;
     private const float LabelHeight = 4f;
-    private const float LabelFadeDistance = 800f;
-    private const float LabelMaxDistance = 1600f;
+    private const float LabelFadeDistance = 1200f;
+    private const float LabelMaxDistance = 2414f; // ~1.5 miles
 
     // Category beam colors
     private static readonly Color BeamColorCoffee = new Color(0.2f, 0.9f, 0.4f, 1f);       // Green
@@ -28,6 +28,7 @@ public class K1L0LocationBeams : MonoBehaviour
     private static readonly Color LabelColor = new Color(1f, 1f, 1f, 0.9f);
 
     private readonly List<BeamEntry> pool = new List<BeamEntry>();
+    private readonly Dictionary<string, int> beamSlotByName = new Dictionary<string, int>();
     private TMP_FontAsset font;
     private Material beamMaterial;
     private Texture2D beamTexture;
@@ -84,12 +85,11 @@ public class K1L0LocationBeams : MonoBehaviour
         var nearest = scanner.GetNearestUnfiltered(MaxBeams);
         if (nearest == null || nearest.Count == 0) return;
 
-        // Deduplicate and filter to those with world positions
+        // Deduplicate by name
         HashSet<string> seen = new HashSet<string>();
         List<TransmitterScanner.TransmitterData> unique = new List<TransmitterScanner.TransmitterData>();
         foreach (var t in nearest)
         {
-            if (!t.HasWorldPosition) continue;
             string key = t.Name.ToLowerInvariant().Trim();
             if (seen.Contains(key)) continue;
             seen.Add(key);
@@ -115,12 +115,48 @@ public class K1L0LocationBeams : MonoBehaviour
         Camera cam = Camera.main;
         Plane[] frustumPlanes = cam != null ? GeometryUtility.CalculateFrustumPlanes(cam) : null;
 
+        // Assign each unique POI to a stable slot by name, so beams don't teleport
+        // when the player moves and the sort order changes.
+        var assignedSlots = new HashSet<int>();
+        var assignments = new Dictionary<int, TransmitterScanner.TransmitterData>();
+        foreach (var data in unique)
+        {
+            string key = data.Name.ToLowerInvariant().Trim();
+            if (beamSlotByName.TryGetValue(key, out int slot) && slot >= 0 && slot < pool.Count)
+            {
+                assignments[slot] = data;
+                assignedSlots.Add(slot);
+            }
+        }
+        // Find free slots for any POI that doesn't have one yet, and reclaim slots
+        // whose previous POI has dropped out of range.
+        foreach (var data in unique)
+        {
+            string key = data.Name.ToLowerInvariant().Trim();
+            if (beamSlotByName.ContainsKey(key) && assignedSlots.Contains(beamSlotByName[key])) continue;
+            int freeSlot = -1;
+            for (int s = 0; s < pool.Count; s++)
+            {
+                if (!assignedSlots.Contains(s)) { freeSlot = s; break; }
+            }
+            if (freeSlot < 0) break;
+            beamSlotByName[key] = freeSlot;
+            assignments[freeSlot] = data;
+            assignedSlots.Add(freeSlot);
+        }
+        // Drop stale name→slot mappings whose POI is no longer in the top-N.
+        var currentKeys = new HashSet<string>();
+        foreach (var data in unique) currentKeys.Add(data.Name.ToLowerInvariant().Trim());
+        var stale = new List<string>();
+        foreach (var kv in beamSlotByName)
+            if (!currentKeys.Contains(kv.Key)) stale.Add(kv.Key);
+        foreach (var k in stale) beamSlotByName.Remove(k);
+
         for (int i = 0; i < pool.Count; i++)
         {
             var entry = pool[i];
-            if (i < unique.Count)
+            if (assignments.TryGetValue(i, out var data))
             {
-                var data = unique[i];
                 Vector3 pos;
                 if (mapInfo != null)
                 {
@@ -273,6 +309,7 @@ public class K1L0LocationBeams : MonoBehaviour
         var vel = ps.velocityOverLifetime;
         vel.enabled = true;
         vel.x = new ParticleSystem.MinMaxCurve(-0.1f, 0.1f);
+        vel.y = new ParticleSystem.MinMaxCurve(0f, 0f);
         vel.z = new ParticleSystem.MinMaxCurve(-0.1f, 0.1f);
         vel.space = ParticleSystemSimulationSpace.Local;
 

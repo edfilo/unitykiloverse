@@ -343,7 +343,7 @@ MonoBehaviour:
     environment: 0
     dynamicNgrokURL: 
     customLocalhostURL: 
-    customTetheredURL: 
+    customTetheredURL: http://192.168.40.34:3000
     customNgrokURL: 
   clientEventTriggers:
     enableLocationEnter: 1

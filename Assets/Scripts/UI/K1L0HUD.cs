@@ -47,7 +47,7 @@ public class K1L0HUD : MonoBehaviour
     private bool initialized;
     private Image sceneDimmer;
     private float dimmerTarget;
-    private const float DimmerAlpha = 0.55f;
+    private const float DimmerAlpha = 0.15f;
     private const float DimmerSpeed = 4f;
 
     public static Sprite RoundedRectSprite { get; private set; }
@@ -161,6 +161,7 @@ public class K1L0HUD : MonoBehaviour
         EnsureStoriesUI();
         EnsureScreenshot();
         EnsureLocationBeams();
+        EnsureTransmissionFrame();
         HideOldUI();
         Debug.Log("[K1L0HUD] Initialized successfully");
 
@@ -320,7 +321,7 @@ public class K1L0HUD : MonoBehaviour
         statusMode.Initialize(statusPanel.contentArea, monoFont);
         statusPanel.gameObject.SetActive(false);
 
-        profilePanel = CreateOnePanel("ProfilePanel", centeredPos, new Vector2(0f, 344f), new Vector4(12f, 18f, 12f, 48f));
+        profilePanel = CreateOnePanel("ProfilePanel", centeredPos, new Vector2(0f, 620f), new Vector4(12f, 18f, 12f, 48f));
         profilePanel.OnCloseClicked = () => TogglePanel(2, false);
         GameObject profileGO = new GameObject("ProfileMode");
         profileMode = profileGO.AddComponent<K1L0ProfileMode>();
@@ -466,6 +467,16 @@ public class K1L0HUD : MonoBehaviour
         }
     }
 
+    void EnsureTransmissionFrame()
+    {
+        if (FindFirstObjectByType<TransmissionFrame>() == null)
+        {
+            var go = new GameObject("TransmissionFrame");
+            var frame = go.AddComponent<TransmissionFrame>();
+            frame.Initialize();
+        }
+    }
+
     void EnsureScreenshot()
     {
         if (FindFirstObjectByType<K1L0Screenshot>() == null)
@@ -537,6 +548,10 @@ public class K1L0HUD : MonoBehaviour
         for (int i = 0; i < panelOpen.Length; i++)
             if (panelOpen[i]) { anyOpen = true; break; }
         dimmerTarget = anyOpen ? DimmerAlpha : 0f;
+
+        // Hide teasers when a panel is open (panels are now transparent)
+        var director = SignalDirectorV2.Instance;
+        if (director != null) director.SuppressHUD(anyOpen);
     }
 
 

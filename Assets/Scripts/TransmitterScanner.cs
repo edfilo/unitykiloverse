@@ -549,6 +549,8 @@ private IEnumerator UpdateDistancesAndSortCoroutine()
                 
                 // Use World Vector for Direction (Relative Bearing)
                 t.Direction = GetCardinalDirection(playerPos, targetWorldPos);
+                t.WorldPosition = targetWorldPos;
+                t.HasWorldPosition = true;
             }
             else
             {

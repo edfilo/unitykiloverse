@@ -10,7 +10,7 @@ namespace KiloWorld.UI.Stories
     {
         [Header("Layout")]
         [SerializeField] private float stripHeight = 300f;
-        [SerializeField] private float topPadding = 20f;
+        [SerializeField] private float topPadding = 60f;
         [SerializeField] private float itemDiameter = 180f;
         [SerializeField] private float ringThickness = 10f;
         [SerializeField] private float itemSpacing = 26f;

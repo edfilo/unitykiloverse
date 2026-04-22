@@ -295,7 +295,8 @@ public class UILayoutManager : MonoBehaviour
         float topEdgePadding = 0f;
         Canvas.ForceUpdateCanvases(); // Ensure layout is up to date
         float weatherHeight = GetWeatherHeight();
-        float weatherToStoriesGap = 8f;
+        float weatherToStoriesGap = 12f;
+        if (weatherHeight < 40f) weatherHeight = 40f; // minimum weather height
         float storiesToLayoutGap = 16f;
 
         // Find the Stories strip root (it's created by StoriesUIBootstrapper)

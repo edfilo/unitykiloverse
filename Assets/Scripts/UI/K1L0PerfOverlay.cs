@@ -61,6 +61,10 @@ public class K1L0PerfOverlay : MonoBehaviour
         DontDestroyOnLoad(gameObject);
 
         CreateUI();
+        _text.enabled = ProfileEditorModal.ShowPerfOverlay;
+        ProfileEditorModal.OnDebugTogglesChanged += () => {
+            if (_text != null) _text.enabled = ProfileEditorModal.ShowPerfOverlay;
+        };
 
         // Battery init
         SystemInfo.batteryLevel.ToString(); // force battery monitoring

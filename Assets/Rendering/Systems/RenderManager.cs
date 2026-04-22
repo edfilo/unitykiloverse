@@ -46,6 +46,57 @@ namespace KiloWorld.Rendering.Systems
         private void OnEnable()
         {
             Instance = this;
+            LoadPostFXPrefs();
+        }
+
+        private void LoadPostFXPrefs()
+        {
+            if (profile == null) return;
+            var pfx = profile.postFX;
+            pfx.saturation = PlayerPrefs.GetFloat("k1lo_saturation", -100f);
+            LoadPref("contrast", ref pfx.contrast);
+            LoadPref("hueShift", ref pfx.hueShift);
+            LoadPref("temperature", ref pfx.temperature);
+            LoadPref("tint", ref pfx.tint);
+            LoadPref("exposure", ref pfx.exposureFixedValue);
+            LoadPref("bloomIntensity", ref pfx.bloomIntensity);
+            LoadPref("bloomThreshold", ref pfx.bloomThreshold);
+            LoadPref("bloomScatter", ref pfx.bloomScatter);
+            LoadPrefBool("bloomEnabled", ref pfx.bloomEnabled);
+            LoadPref("vignetteIntensity", ref pfx.vignetteIntensity);
+            LoadPref("vignetteSmoothness", ref pfx.vignetteSmoothness);
+            LoadPrefBool("vignetteEnabled", ref pfx.vignetteEnabled);
+            LoadPref("chromaticIntensity", ref pfx.chromaticAberrationIntensity);
+            LoadPrefBool("chromaticEnabled", ref pfx.chromaticAberrationEnabled);
+            LoadPref("lensDistIntensity", ref pfx.lensDistortionIntensity);
+            LoadPrefBool("lensDistEnabled", ref pfx.lensDistortionEnabled);
+            LoadPrefBool("dofEnabled", ref pfx.depthOfFieldEnabled);
+            LoadPref("focusDistance", ref pfx.focusDistance);
+            LoadPref("aperture", ref pfx.aperture);
+            LoadPref("focalLength", ref pfx.focalLength);
+            LoadPref("motionBlurIntensity", ref pfx.motionBlurIntensity);
+            LoadPrefBool("motionBlurEnabled", ref pfx.motionBlurEnabled);
+            LoadPref("filmGrainIntensity", ref pfx.filmGrainIntensity);
+            LoadPrefBool("filmGrainEnabled", ref pfx.filmGrainEnabled);
+
+            // Camera
+            var cam = profile.camera;
+            LoadPref("godPositionY", ref cam.godPositionY);
+            LoadPref("godPositionZ", ref cam.godPositionZ);
+            LoadPref("godRotationX", ref cam.godRotationX);
+            LoadPref("farClipPlane", ref cam.farClipPlane);
+        }
+
+        private static void LoadPref(string key, ref float field)
+        {
+            string k = "k1lo_" + key;
+            if (PlayerPrefs.HasKey(k)) field = PlayerPrefs.GetFloat(k);
+        }
+
+        private static void LoadPrefBool(string key, ref bool field)
+        {
+            string k = "k1lo_" + key;
+            if (PlayerPrefs.HasKey(k)) field = PlayerPrefs.GetFloat(k) >= 0.5f;
         }
 
         private void Start()
@@ -671,7 +722,8 @@ namespace KiloWorld.Rendering.Systems
                 }
 
                 _colorAdjustments.hueShift.overrideState = true; _colorAdjustments.hueShift.value = profile.postFX.hueShift;
-                _colorAdjustments.saturation.overrideState = true; _colorAdjustments.saturation.value = profile.postFX.saturation;
+                _colorAdjustments.saturation.overrideState = true;
+                _colorAdjustments.saturation.value = profile.postFX.saturation;
                 _colorAdjustments.contrast.overrideState = true; _colorAdjustments.contrast.value = profile.postFX.contrast;
             }
             

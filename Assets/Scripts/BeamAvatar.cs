@@ -577,6 +577,17 @@ public class BeamAvatar : MonoBehaviour
 
         Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
         if (shader == null) shader = Shader.Find("Unlit/Transparent");
+        if (shader == null) shader = Shader.Find("Sprites/Default");
+        if (shader == null && particleBeamMaterial != null) shader = particleBeamMaterial.shader;
+        if (shader == null && avatarRenderer != null && avatarRenderer.sharedMaterial != null) shader = avatarRenderer.sharedMaterial.shader;
+        if (shader == null)
+        {
+            Debug.LogWarning("[BeamAvatar] No unlit shader available — skipping avatar quad so beam particles continue to render.");
+            Destroy(avatarObject);
+            avatarObject = null;
+            avatarRenderer = null;
+            return;
+        }
         avatarMaterial = new Material(shader);
         avatarMaterial.SetColor("_BaseColor", new Color(0.6f, 0.9f, 1f, avatarAlpha));
         avatarMaterial.SetColor("_Color", new Color(0.6f, 0.9f, 1f, avatarAlpha));

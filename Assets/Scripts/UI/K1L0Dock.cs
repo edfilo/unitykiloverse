@@ -7,10 +7,13 @@ public class K1L0Dock : MonoBehaviour
 {
     public System.Action<int> OnButtonTapped;
 
-    private K1L0GlassChrome[] buttonChromes;
     private Image[] iconImages;
+    private Image[] bgImages;
     private RectTransform[] buttonRects;
     private bool[] activeStates = new bool[3];
+
+    // Maps visual button index → panel index (skipping removed status panel)
+    private static readonly int[] panelMap = { 0, 2 };
 
     public static void ClearCachedMaterials()
     {
@@ -22,51 +25,66 @@ public class K1L0Dock : MonoBehaviour
         ClearCachedMaterials();
         RectTransform rt = gameObject.AddComponent<RectTransform>();
         rt.SetParent(parent, false);
-        rt.anchorMin = new Vector2(0.5f, 0);
-        rt.anchorMax = new Vector2(0.5f, 0);
-        rt.pivot = new Vector2(0.5f, 0);
-        rt.anchoredPosition = new Vector2(0, 36);
-        rt.sizeDelta = new Vector2(352, 56);
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = Vector2.zero;
+        rt.offsetMax = Vector2.zero;
 
-        HorizontalLayoutGroup hlg = gameObject.AddComponent<HorizontalLayoutGroup>();
-        hlg.spacing = 12;
-        hlg.childAlignment = TextAnchor.MiddleCenter;
-        hlg.childForceExpandWidth = false;
-        hlg.childForceExpandHeight = false;
-        hlg.childControlWidth = false;
-        hlg.childControlHeight = false;
+        // Add a Canvas override so dock renders in front of teasers
+        var overrideCanvas = gameObject.AddComponent<Canvas>();
+        overrideCanvas.overrideSorting = true;
+        overrideCanvas.sortingOrder = 1100; // Above HUD (1000)
+        gameObject.AddComponent<GraphicRaycaster>();
 
         Sprite[] icons = {
             CreateLocationPinSprite(64),
-            CreateBarChartSprite(64),
             CreatePersonSprite(64)
         };
 
-        buttonChromes = new K1L0GlassChrome[3];
-        iconImages = new Image[3];
-        buttonRects = new RectTransform[3];
-        K1L0GlassStyle buttonStyle = K1L0GlassFactory.DockButtonStyle;
+        Sprite circleSpr = CreateCircleSprite(128);
 
-        for (int i = 0; i < 3; i++)
+        iconImages = new Image[2];
+        bgImages = new Image[2];
+        buttonRects = new RectTransform[2];
+
+        for (int i = 0; i < 2; i++)
         {
             int idx = i;
 
-            GameObject btnGO = new GameObject($"Btn{i}");
+            GameObject btnGO = new GameObject($"CornerBtn{i}");
             btnGO.transform.SetParent(rt, false);
             RectTransform btnRT = btnGO.AddComponent<RectTransform>();
-            btnRT.sizeDelta = new Vector2(108, 42);
+            btnRT.sizeDelta = new Vector2(72, 72);
             buttonRects[i] = btnRT;
-            LayoutElement le = btnGO.AddComponent<LayoutElement>();
-            le.preferredWidth = 108;
-            le.preferredHeight = 42;
 
-            buttonChromes[i] = K1L0GlassFactory.AttachChrome(btnGO.transform, $"Btn{i}", buttonStyle);
-            ConfigureDockChrome(buttonChromes[i]);
+            // Position: left corner or right corner
+            if (i == 0)
+            {
+                btnRT.anchorMin = new Vector2(0, 0);
+                btnRT.anchorMax = new Vector2(0, 0);
+                btnRT.pivot = new Vector2(0, 0);
+                btnRT.anchoredPosition = new Vector2(20, 0);
+            }
+            else
+            {
+                btnRT.anchorMin = new Vector2(1, 0);
+                btnRT.anchorMax = new Vector2(1, 0);
+                btnRT.pivot = new Vector2(1, 0);
+                btnRT.anchoredPosition = new Vector2(-20, 0);
+            }
+
+            // Round background — opaque black
+            Image bg = btnGO.AddComponent<Image>();
+            bg.sprite = circleSpr;
+            bg.type = Image.Type.Simple;
+            bg.color = new Color(0f, 0f, 0f, 1f);
+            bg.raycastTarget = true;
+            bgImages[i] = bg;
 
             Button btn = btnGO.AddComponent<Button>();
-            btn.targetGraphic = buttonChromes[i].blurFill;
+            btn.targetGraphic = bg;
             btn.transition = Selectable.Transition.None;
-            btn.onClick.AddListener(() => OnTap(idx));
+            btn.onClick.AddListener(() => OnTap(panelMap[idx]));
 
             // Icon
             GameObject iconGO = new GameObject("Icon");
@@ -74,26 +92,12 @@ public class K1L0Dock : MonoBehaviour
             RectTransform iconRT = iconGO.AddComponent<RectTransform>();
             iconRT.anchorMin = new Vector2(0.5f, 0.5f);
             iconRT.anchorMax = new Vector2(0.5f, 0.5f);
-            iconRT.sizeDelta = new Vector2(24, 24);
+            iconRT.sizeDelta = new Vector2(34, 34);
             Image iconImg = iconGO.AddComponent<Image>();
             iconImg.sprite = icons[i];
-            iconImg.color = new Color(0.84f, 0.90f, 0.97f, 0.88f);
+            iconImg.color = new Color(0.84f, 0.90f, 0.97f, 1f);
             iconImg.raycastTarget = false;
             iconImages[i] = iconImg;
-        }
-
-        // Auto-screenshot after 3 seconds for iteration
-        StartCoroutine(AutoScreenshot());
-    }
-
-    IEnumerator AutoScreenshot()
-    {
-        yield return new WaitForSeconds(3f);
-        var ss = K1L0Screenshot.Instance;
-        if (ss != null)
-        {
-            Debug.Log("[K1L0Dock] Auto-screenshot firing");
-            ss.Capture();
         }
     }
 
@@ -133,49 +137,19 @@ public class K1L0Dock : MonoBehaviour
         return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100);
     }
 
-    static Sprite CreateBarChartSprite(int size)
+    static Sprite CreateCircleSprite(int size)
     {
         Texture2D tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         tex.filterMode = FilterMode.Bilinear;
-
-        float[] barHeights = { 0.4f, 0.7f, 0.55f, 0.85f };
-        float barWidth = 0.13f;
-        float gap = 0.05f;
-        float totalW = barWidth * 4 + gap * 3;
-        float startX = 0.5f - totalW * 0.5f;
-        float baseY = 0.15f;
-
+        float r = size * 0.5f;
         for (int y = 0; y < size; y++)
         {
             for (int x = 0; x < size; x++)
             {
-                float nx = (float)x / size;
-                float ny = (float)y / size;
-                float alpha = 0f;
-
-                for (int b = 0; b < 4; b++)
-                {
-                    float bx = startX + b * (barWidth + gap);
-                    float top = baseY + barHeights[b] * 0.7f;
-                    if (nx >= bx && nx <= bx + barWidth && ny >= baseY && ny <= top)
-                    {
-                        alpha = 1f;
-                        float cornerR = barWidth * 0.3f;
-                        if (ny > top - cornerR)
-                        {
-                            float cdx = 0f;
-                            if (nx < bx + cornerR) cdx = bx + cornerR - nx;
-                            else if (nx > bx + barWidth - cornerR) cdx = nx - (bx + barWidth - cornerR);
-                            if (cdx > 0)
-                            {
-                                float cdy = ny - (top - cornerR);
-                                float cd = Mathf.Sqrt(cdx * cdx + cdy * cdy);
-                                if (cd > cornerR) alpha = 0f;
-                                else if (cd > cornerR - 0.02f) alpha = (cornerR - cd) / 0.02f;
-                            }
-                        }
-                    }
-                }
+                float dx = x - r + 0.5f;
+                float dy = y - r + 0.5f;
+                float dist = Mathf.Sqrt(dx * dx + dy * dy);
+                float alpha = Mathf.Clamp01(r - dist);
                 tex.SetPixel(x, y, new Color(1, 1, 1, alpha));
             }
         }
@@ -232,48 +206,9 @@ public class K1L0Dock : MonoBehaviour
         return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100);
     }
 
-    void OnTap(int index)
+    void OnTap(int panelIndex)
     {
-        OnButtonTapped?.Invoke(index);
-    }
-
-    void ConfigureDockChrome(K1L0GlassChrome chrome)
-    {
-        if (chrome == null)
-            return;
-
-        chrome.shadow.sprite = K1L0GlassFactory.DockRectSprite;
-        chrome.blurFill.sprite = K1L0GlassFactory.DockRectSprite;
-        chrome.overlay.sprite = K1L0GlassFactory.DockRectSprite;
-        chrome.border.sprite = K1L0GlassFactory.DockBorderSprite;
-        chrome.accent.sprite = K1L0GlassFactory.DockRectSprite;
-        chrome.sheen.sprite = K1L0GlassFactory.DockRectSprite;
-
-        chrome.shadow.rectTransform.offsetMin = new Vector2(1f, -3f);
-        chrome.shadow.rectTransform.offsetMax = new Vector2(-1f, -1f);
-
-        chrome.blurFill.rectTransform.offsetMin = new Vector2(0f, 0f);
-        chrome.blurFill.rectTransform.offsetMax = new Vector2(0f, 0f);
-
-        chrome.overlay.rectTransform.offsetMin = new Vector2(1f, 1f);
-        chrome.overlay.rectTransform.offsetMax = new Vector2(-1f, -1f);
-
-        chrome.accent.rectTransform.offsetMin = new Vector2(3f, 3f);
-        chrome.accent.rectTransform.offsetMax = new Vector2(-3f, -3f);
-
-        if (chrome.sheenMask != null)
-        {
-            chrome.sheenMask.anchorMin = new Vector2(0.18f, 0.70f);
-            chrome.sheenMask.anchorMax = new Vector2(0.82f, 0.90f);
-            chrome.sheenMask.offsetMin = Vector2.zero;
-            chrome.sheenMask.offsetMax = Vector2.zero;
-        }
-
-        if (chrome.sheen != null)
-        {
-            chrome.sheen.rectTransform.offsetMin = new Vector2(2f, -2f);
-            chrome.sheen.rectTransform.offsetMax = new Vector2(-2f, 2f);
-        }
+        OnButtonTapped?.Invoke(panelIndex);
     }
 
     public bool TryHandleScreenPoint(Vector2 screenPoint, Camera eventCamera)
@@ -290,7 +225,7 @@ public class K1L0Dock : MonoBehaviour
             if (!RectTransformUtility.RectangleContainsScreenPoint(buttonRect, screenPoint, eventCamera))
                 continue;
 
-            OnTap(i);
+            OnTap(panelMap[i]);
             return true;
         }
 
@@ -299,29 +234,25 @@ public class K1L0Dock : MonoBehaviour
 
     void UpdateButtonStates()
     {
-        for (int i = 0; i < buttonChromes.Length; i++)
+        for (int i = 0; i < iconImages.Length; i++)
         {
-            K1L0GlassChrome chrome = buttonChromes[i];
-            if (activeStates[i])
+            bool active = activeStates[panelMap[i]];
+            bgImages[i].color = new Color(0f, 0f, 0f, 1f); // Always opaque black
+            if (active)
             {
-                chrome.SetAccent(0.18f);
-                chrome.border.color = new Color(0.66f, 0.84f, 1f, 0.34f);
-                chrome.overlay.color = new Color(0.016f, 0.026f, 0.046f, 0.09f);
-                iconImages[i].color = new Color(0.5f, 0.85f, 1f, 1f);
+                iconImages[i].color = new Color(0.47f, 1f, 0.54f, 1f); // Green when active
             }
             else
             {
-                chrome.SetAccent(0f);
-                chrome.border.color = chrome.baseBorder;
-                chrome.overlay.color = chrome.baseOverlay;
-                iconImages[i].color = new Color(0.87f, 0.92f, 0.98f, 0.90f);
+                iconImages[i].color = new Color(0.84f, 0.90f, 0.97f, 1f); // White when inactive
             }
         }
     }
 
     public void SetActiveButton(int index, bool active)
     {
-        activeStates[index] = active;
+        if (index >= 0 && index < activeStates.Length)
+            activeStates[index] = active;
         UpdateButtonStates();
     }
 }

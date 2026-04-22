@@ -58,6 +58,7 @@ public class KiloFirstPersonController : MonoBehaviour
     private KiloWorldMasterProfile profile;
 
     private bool isGodViewActive = false; // Toggles between default and God View
+    public bool IsGodView => isGodViewActive;
     private float currentCameraTransitionTime = 1f; // Start completed (no animation until tap triggers it)
     private Vector3 cameraInitialLocalPos;
     private Quaternion cameraInitialLocalRot;
@@ -453,14 +454,6 @@ public class KiloFirstPersonController : MonoBehaviour
     {
         if (cameraTransform == null || profile == null) return;
 
-        // Only animate while transition is in progress
-        if (currentCameraTransitionTime >= 1f) return;
-
-        // Animate camera position and rotation
-        float transitionSpeed = 1.0f / Mathf.Max(0.1f, profile.camera.transitionTime);
-        currentCameraTransitionTime += Time.deltaTime * transitionSpeed;
-        float t = Mathf.Clamp01(currentCameraTransitionTime);
-
         Vector3 targetPos;
         Quaternion targetRot;
 
@@ -483,7 +476,18 @@ public class KiloFirstPersonController : MonoBehaviour
             targetRot = cameraInitialLocalRot;
         }
 
-        cameraTransform.localPosition = Vector3.Lerp(cameraTransform.localPosition, targetPos, t);
-        cameraTransform.localRotation = Quaternion.Lerp(cameraTransform.localRotation, targetRot, t);
+        if (currentCameraTransitionTime < 1f)
+        {
+            float transitionSpeed = 1.0f / Mathf.Max(0.1f, profile.camera.transitionTime);
+            currentCameraTransitionTime += Time.deltaTime * transitionSpeed;
+            float t = Mathf.Clamp01(currentCameraTransitionTime);
+            cameraTransform.localPosition = Vector3.Lerp(cameraTransform.localPosition, targetPos, t);
+            cameraTransform.localRotation = Quaternion.Lerp(cameraTransform.localRotation, targetRot, t);
+        }
+        else
+        {
+            cameraTransform.localPosition = targetPos;
+            cameraTransform.localRotation = targetRot;
+        }
     }
 }
