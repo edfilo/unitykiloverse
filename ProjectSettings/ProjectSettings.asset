@@ -168,8 +168,8 @@ PlayerSettings:
   androidMinAspectRatio: 1
   applicationIdentifier:
     Android: com.UnityTechnologies.com.unity.template.urpblank
-    Standalone: com.filowatt.K1L0
-    iPhone: com.filowatt.K1L0
+    Standalone: com.filowatt.k1lo
+    iPhone: com.filowatt.k1lo
   buildNumber:
     Standalone: 0
     VisionOS: 0

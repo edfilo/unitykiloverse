@@ -9,7 +9,7 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.filowatt.K1L0</string>
+	<string>com.filowatt.k1lo</string>
 	<key>PROJECT_ID</key>
 	<string>kiloworld-aa8d6</string>
 	<key>STORAGE_BUCKET</key>
@@ -25,7 +25,7 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:1052837587399:ios:7d38ece608251c513011e2</string>
+	<string>1:1052837587399:ios:0cfe7f3ce73d42683011e2</string>
 	<key>DATABASE_URL</key>
 	<string>https://kiloworld-aa8d6-default-rtdb.firebaseio.com</string>
 </dict>

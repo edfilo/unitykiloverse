@@ -4,6 +4,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text;
+using Firebase.Database;
 
 // ─────────────────────────────────────────────────────────────────
 // TransmissionManager  –  Connects SignalDirectorV2 to the Story Engine
@@ -33,6 +34,9 @@ public class TransmissionManager : MonoBehaviour
         public string premise;
         public int deliveredShotCount; // how many shots we've already dispatched to UI
         public string lastProgressKey; // dedupe OnShotProgress events
+        // Per-shot videoUrl snapshot at last delivery — lets us re-fire
+        // OnTransmissionReady when video lands after the still was already shown.
+        public readonly Dictionary<int, string> deliveredVideoUrl = new Dictionary<int, string>();
     }
     private readonly Dictionary<string, StoryState> storyStates = new Dictionary<string, StoryState>();
 
@@ -334,49 +338,63 @@ public class TransmissionManager : MonoBehaviour
         return sb.ToString();
     }
 
-    // Opens (or reuses) a dedicated SSE listener for the given storyId.
+    // Track active Firebase listeners so we can detach them cleanly.
+    private readonly Dictionary<string, DatabaseReference> _storyRefs = new Dictionary<string, DatabaseReference>();
+    private readonly Dictionary<string, EventHandler<ValueChangedEventArgs>> _storyHandlers = new Dictionary<string, EventHandler<ValueChangedEventArgs>>();
+
+    // Opens (or reuses) a Firebase RTDB ValueChanged listener for the given storyId.
     // Multiple concurrent listeners are supported — a new pursuit chain does
     // NOT stop prior listeners, so pending shots still get delivered.
     void BeginStoryListener(string storyId)
     {
         if (string.IsNullOrEmpty(storyId)) return;
+        if (_storyRefs.ContainsKey(storyId)) return; // already listening
 
-        var fb = FirebaseRestClient.Instance;
-        if (fb == null)
+        FirebaseBootstrap.WhenReady(() =>
         {
-            Debug.LogWarning("[TransmissionManager] FirebaseRestClient not ready — cannot open story listener");
-            return;
-        }
+            if (_storyRefs.ContainsKey(storyId)) return;
+            string path = $"users/{SanitizeUserId(GetUserId())}/stories/{storyId}";
+            Debug.Log($"[TransmissionManager] Opening Firebase listener on {path}");
 
-        string path = $"/users/{SanitizeUserId(GetUserId())}/stories/{storyId}";
-        Debug.Log($"[TransmissionManager] Opening story SSE listener on {path}");
-        fb.StartListening(path, data => OnStorySSEData(storyId, data));
+            var db = FirebaseDatabase.DefaultInstance;
+            var reference = db.GetReference(path);
+            EventHandler<ValueChangedEventArgs> handler = (sender, args) =>
+            {
+                if (args.DatabaseError != null)
+                {
+                    Debug.LogWarning($"[TransmissionManager] RTDB error on {path}: {args.DatabaseError.Message}");
+                    return;
+                }
+                if (args.Snapshot == null || !args.Snapshot.Exists) return;
+                StartCoroutine(FetchAndDeliver(storyId));
+            };
+            reference.ValueChanged += handler;
+            _storyRefs[storyId] = reference;
+            _storyHandlers[storyId] = handler;
+        });
     }
 
     void StopStoryListener(string storyId)
     {
         if (string.IsNullOrEmpty(storyId)) return;
-        if (FirebaseRestClient.Instance == null) return;
-        string path = $"/users/{SanitizeUserId(GetUserId())}/stories/{storyId}";
-        FirebaseRestClient.Instance.StopListening(path);
+        if (_storyRefs.TryGetValue(storyId, out var reference) &&
+            _storyHandlers.TryGetValue(storyId, out var handler))
+        {
+            reference.ValueChanged -= handler;
+        }
+        _storyRefs.Remove(storyId);
+        _storyHandlers.Remove(storyId);
     }
 
     void StopShotListener()
     {
-        if (FirebaseRestClient.Instance != null) FirebaseRestClient.Instance.StopListening();
-    }
-
-    // Fires on every SSE data line from Firebase RTDB on a specific story node.
-    // Payloads arrive as {"path":"/<field>","data":<value>} (or path:"/" with the whole record).
-    // We refetch on any real data frame — FetchAndDeliver is idempotent (it only
-    // re-emits events on actual state changes, deduped via state.character /
-    // deliveredShotCount / lastProgressKey), so this covers shell arrival,
-    // intermediate shot progress (imageUrl, dialogAudioUrl, status transitions),
-    // and shot-ready in one path.
-    void OnStorySSEData(string storyId, string data)
-    {
-        if (string.IsNullOrEmpty(data)) return;
-        StartCoroutine(FetchAndDeliver(storyId));
+        foreach (var kv in _storyRefs)
+        {
+            if (_storyHandlers.TryGetValue(kv.Key, out var handler))
+                kv.Value.ValueChanged -= handler;
+        }
+        _storyRefs.Clear();
+        _storyHandlers.Clear();
     }
 
     IEnumerator FetchAndDeliver(string storyId)
@@ -438,53 +456,29 @@ public class TransmissionManager : MonoBehaviour
             while (state.deliveredShotCount < resp.shots.Length)
             {
                 var shot = resp.shots[state.deliveredShotCount];
-                if (shot.status != "ready") break;
+                // Deliver as soon as there's a still to show — video arrives later
+                // and triggers a re-fire below. generating/queued → hold.
+                if (!IsShotVisible(shot)) break;
 
                 state.deliveredShotCount++;
+                state.deliveredVideoUrl[shot.shotNumber] = shot.videoUrl ?? "";
 
-                Debug.Log($"[TransmissionManager] Transmission #{shot.shotNumber} ready ({storyId}): {shot.dialog}");
+                Debug.Log($"[TransmissionManager] Transmission #{shot.shotNumber} visible ({storyId}, status={shot.status}): {shot.dialog}");
 
-                var boundSignal = activeLocationSignal
-                    ?? SignalDirectorV2.Instance?.GetCurrentPrimary();
-                var td = new TransmissionData
-                {
-                    storyId = storyId,
-                    shotId = shot.id,
-                    shotNumber = shot.shotNumber,
-                    transmissionType = boundSignal != null
-                        ? (SignalDirectorV2.IsLocationTransmission(boundSignal) ? "location" : "ambient")
-                        : null,
-                    character = state.character,
-                    specialItem = boundSignal != null ? boundSignal.specialItem : state.objectName,
-                    nextTeaser = shot.nextTeaser,
-                    dialog = shot.dialog,
-                    latitude = boundSignal != null ? boundSignal.latitude : 0.0,
-                    longitude = boundSignal != null ? boundSignal.longitude : 0.0,
-                    locationName = activeLocationSignal != null ? activeLocationSignal.locationName : null,
-                    locationCategory = activeLocationSignal != null ? activeLocationSignal.locationCategory : null,
-                    imageUrl = shot.imageUrl,
-                    audioUrl = shot.audioUrl,
-                    videoUrl = shot.videoUrl,
-                    hasImage = shot.hasImage,
-                    hasVideo = shot.hasVideo,
-                    hasAudio = shot.hasAudio
-                };
+                DispatchTransmission(storyId, state, shot);
+            }
 
-                OnTransmissionReady?.Invoke(td);
-
-                // Write the LLM-authored next-teaser onto the bound location
-                // signal so UpdateLocationHUD renders it verbatim (no local
-                // fallback needed once the backend ships one).
-                if (activeLocationSignal != null)
-                    activeLocationSignal.teaser = shot.nextTeaser;
-
-                // Pursuit HUD only tracks the active pursuit story.
-                if (storyId == activeStoryId)
-                {
-                    pendingTeaser = shot.nextTeaser;
-                    OnTeaserUpdated?.Invoke(pendingTeaser);
-                    UpdatePursuitHUD(state.character, pendingTeaser);
-                }
+            // Re-fire delivery for any already-delivered shot whose videoUrl
+            // just landed (image was shown as placeholder; swap to video now).
+            for (int i = 0; i < state.deliveredShotCount && i < resp.shots.Length; i++)
+            {
+                var shot = resp.shots[i];
+                if (string.IsNullOrEmpty(shot.videoUrl)) continue;
+                string prev;
+                if (state.deliveredVideoUrl.TryGetValue(shot.shotNumber, out prev) && prev == shot.videoUrl) continue;
+                state.deliveredVideoUrl[shot.shotNumber] = shot.videoUrl;
+                Debug.Log($"[TransmissionManager] Transmission #{shot.shotNumber} video ready ({storyId})");
+                DispatchTransmission(storyId, state, shot);
             }
 
             // After draining ready shots, the next shot (if any) is the one
@@ -500,6 +494,60 @@ public class TransmissionManager : MonoBehaviour
                     OnShotProgress?.Invoke(storyId, inFlight.shotNumber, inFlight.status ?? "generating", inFlight.hasImage, inFlight.hasAudio);
                 }
             }
+        }
+    }
+
+    // A shot is visible once an image URL exists — UI shows the still as a
+    // placeholder while the video renders. Covers "image_ready",
+    // "rendering_video", and "ready" without hard-coding backend status names.
+    static bool IsShotVisible(ShotStatus shot)
+    {
+        if (shot == null) return false;
+        if (shot.status == "ready" || shot.status == "image_ready" || shot.status == "rendering_video") return true;
+        return !string.IsNullOrEmpty(shot.imageUrl) || shot.hasImage;
+    }
+
+    void DispatchTransmission(string storyId, StoryState state, ShotStatus shot)
+    {
+        var boundSignal = activeLocationSignal
+            ?? SignalDirectorV2.Instance?.GetCurrentPrimary();
+        var td = new TransmissionData
+        {
+            storyId = storyId,
+            shotId = shot.id,
+            shotNumber = shot.shotNumber,
+            transmissionType = boundSignal != null
+                ? (SignalDirectorV2.IsLocationTransmission(boundSignal) ? "location" : "ambient")
+                : null,
+            character = state.character,
+            specialItem = boundSignal != null ? boundSignal.specialItem : state.objectName,
+            nextTeaser = shot.nextTeaser,
+            dialog = shot.dialog,
+            latitude = boundSignal != null ? boundSignal.latitude : 0.0,
+            longitude = boundSignal != null ? boundSignal.longitude : 0.0,
+            locationName = activeLocationSignal != null ? activeLocationSignal.locationName : null,
+            locationCategory = activeLocationSignal != null ? activeLocationSignal.locationCategory : null,
+            imageUrl = shot.imageUrl,
+            audioUrl = shot.audioUrl,
+            videoUrl = shot.videoUrl,
+            hasImage = shot.hasImage,
+            hasVideo = shot.hasVideo,
+            hasAudio = shot.hasAudio
+        };
+
+        OnTransmissionReady?.Invoke(td);
+
+        // Write the LLM-authored next-teaser onto the bound location signal
+        // so UpdateLocationHUD renders it verbatim.
+        if (activeLocationSignal != null)
+            activeLocationSignal.teaser = shot.nextTeaser;
+
+        // Pursuit HUD only tracks the active pursuit story.
+        if (storyId == activeStoryId)
+        {
+            pendingTeaser = shot.nextTeaser;
+            OnTeaserUpdated?.Invoke(pendingTeaser);
+            UpdatePursuitHUD(state.character, pendingTeaser);
         }
     }
 

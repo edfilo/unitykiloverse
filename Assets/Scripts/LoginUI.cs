@@ -17,18 +17,10 @@ public class LoginUI : MonoBehaviour
     void Start()
     {
 #if UNITY_EDITOR || UNITY_STANDALONE_OSX
-        // Auto-skip login in Editor + Mac standalone dev builds. Apple Sign-In
-        // requires provisioning we don't have on the Mac target, and without a
-        // completed sign-in FirebaseAuthManager never authenticates — which blocks
-        // the Firebase SSE listener that delivers transmission images.
-        Debug.Log("[LoginUI] Editor/Mac build — auto-skipping login");
-        var auth = FirebaseAuthManager.Instance;
-        if (auth != null && !auth.isAuthenticated)
-        {
-            auth.userId = "EDITOR_TEST_USER";
-            auth.isAuthenticated = true;
-            auth.displayName = "Editor Test User";
-        }
+        // Auto-signin on Editor/Mac via Firebase anonymous auth so RTDB rules pass.
+        // Apple Sign-In isn't available on these targets.
+        Debug.Log("[LoginUI] Editor/Mac build — anonymous Firebase sign-in");
+        FirebaseAuthManager.Instance.SignInAnonymously();
         return;
 #endif
 
@@ -293,33 +285,17 @@ public class LoginUI : MonoBehaviour
 
     void OnSkipButtonClick()
     {
-        Debug.Log("[LoginUI] Skip button clicked - bypassing auth");
+        Debug.Log("[LoginUI] Skip button clicked - anonymous Firebase sign-in");
         SetStatus("SIGNING IN...", Color.yellow);
-
-        var authManager = FirebaseAuthManager.Instance;
-        authManager.userId = "EDITOR_TEST_USER";
-        authManager.isAuthenticated = true;
-        authManager.displayName = "Editor Test User";
-
-        OnAuthStateChanged(true);
+        FirebaseAuthManager.Instance.SignInAnonymously();
     }
 
     void OnAppleSignInSuccess(string idToken, string nonce, string fullName, string appleUserId)
     {
         Debug.Log($"[LoginUI] Apple sign-in successful! appleUserId={appleUserId}, name={fullName}");
-        SetStatus("SIGNED IN", Color.green);
-
-        // Use Apple user ID directly — no Firebase token exchange needed
-        // Server /ping doesn't verify tokens, just needs a stable userId
-        var auth = FirebaseAuthManager.Instance;
-        auth.userId = !string.IsNullOrEmpty(appleUserId) ? $"apple_{appleUserId}" : $"apple_{System.Guid.NewGuid()}";
-        auth.displayName = fullName ?? "";
-        auth.isAuthenticated = true;
-        auth.idToken = idToken; // Store in case server needs it later
-        auth.SaveAuthPublic();
-
-        Debug.Log($"[LoginUI] Authenticated as {auth.userId}");
-        OnAuthStateChanged(true);
+        SetStatus("EXCHANGING TOKEN...", Color.yellow);
+        // Exchange Apple token for a real Firebase credential so RTDB accepts us.
+        FirebaseAuthManager.Instance.SignInWithApple(idToken, nonce, fullName);
     }
 
     void OnAppleSignInFailed(string error)

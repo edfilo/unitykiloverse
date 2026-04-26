@@ -431,7 +431,27 @@ public class TransmissionFrame : MonoBehaviour
         // Ignore shots from other stories — stay pinned to what the user entered.
         if (!string.IsNullOrEmpty(pinnedStoryId) && data.storyId != pinnedStoryId) return;
 
+        // Re-fire for the same shot means the video URL just landed after the
+        // still was shown. Apply the URL updates only; don't rerun typewriter
+        // or touch the header.
+        bool isRefire = shotDelivered && data.shotNumber == pinnedShotNumber;
+        if (isRefire)
+        {
+            if (!string.IsNullOrEmpty(data.videoUrl) && data.videoUrl != currentVideoUrl)
+            {
+                currentVideoUrl = data.videoUrl;
+                if (videoPlayer != null)
+                {
+                    videoPlayer.Stop();
+                    videoPlayer.url = data.videoUrl;
+                    videoPlayer.Prepare();
+                }
+            }
+            return;
+        }
+
         shotDelivered = true;
+        pinnedShotNumber = data.shotNumber;
         if (typewriterRoutine != null) StopCoroutine(typewriterRoutine);
 
         string charName = !string.IsNullOrEmpty(data.character) ? data.character.ToUpper() : "UNKNOWN";

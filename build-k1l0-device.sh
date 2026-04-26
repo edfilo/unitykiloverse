@@ -11,7 +11,7 @@ if [[ "$1" == "--ota" ]]; then MODE="ota"; fi
 UNITY="/Applications/Unity/Hub/Editor/6000.3.12f1/Unity.app/Contents/MacOS/Unity"
 PROJECT="/Users/kiloverse/unitykiloverse"
 IOS_BUILD="/Users/kiloverse/unitykiloverse/Builds/iOS"
-BUNDLE_ID="com.filowatt.K1L0"
+BUNDLE_ID="com.filowatt.k1lo"
 TEAM_ID="7R2746UPX7"
 APP_NAME="K1L0"
 LOG="/tmp/k1l0_unity_build.log"
@@ -117,7 +117,10 @@ if [[ "$MODE" == "ota" ]]; then
       -scheme Unity-iPhone -configuration Release \
       -archivePath "$ARCHIVE" \
       -allowProvisioningUpdates \
-      clean archive 2>&1 | tail -5
+      CODE_SIGN_STYLE=Automatic \
+      DEVELOPMENT_TEAM=$TEAM_ID \
+      CODE_SIGN_IDENTITY="Apple Development" \
+      clean archive 2>&1 | tee /tmp/k1l0_xcode_archive.log | tail -5
 
     if [ ! -d "$ARCHIVE" ]; then
       echo "  ✗ Archive FAILED after $(($(date +%s) - STEP_START))s"

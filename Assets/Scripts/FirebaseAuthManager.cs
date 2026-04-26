@@ -1,15 +1,12 @@
 using UnityEngine;
-using UnityEngine.Networking;
-using System.Collections;
 using System;
-using System.Security.Cryptography;
-using System.Text;
+using System.Threading.Tasks;
+using Firebase.Auth;
+using Firebase.Extensions;
 
-/// <summary>
-/// Manages Firebase Authentication using REST API
-/// Supports Apple Sign-In with automatic token exchange
-/// Lightweight alternative to full Firebase Unity SDK
-/// </summary>
+// Firebase Authentication via the official Firebase Unity SDK.
+// SignInWithApple exchanges an Apple ID token for a real Firebase credential,
+// so idToken below is a Firebase-minted token accepted by RTDB security rules.
 public class FirebaseAuthManager : MonoBehaviour
 {
     private static FirebaseAuthManager _instance;
@@ -27,27 +24,23 @@ public class FirebaseAuthManager : MonoBehaviour
         }
     }
 
-    [Header("Firebase Configuration")]
-    public string firebaseApiKey = "AIzaSyCJYzfGpp9lYBkIHlAyflGJ-vaT1WfpzjU";
-    public string firebaseProjectId = "kiloworld-aa8d6";
-
     [Header("Auth State")]
     public bool isAuthenticated = false;
     public string userId = null;
     public string idToken = null;
-    public string refreshToken = null;
+    public string refreshToken = null; // kept for API compatibility; Firebase SDK manages refresh internally
     public string email = null;
     public string displayName = null;
 
-    // Events
     public event Action<bool> OnAuthStateChanged;
     public event Action<string> OnAuthError;
 
-    private const string PREF_ID_TOKEN = "FirebaseIdToken";
-    private const string PREF_REFRESH_TOKEN = "FirebaseRefreshToken";
     private const string PREF_USER_ID = "FirebaseUserId";
     private const string PREF_EMAIL = "FirebaseEmail";
     private const string PREF_DISPLAY_NAME = "FirebaseDisplayName";
+
+    private FirebaseAuth _auth;
+    private string _pendingAppleFullName;
 
     private void Awake()
     {
@@ -59,225 +52,186 @@ public class FirebaseAuthManager : MonoBehaviour
         _instance = this;
         DontDestroyOnLoad(gameObject);
 
-        // Try to restore session
-        LoadStoredAuth();
+        // Restore cached profile fields immediately so UI can render while SDK boots.
+        email = PlayerPrefs.GetString(PREF_EMAIL, "");
+        displayName = PlayerPrefs.GetString(PREF_DISPLAY_NAME, "");
+        userId = PlayerPrefs.GetString(PREF_USER_ID, "");
+
+        FirebaseBootstrap.WhenReady(OnFirebaseReady);
     }
 
-    private void Start()
+    private void OnFirebaseReady()
     {
-        // If we have a refresh token, try to refresh the ID token
-        if (!string.IsNullOrEmpty(refreshToken))
+        _auth = FirebaseAuth.DefaultInstance;
+        _auth.StateChanged += OnAuthStateChangedInternal;
+        // Seed state from whatever the SDK already has (persists across launches).
+        OnAuthStateChangedInternal(_auth, EventArgs.Empty);
+    }
+
+    private void OnDestroy()
+    {
+        if (_auth != null)
         {
-            RefreshIdTokenAsync();
+            _auth.StateChanged -= OnAuthStateChangedInternal;
         }
     }
 
-    /// <summary>
-    /// Load stored authentication from PlayerPrefs
-    /// </summary>
-    private void LoadStoredAuth()
+    private void OnAuthStateChangedInternal(object sender, EventArgs e)
     {
-        if (PlayerPrefs.HasKey(PREF_ID_TOKEN))
+        var user = _auth?.CurrentUser;
+        if (user != null)
         {
-            idToken = PlayerPrefs.GetString(PREF_ID_TOKEN);
-            refreshToken = PlayerPrefs.GetString(PREF_REFRESH_TOKEN, "");
-            userId = PlayerPrefs.GetString(PREF_USER_ID, "");
-            email = PlayerPrefs.GetString(PREF_EMAIL, "");
-            displayName = PlayerPrefs.GetString(PREF_DISPLAY_NAME, "");
+            userId = user.UserId;
+            email = user.Email ?? "";
+            if (!string.IsNullOrEmpty(user.DisplayName)) displayName = user.DisplayName;
             isAuthenticated = true;
-
-            Debug.Log($"[FirebaseAuth] Restored session for user: {userId}");
-            OnAuthStateChanged?.Invoke(true);
+            SaveAuth();
+            Debug.Log($"[FirebaseAuth] StateChanged → signed in: {userId}");
+            // Fetch a fresh ID token so other systems (RTDB REST, backend) can use it.
+            user.TokenAsync(false).ContinueWithOnMainThread((Task<string> t) =>
+            {
+                if (t.IsFaulted || t.IsCanceled)
+                {
+                    Debug.LogWarning($"[FirebaseAuth] TokenAsync failed: {t.Exception?.Message}");
+                }
+                else
+                {
+                    idToken = t.Result;
+                }
+                OnAuthStateChanged?.Invoke(true);
+            });
+        }
+        else
+        {
+            isAuthenticated = false;
+            idToken = null;
+            Debug.Log("[FirebaseAuth] StateChanged → signed out");
+            OnAuthStateChanged?.Invoke(false);
         }
     }
 
-    /// <summary>
-    /// Save authentication to PlayerPrefs
-    /// </summary>
     public void SaveAuthPublic() => SaveAuth();
 
     private void SaveAuth()
     {
-        PlayerPrefs.SetString(PREF_ID_TOKEN, idToken ?? "");
-        PlayerPrefs.SetString(PREF_REFRESH_TOKEN, refreshToken ?? "");
         PlayerPrefs.SetString(PREF_USER_ID, userId ?? "");
         PlayerPrefs.SetString(PREF_EMAIL, email ?? "");
         PlayerPrefs.SetString(PREF_DISPLAY_NAME, displayName ?? "");
         PlayerPrefs.Save();
     }
 
-    /// <summary>
-    /// Sign in with Apple ID Token
-    /// Exchanges Apple identity token for Firebase credentials directly via Firebase REST API
-    /// </summary>
-    private string _pendingAppleFullName;
-
     public void SignInWithApple(string appleIdToken, string appleNonce, string appleFullName = null)
     {
-        Debug.Log("[FirebaseAuth] Signing in with Apple via Firebase REST API...");
-        Debug.Log($"[FirebaseAuth] idToken length={appleIdToken?.Length}, nonce length={appleNonce?.Length}");
-
         _pendingAppleFullName = appleFullName;
-
-        string url = $"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={firebaseApiKey}";
-
-        // Log nonce details for debugging
-        Debug.Log($"[FirebaseAuth] Raw nonce (first 8): {(appleNonce?.Length > 8 ? appleNonce.Substring(0, 8) : appleNonce)}...");
-        Debug.Log($"[FirebaseAuth] ID token (first 40): {(appleIdToken?.Length > 40 ? appleIdToken.Substring(0, 40) : appleIdToken)}...");
-
-        // Apple token contains SHA256(rawNonce). Firebase compares literally, so we must hash it.
-        string hashedNonce = Sha256(appleNonce);
-        Debug.Log($"[FirebaseAuth] rawNonce={appleNonce}");
-        Debug.Log($"[FirebaseAuth] hashedNonce={hashedNonce}");
-        string postBody = $"id_token={appleIdToken}&nonce={hashedNonce}&providerId=apple.com";
-
-        string json = JsonUtility.ToJson(new FirebaseIdpRequest {
-            postBody = postBody,
-            requestUri = $"https://{firebaseProjectId}.firebaseapp.com/__/auth/handler",
-            returnSecureToken = true,
-            returnIdpCredential = true
-        });
-
-        var www = new UnityWebRequest(url, "POST");
-        byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(json);
-        www.uploadHandler = new UploadHandlerRaw(bodyRaw);
-        www.downloadHandler = new DownloadHandlerBuffer();
-        www.SetRequestHeader("Content-Type", "application/json");
-        www.timeout = 15;
-
-        var op = www.SendWebRequest();
-        op.completed += _ => OnSignInComplete(www);
+        FirebaseBootstrap.WhenReady(() => SignInWithAppleInternal(appleIdToken, appleNonce));
     }
 
-    private void OnSignInComplete(UnityWebRequest www)
+    private void SignInWithAppleInternal(string appleIdToken, string appleRawNonce)
     {
+        Debug.Log($"[FirebaseAuth] SignInWithApple via SDK (idToken len={appleIdToken?.Length}, nonce len={appleRawNonce?.Length})");
+        LogJwtClaims(appleIdToken, appleRawNonce);
+        Credential credential;
         try
         {
-            if (www.result == UnityWebRequest.Result.Success)
-            {
-                Debug.Log($"[FirebaseAuth] Raw response: {www.downloadHandler.text}");
-                var authResponse = JsonUtility.FromJson<FirebaseAuthResponse>(www.downloadHandler.text);
-
-                userId = authResponse.localId;
-                idToken = authResponse.idToken;
-                refreshToken = authResponse.refreshToken;
-                email = authResponse.email ?? "";
-                displayName = authResponse.displayName ?? _pendingAppleFullName ?? "";
-
-                isAuthenticated = true;
-                SaveAuth();
-
-                Debug.Log($"[FirebaseAuth] ✓ Signed in successfully: {userId}");
-                OnAuthStateChanged?.Invoke(true);
-
-                if (DeviceIDManager.Instance != null)
-                {
-                    PlayerPrefs.SetString("FirebaseUID_" + DeviceIDManager.Instance.DeviceID, userId);
-                    PlayerPrefs.Save();
-                }
-            }
-            else
-            {
-                string responseBody = www.downloadHandler?.text ?? "(no body)";
-                Debug.LogError($"[FirebaseAuth] Sign in failed: HTTP {www.responseCode} {www.error}");
-                Debug.LogError($"[FirebaseAuth] Response: {responseBody}");
-
-                // Show the actual Firebase error to the user
-                string userMsg = $"HTTP {www.responseCode}: ";
-                if (responseBody.Contains("INVALID_IDP_RESPONSE"))
-                {
-                    // Extract the detail after the colon
-                    int idx = responseBody.IndexOf("INVALID_IDP_RESPONSE");
-                    string detail = responseBody.Substring(idx, Math.Min(80, responseBody.Length - idx));
-                    userMsg += detail;
-                }
-                else if (responseBody.Contains("MISSING_OR_INVALID_NONCE"))
-                {
-                    int idx = responseBody.IndexOf("MISSING_OR_INVALID_NONCE");
-                    string detail = responseBody.Substring(idx, Math.Min(300, responseBody.Length - idx));
-                    userMsg = detail;
-                }
-                else if (responseBody.Contains("ADMIN_ONLY_OPERATION"))
-                    userMsg += "APPLE NOT ENABLED IN FIREBASE";
-                else
-                    userMsg += responseBody.Length > 120 ? responseBody.Substring(0, 120) : responseBody;
-
-                OnAuthError?.Invoke(userMsg);
-            }
+            // Firebase Unity SDK expects the RAW nonce — it hashes server-side to compare
+            // against the hashed nonce embedded in Apple's id_token.
+            credential = OAuthProvider.GetCredential("apple.com", appleIdToken, appleRawNonce, null);
         }
         catch (Exception e)
         {
-            Debug.LogError($"[FirebaseAuth] Exception in OnSignInComplete: {e}");
-            OnAuthError?.Invoke($"Auth exception: {e.Message}");
-        }
-        finally
-        {
-            www.Dispose();
-        }
-    }
-
-    /// <summary>
-    /// Refresh the Firebase ID token using the refresh token (no coroutine)
-    /// </summary>
-    public void RefreshIdTokenAsync()
-    {
-        if (string.IsNullOrEmpty(refreshToken))
-        {
-            Debug.LogWarning("[FirebaseAuth] No refresh token available");
+            Debug.LogError($"[FirebaseAuth] GetCredential failed: {e}");
+            OnAuthError?.Invoke($"credential error: {e.Message}");
             return;
         }
 
-        string url = $"https://securetoken.googleapis.com/v1/token?key={firebaseApiKey}";
-        string body = $"grant_type=refresh_token&refresh_token={UnityWebRequest.EscapeURL(refreshToken)}";
+        _auth.SignInWithCredentialAsync(credential).ContinueWithOnMainThread((Task<FirebaseUser> task) =>
+        {
+            if (task.IsCanceled)
+            {
+                OnAuthError?.Invoke("sign-in canceled");
+                return;
+            }
+            if (task.IsFaulted)
+            {
+                string msg = task.Exception?.GetBaseException()?.Message ?? "sign-in failed";
+                Debug.LogError($"[FirebaseAuth] SignInWithCredential failed: {task.Exception}");
+                OnAuthError?.Invoke(msg);
+                return;
+            }
 
-        var www = new UnityWebRequest(url, "POST");
-        byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(body);
-        www.uploadHandler = new UploadHandlerRaw(bodyRaw);
-        www.downloadHandler = new DownloadHandlerBuffer();
-        www.SetRequestHeader("Content-Type", "application/x-www-form-urlencoded");
-        www.timeout = 10;
+            var user = task.Result;
+            userId = user.UserId;
+            email = user.Email ?? "";
+            displayName = !string.IsNullOrEmpty(user.DisplayName) ? user.DisplayName : (_pendingAppleFullName ?? "");
+            isAuthenticated = true;
+            SaveAuth();
 
-        var op = www.SendWebRequest();
-        op.completed += _ => OnRefreshComplete(www);
+            if (DeviceIDManager.Instance != null)
+            {
+                PlayerPrefs.SetString("FirebaseUID_" + DeviceIDManager.Instance.DeviceID, userId);
+                PlayerPrefs.Save();
+            }
+
+            Debug.Log($"[FirebaseAuth] ✓ Signed in: {userId}");
+
+            user.TokenAsync(false).ContinueWithOnMainThread((Task<string> t) =>
+            {
+                if (!t.IsFaulted && !t.IsCanceled) idToken = t.Result;
+                OnAuthStateChanged?.Invoke(true);
+            });
+        });
     }
 
-    private void OnRefreshComplete(UnityWebRequest www)
+    // Dev-mode sign-in used on Mac/Editor where Apple Sign-In isn't wired up.
+    // Produces a real Firebase user with a valid ID token so RTDB rules pass.
+    public void SignInAnonymously()
     {
-        try
+        FirebaseBootstrap.WhenReady(() =>
         {
-            if (www.result == UnityWebRequest.Result.Success)
+            if (_auth.CurrentUser != null)
             {
-                var response = JsonUtility.FromJson<RefreshTokenResponse>(www.downloadHandler.text);
-                idToken = response.id_token;
-                refreshToken = response.refresh_token;
-                userId = response.user_id;
-
-                SaveAuth();
-                Debug.Log($"[FirebaseAuth] ✓ Token refreshed for user: {userId}");
+                Debug.Log($"[FirebaseAuth] SignInAnonymously: already signed in as {_auth.CurrentUser.UserId}");
+                return;
             }
-            else
+            _auth.SignInAnonymouslyAsync().ContinueWithOnMainThread((Task<AuthResult> task) =>
             {
-                Debug.LogWarning($"[FirebaseAuth] Token refresh failed: HTTP {www.responseCode} {www.error}");
-                Debug.LogWarning($"[FirebaseAuth] Refresh response: {www.downloadHandler?.text}");
-                SignOut();
-            }
-        }
-        catch (Exception e)
-        {
-            Debug.LogError($"[FirebaseAuth] Refresh exception: {e.Message}");
-            SignOut();
-        }
-        finally
-        {
-            www.Dispose();
-        }
+                if (task.IsCanceled || task.IsFaulted)
+                {
+                    string msg = task.Exception?.GetBaseException()?.Message ?? "anonymous sign-in failed";
+                    Debug.LogError($"[FirebaseAuth] SignInAnonymously failed: {task.Exception}");
+                    OnAuthError?.Invoke(msg);
+                    return;
+                }
+                Debug.Log($"[FirebaseAuth] ✓ Anonymous sign-in: {task.Result.User.UserId}");
+            });
+        });
     }
 
-    /// <summary>
-    /// Sign out and clear all stored authentication
-    /// </summary>
+    // Forces a fresh Firebase ID token. Other systems call this before making
+    // authenticated requests that may have been rejected with 401.
+    public void RefreshIdTokenAsync()
+    {
+        if (_auth?.CurrentUser == null)
+        {
+            Debug.LogWarning("[FirebaseAuth] RefreshIdTokenAsync: no current user");
+            return;
+        }
+        _auth.CurrentUser.TokenAsync(true).ContinueWithOnMainThread((Task<string> t) =>
+        {
+            if (t.IsFaulted || t.IsCanceled)
+            {
+                Debug.LogWarning($"[FirebaseAuth] Token refresh failed: {t.Exception?.GetBaseException()?.Message}");
+                return;
+            }
+            idToken = t.Result;
+            Debug.Log("[FirebaseAuth] ✓ Token refreshed");
+        });
+    }
+
     public void SignOut()
     {
+        if (_auth != null) _auth.SignOut();
+
         userId = null;
         idToken = null;
         refreshToken = null;
@@ -285,8 +239,6 @@ public class FirebaseAuthManager : MonoBehaviour
         displayName = null;
         isAuthenticated = false;
 
-        PlayerPrefs.DeleteKey(PREF_ID_TOKEN);
-        PlayerPrefs.DeleteKey(PREF_REFRESH_TOKEN);
         PlayerPrefs.DeleteKey(PREF_USER_ID);
         PlayerPrefs.DeleteKey(PREF_EMAIL);
         PlayerPrefs.DeleteKey(PREF_DISPLAY_NAME);
@@ -296,68 +248,28 @@ public class FirebaseAuthManager : MonoBehaviour
         OnAuthStateChanged?.Invoke(false);
     }
 
-    /// <summary>
-    /// Get current user ID (Firebase UID or device ID fallback)
-    /// </summary>
+    private static void LogJwtClaims(string jwt, string rawNonce)
+    {
+        try
+        {
+            var parts = jwt?.Split('.');
+            if (parts == null || parts.Length != 3) { Debug.LogWarning("[FirebaseAuth] id_token is not a 3-part JWT"); return; }
+            string p = parts[1].Replace('-', '+').Replace('_', '/');
+            int pad = p.Length % 4; if (pad != 0) p += new string('=', 4 - pad);
+            string json = System.Text.Encoding.UTF8.GetString(System.Convert.FromBase64String(p));
+            Debug.Log($"[FirebaseAuth] id_token claims: {json}");
+            Debug.Log($"[FirebaseAuth] raw nonce passed to Firebase: '{rawNonce}'");
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[FirebaseAuth] JWT decode failed: {e.Message}");
+        }
+    }
+
     public string GetUserId()
     {
-        if (isAuthenticated && !string.IsNullOrEmpty(userId))
-        {
-            return userId;
-        }
-
-        // Fallback to device ID
-        if (DeviceIDManager.Instance != null)
-        {
-            return DeviceIDManager.Instance.DeviceID;
-        }
-
+        if (isAuthenticated && !string.IsNullOrEmpty(userId)) return userId;
+        if (DeviceIDManager.Instance != null) return DeviceIDManager.Instance.DeviceID;
         return SystemInfo.deviceUniqueIdentifier;
-    }
-
-    [Serializable]
-    private class FirebaseAuthResponse
-    {
-        public string kind;
-        public string idToken;
-        public string email;
-        public string refreshToken;
-        public string expiresIn;
-        public string localId;
-        public bool registered;
-        public string displayName;
-        public string photoUrl;
-    }
-
-    [Serializable]
-    private class RefreshTokenResponse
-    {
-        public string id_token;
-        public string refresh_token;
-        public string user_id;
-        public string expires_in;
-        public string token_type;
-        public string project_id;
-    }
-
-    [Serializable]
-    private class FirebaseIdpRequest
-    {
-        public string postBody;
-        public string requestUri;
-        public bool returnSecureToken;
-        public bool returnIdpCredential;
-    }
-
-    private static string Sha256(string input)
-    {
-        using (var sha = SHA256.Create())
-        {
-            byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
-            var sb = new System.Text.StringBuilder(64);
-            foreach (byte b in bytes)
-                sb.Append(b.ToString("x2"));
-            return sb.ToString();
-        }
     }
 }
