@@ -189,6 +189,7 @@ namespace KiloWorld.UI.Stories
                     foreach (var slideDto in groupDto.slides)
                     {
                         if (slideDto == null) continue;
+                        if (string.IsNullOrWhiteSpace(slideDto.mediaUrl)) continue;
 
                         var slide = new StorySlide
                         {
@@ -206,6 +207,11 @@ namespace KiloWorld.UI.Stories
                     }
                 }
 
+                if (group.slides == null || group.slides.Count == 0)
+                {
+                    continue;
+                }
+
                 if (!group.hasThumbnailColor && string.IsNullOrWhiteSpace(group.thumbnailUrl))
                 {
                     var firstColoredSlide = group.slides.Find(slide => slide != null && slide.hasBackgroundColor);
@@ -218,6 +224,18 @@ namespace KiloWorld.UI.Stories
 
                 results.Add(group);
             }
+
+            results.Sort((a, b) =>
+            {
+                long aCreated = a != null ? a.createdAt : 0;
+                long bCreated = b != null ? b.createdAt : 0;
+                int createdCompare = bCreated.CompareTo(aCreated);
+                if (createdCompare != 0) return createdCompare;
+
+                string aId = a != null ? a.id : null;
+                string bId = b != null ? b.id : null;
+                return string.CompareOrdinal(bId, aId);
+            });
 
             return results;
         }

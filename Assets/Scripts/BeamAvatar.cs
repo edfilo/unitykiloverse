@@ -10,6 +10,12 @@ using UnityEngine.Networking;
 [RequireComponent(typeof(MeshRenderer))]
 public class BeamAvatar : MonoBehaviour
 {
+    public enum BeamVisualMode
+    {
+        LegacyMagicParticles,
+        SpaceLaser
+    }
+
     [Header("Appearance")]
     [ColorUsage(false, true)]
     public Color glowColor = new Color(1f, 0.8f, 0.3f); // Warm orange glow
@@ -36,9 +42,11 @@ public class BeamAvatar : MonoBehaviour
     public Color beamColor = Color.white;
     [Range(0.1f, 10000f)]
     public float beamEmission = 100f;
+    public BeamVisualMode visualMode = BeamVisualMode.SpaceLaser;
 
     private Material material;
     private LineRenderer beamRenderer;
+    private LineRenderer beamGlowRenderer;
     private Vector3 startPosition;
     private float timeOffset;
     private bool externallyPositioned;
@@ -111,11 +119,16 @@ public class BeamAvatar : MonoBehaviour
         // Cleanup existing
         if (magicalParticles != null) Destroy(magicalParticles.gameObject);
         if (beamRenderer != null) Destroy(beamRenderer.gameObject);
+        if (beamGlowRenderer != null) Destroy(beamGlowRenderer.gameObject);
 
         // Create light beam or particles
         if (showBeam)
         {
-            if (useMagicalParticles)
+            if (visualMode == BeamVisualMode.SpaceLaser)
+            {
+                CreateSpaceLaserBeam();
+            }
+            else if (useMagicalParticles)
             {
                 CreateMagicalParticles();
             }
@@ -372,6 +385,74 @@ public class BeamAvatar : MonoBehaviour
 
         UpdateBeamAppearance();
     }
+
+    void CreateSpaceLaserBeam()
+    {
+        GameObject coreObj = new GameObject("SpaceLaserCore");
+        coreObj.transform.SetParent(transform);
+        coreObj.transform.localPosition = Vector3.zero;
+
+        beamRenderer = coreObj.AddComponent<LineRenderer>();
+        ConfigureLaserLine(beamRenderer, "SpaceLaserCoreMat", true);
+
+        GameObject glowObj = new GameObject("SpaceLaserGlow");
+        glowObj.transform.SetParent(transform);
+        glowObj.transform.localPosition = Vector3.zero;
+
+        beamGlowRenderer = glowObj.AddComponent<LineRenderer>();
+        ConfigureLaserLine(beamGlowRenderer, "SpaceLaserGlowMat", false);
+
+        CreateMagicalParticles();
+        UpdateBeamAppearance();
+    }
+
+    void ConfigureLaserLine(LineRenderer line, string materialName, bool core)
+    {
+        Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
+        if (shader == null) shader = Shader.Find("Unlit/Color");
+        if (shader == null) shader = Shader.Find("Sprites/Default");
+
+        var mat = new Material(shader);
+        mat.name = materialName;
+        mat.SetFloat("_Surface", 1.0f);
+        mat.SetFloat("_Blend", 0.0f);
+        mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);
+        mat.SetInt("_ZWrite", 0);
+        mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        mat.EnableKeyword("_EMISSION");
+        mat.renderQueue = core ? 3100 : 3000;
+
+        line.material = mat;
+        line.positionCount = 2;
+        line.useWorldSpace = true;
+        line.allowOcclusionWhenDynamic = false;
+        line.numCapVertices = core ? 8 : 4;
+        line.numCornerVertices = core ? 4 : 2;
+        line.textureMode = LineTextureMode.Stretch;
+        line.alignment = LineAlignment.View;
+        line.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        line.receiveShadows = false;
+
+        var gradient = new Gradient();
+        Color c = core ? Color.white : beamColor;
+        gradient.SetKeys(
+            new[]
+            {
+                new GradientColorKey(c, 0f),
+                new GradientColorKey(c, 0.35f),
+                new GradientColorKey(c, 1f)
+            },
+            new[]
+            {
+                new GradientAlphaKey(0.0f, 0f),
+                new GradientAlphaKey(core ? 1.0f : 0.55f, 0.04f),
+                new GradientAlphaKey(core ? 1.0f : 0.36f, 0.82f),
+                new GradientAlphaKey(0.0f, 1f)
+            }
+        );
+        line.colorGradient = gradient;
+    }
     /// <summary>
     /// Ensure particle system is playing (called when beam is activated)
     /// </summary>
@@ -424,6 +505,11 @@ public class BeamAvatar : MonoBehaviour
             Vector3 orbWorldPos = transform.position;
             beamRenderer.SetPosition(0, orbWorldPos);
             beamRenderer.SetPosition(1, orbWorldPos + Vector3.up * beamHeight);
+            if (beamGlowRenderer != null)
+            {
+                beamGlowRenderer.SetPosition(0, orbWorldPos);
+                beamGlowRenderer.SetPosition(1, orbWorldPos + Vector3.up * beamHeight);
+            }
         }
     }
     
@@ -461,20 +547,45 @@ public class BeamAvatar : MonoBehaviour
         {
             Destroy(beamRenderer.material);
         }
+        if (beamGlowRenderer != null && beamGlowRenderer.material != null)
+        {
+            Destroy(beamGlowRenderer.material);
+        }
     }
 
     private void UpdateBeamAppearance()
     {
-        if (beamRenderer == null || beamRenderer.material == null) return;
-        beamRenderer.startWidth = beamWidth;
-        beamRenderer.endWidth = beamWidth * 0.5f;
-        ApplyBeamMaterial(beamRenderer.material);
+        if (beamRenderer != null && beamRenderer.material != null)
+        {
+            if (visualMode == BeamVisualMode.SpaceLaser)
+            {
+                beamRenderer.startWidth = Mathf.Max(0.45f, beamWidth * 0.28f);
+                beamRenderer.endWidth = Mathf.Max(0.32f, beamWidth * 0.18f);
+            }
+            else
+            {
+                beamRenderer.startWidth = beamWidth;
+                beamRenderer.endWidth = beamWidth * 0.5f;
+            }
+            ApplyBeamMaterial(beamRenderer.material, true);
+        }
+
+        if (beamGlowRenderer != null && beamGlowRenderer.material != null)
+        {
+            beamGlowRenderer.startWidth = Mathf.Max(2.4f, beamWidth * 1.4f);
+            beamGlowRenderer.endWidth = Mathf.Max(1.4f, beamWidth * 0.75f);
+            ApplyBeamMaterial(beamGlowRenderer.material, false);
+        }
     }
 
-    private void ApplyBeamMaterial(Material beamMat)
+    private void ApplyBeamMaterial(Material beamMat, bool core = false)
     {
-        Color hdrColor = beamColor * beamEmission;
-        beamMat.SetColor("_BaseColor", beamColor);
+        Color baseColor = core && visualMode == BeamVisualMode.SpaceLaser
+            ? Color.Lerp(Color.white, beamColor, 0.25f)
+            : beamColor;
+        Color hdrColor = baseColor * (core ? beamEmission * 1.6f : beamEmission * 0.45f);
+        beamMat.SetColor("_BaseColor", baseColor);
+        beamMat.SetColor("_Color", baseColor);
         beamMat.SetColor("_EmissionColor", hdrColor);
         beamMat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
     }

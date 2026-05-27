@@ -242,6 +242,7 @@ void Start()
         iconText.fontSize = 100;
         iconText.alignment = TextAnchor.MiddleCenter;
         iconText.color = Color.white;
+        iconText.raycastTarget = false;
         RectTransform iconRect = iconTextObj.GetComponent<RectTransform>();
         iconRect.anchorMin = Vector2.zero;
         iconRect.anchorMax = Vector2.one;
@@ -266,7 +267,7 @@ void Start()
         stepCountsRect.pivot = new Vector2(0, 1);
         // LOWERED POSITION: moved down to clear larger stories (-300)
         stepCountsRect.anchoredPosition = new Vector2(20, -300); 
-        stepCountsRect.sizeDelta = new Vector2(250, 180); 
+        stepCountsRect.sizeDelta = new Vector2(250, 90); 
         Debug.Log($"[PedometerUI] StepCounts container created at position {stepCountsRect.anchoredPosition} with size {stepCountsRect.sizeDelta}");
 
         // 1. City Name (Row 1)
@@ -274,19 +275,20 @@ void Start()
         locationObj.transform.SetParent(stepCountsObj.transform, false);
         locationText = locationObj.AddComponent<Text>();
         locationText.font = GetFont();
-        locationText.fontSize = 36; // Larger
+        locationText.fontSize = 12;
         locationText.color = Color.white;
         locationText.fontStyle = FontStyle.Bold;
         locationText.alignment = TextAnchor.UpperLeft;
         locationText.text = "Finding location..."; // Placeholder
         locationText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        locationText.raycastTarget = false;
         
         RectTransform locationRect = locationObj.GetComponent<RectTransform>();
         locationRect.anchorMin = new Vector2(0, 1);
         locationRect.anchorMax = new Vector2(1, 1);
         locationRect.pivot = new Vector2(0, 1);
-        locationRect.anchoredPosition = new Vector2(10, -10); // Padding top
-        locationRect.sizeDelta = new Vector2(230, 45);
+        locationRect.anchoredPosition = new Vector2(10, -8);
+        locationRect.sizeDelta = new Vector2(230, 18);
 
         // Create LocationLabelUI component to manage city/town updates from tiles
         LocationLabelUI locationUI = gameObject.AddComponent<LocationLabelUI>();
@@ -297,54 +299,57 @@ void Start()
         weatherObj.transform.SetParent(stepCountsObj.transform, false);
         weatherText = weatherObj.AddComponent<Text>();
         weatherText.font = GetFont();
-        weatherText.fontSize = 36; // Larger
+        weatherText.fontSize = 12;
         weatherText.color = Color.white;
         weatherText.alignment = TextAnchor.UpperLeft;
         weatherText.text = "...";
         weatherText.horizontalOverflow = HorizontalWrapMode.Overflow;
         weatherText.supportRichText = true; // Enable rich text for emoji sizing
+        weatherText.raycastTarget = false;
         
         RectTransform weatherRect = weatherObj.GetComponent<RectTransform>();
         weatherRect.anchorMin = new Vector2(0, 1);
         weatherRect.anchorMax = new Vector2(1, 1);
         weatherRect.pivot = new Vector2(0, 1);
-        weatherRect.anchoredPosition = new Vector2(10, -55); // Spaced for 36pt font
-        weatherRect.sizeDelta = new Vector2(230, 45);
+        weatherRect.anchoredPosition = new Vector2(10, -28);
+        weatherRect.sizeDelta = new Vector2(230, 18);
 
         // 3. STEPS Label (Row 3)
         GameObject stepsLabelObj = new GameObject("StepsLabel");
         stepsLabelObj.transform.SetParent(stepCountsObj.transform, false);
         Text stepsLabel = stepsLabelObj.AddComponent<Text>();
         stepsLabel.font = GetFont();
-        stepsLabel.fontSize = 36; // Larger
+        stepsLabel.fontSize = 12;
         stepsLabel.color = Color.white;
         stepsLabel.alignment = TextAnchor.UpperLeft;
         stepsLabel.text = "STEPS";
+        stepsLabel.raycastTarget = false;
         
         RectTransform stepsLabelRect = stepsLabelObj.GetComponent<RectTransform>();
         stepsLabelRect.anchorMin = new Vector2(0, 1);
         stepsLabelRect.anchorMax = new Vector2(1, 1);
         stepsLabelRect.pivot = new Vector2(0, 1);
-        stepsLabelRect.anchoredPosition = new Vector2(10, -100); // Spaced for 36pt font
-        stepsLabelRect.sizeDelta = new Vector2(230, 45);
+        stepsLabelRect.anchoredPosition = new Vector2(10, -48);
+        stepsLabelRect.sizeDelta = new Vector2(230, 18);
 
         // 4. Steps Counts Line (Row 4)
         GameObject steps24hObj = new GameObject("StepsLine");
         steps24hObj.transform.SetParent(stepCountsObj.transform, false);
         steps24hText = steps24hObj.AddComponent<Text>(); // Reusing variable
         steps24hText.font = GetFont();
-        steps24hText.fontSize = 36; // Larger
+        steps24hText.fontSize = 12;
         steps24hText.color = Color.white;
         steps24hText.alignment = TextAnchor.UpperLeft;
         steps24hText.text = "...";
         steps24hText.horizontalOverflow = HorizontalWrapMode.Overflow;
+        steps24hText.raycastTarget = false;
         
         RectTransform steps24hRect = steps24hObj.GetComponent<RectTransform>();
         steps24hRect.anchorMin = new Vector2(0, 1);
         steps24hRect.anchorMax = new Vector2(1, 1);
         steps24hRect.pivot = new Vector2(0, 1);
-        steps24hRect.anchoredPosition = new Vector2(10, -145); // Spaced for 36pt font
-        steps24hRect.sizeDelta = new Vector2(230, 45);
+        steps24hRect.anchoredPosition = new Vector2(10, -68);
+        steps24hRect.sizeDelta = new Vector2(230, 18);
 
         // Clear unused references to avoid confusion/errors in Update
         this.steps7dText = null; 

@@ -84,9 +84,23 @@ public class K1L0CanvasRoot : MonoBehaviour
         canvas.sortingOrder = sortOrder;
 
         var scaler = go.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(390, 844);
-        scaler.matchWidthOrHeight = 1f;
+        // Aspect-aware: portrait phones use ScaleWithScreenSize (so UI
+        // sizes feel right on a 6"-ish handset). Other aspects (Mac windows,
+        // tablets, landscape) use ConstantPixelSize so the HUD doesn't
+        // get distorted by extreme width-to-height ratios.
+        float aspect = (float)Screen.width / Mathf.Max(1, Screen.height);
+        bool portraitPhoneShape = aspect > 0.40f && aspect < 0.65f;
+        if (portraitPhoneShape)
+        {
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(390, 844);
+            scaler.matchWidthOrHeight = 1f; // height-match — natural for phones
+        }
+        else
+        {
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+            scaler.scaleFactor = 1f; // UI at literal pixels; OS handles Retina
+        }
 
         go.AddComponent<GraphicRaycaster>();
 

@@ -49,6 +49,11 @@ public class iOSPostProcessor
                 Debug.Log("[iOSPostProcessor] Added NSLocalNetworkUsageDescription");
             }
 
+            rootDict.SetBoolean("UIStatusBarHidden", false);
+            rootDict.SetBoolean("UIViewControllerBasedStatusBarAppearance", false);
+            rootDict.SetString("UIStatusBarStyle", "UIStatusBarStyleLightContent");
+            Debug.Log("[iOSPostProcessor] Enabled visible iOS status bar");
+
             // Write to file
             File.WriteAllText(plistPath, plist.WriteToString());
             Debug.Log("[iOSPostProcessor] Added NSMotionUsageDescription and NSLocationWhenInUseUsageDescription to Info.plist");

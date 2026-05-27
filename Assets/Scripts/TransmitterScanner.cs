@@ -33,6 +33,12 @@ public class TransmitterScanner : MonoBehaviour
         public string PrimaryCategory; // Overture primary category (e.g., "bar", "coffee_shop")
         public string MainCategoryGroup; // One of 4 groups: "coffee", "bar", "food", "convenience", "other"
         public string[] TypesRaw;
+        public string Lore;
+        public string ArtifactMaterial;
+        public string ArtifactContainer;
+        public string ArtifactLabel;
+        public string ArtifactLore;
+        public string ArtifactSenderName;
 
         // Legacy fields (kept for backwards compatibility)
         public string Class;
@@ -278,6 +284,12 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
         public string type;
         public string[] types;
         public string businessStatus;
+        public string lore;
+        public string artifactMaterial;
+        public string artifactContainer;
+        public string artifactLabel;
+        public string artifactLore;
+        public string artifactSenderName;
         public PlaceCoordinates coordinates;
     }
 
@@ -411,6 +423,12 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
                             PrimaryCategory = primary,
                             MainCategoryGroup = group,
                             TypesRaw = place.types,
+                            Lore = place.lore,
+                            ArtifactMaterial = place.artifactMaterial,
+                            ArtifactContainer = place.artifactContainer,
+                            ArtifactLabel = place.artifactLabel,
+                            ArtifactLore = place.artifactLore,
+                            ArtifactSenderName = place.artifactSenderName,
                             GeoLocation = latLon,
                             Class = group,
                             Type = primary,

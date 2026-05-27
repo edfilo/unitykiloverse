@@ -11,6 +11,9 @@ public class K1L0Dock : MonoBehaviour
     private Image[] bgImages;
     private RectTransform[] buttonRects;
     private bool[] activeStates = new bool[3];
+    private readonly Vector3[] cornerBuffer = new Vector3[4];
+    private float lastTapTime = -999f;
+    private int lastTapPanel = -1;
 
     // Maps visual button index → panel index (skipping removed status panel)
     private static readonly int[] panelMap = { 0, 2 };
@@ -84,7 +87,6 @@ public class K1L0Dock : MonoBehaviour
             Button btn = btnGO.AddComponent<Button>();
             btn.targetGraphic = bg;
             btn.transition = Selectable.Transition.None;
-            btn.onClick.AddListener(() => OnTap(panelMap[idx]));
 
             // Icon
             GameObject iconGO = new GameObject("Icon");
@@ -208,28 +210,71 @@ public class K1L0Dock : MonoBehaviour
 
     void OnTap(int panelIndex)
     {
+        Debug.Log($"[K1L0Dock] Tap panel={panelIndex}");
         OnButtonTapped?.Invoke(panelIndex);
     }
 
     public bool TryHandleScreenPoint(Vector2 screenPoint, Camera eventCamera)
     {
-        if (buttonRects == null)
+        int hitIndex = HitTest(screenPoint, 36f);
+        if (hitIndex < 0)
             return false;
 
-        for (int i = 0; i < buttonRects.Length; i++)
+        int panelIndex = panelMap[hitIndex];
+        if (panelIndex == lastTapPanel && Time.unscaledTime - lastTapTime < 0.25f)
         {
-            RectTransform buttonRect = buttonRects[i];
-            if (buttonRect == null)
-                continue;
-
-            if (!RectTransformUtility.RectangleContainsScreenPoint(buttonRect, screenPoint, eventCamera))
-                continue;
-
-            OnTap(panelMap[i]);
+            Debug.Log($"[K1L0Dock] Suppressed duplicate tap panel={panelIndex}");
             return true;
         }
 
-        return false;
+        lastTapPanel = panelIndex;
+        lastTapTime = Time.unscaledTime;
+        OnTap(panelIndex);
+        return true;
+    }
+
+    public string GetDebugHitSummary(Vector2 screenPoint)
+    {
+        if (buttonRects == null)
+            return "dock=null";
+
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
+        sb.Append($"point=({screenPoint.x:F0},{screenPoint.y:F0})");
+        for (int i = 0; i < buttonRects.Length; i++)
+        {
+            Rect rect = GetExpandedScreenRect(buttonRects[i], 36f);
+            sb.Append($" btn{i}[panel={panelMap[i]}]=({rect.xMin:F0},{rect.yMin:F0},{rect.xMax:F0},{rect.yMax:F0}) hit={rect.Contains(screenPoint)}");
+        }
+        return sb.ToString();
+    }
+
+    private int HitTest(Vector2 screenPoint, float padding)
+    {
+        if (buttonRects == null)
+            return -1;
+
+        for (int i = 0; i < buttonRects.Length; i++)
+        {
+            Rect rect = GetExpandedScreenRect(buttonRects[i], padding);
+            if (!rect.Contains(screenPoint))
+                continue;
+
+            Debug.Log($"[K1L0Dock] Hit button={i} panel={panelMap[i]} {GetDebugHitSummary(screenPoint)}");
+            return i;
+        }
+
+        return -1;
+    }
+
+    private Rect GetExpandedScreenRect(RectTransform rt, float padding)
+    {
+        if (rt == null) return Rect.zero;
+        rt.GetWorldCorners(cornerBuffer);
+        float minX = Mathf.Min(cornerBuffer[0].x, cornerBuffer[1].x, cornerBuffer[2].x, cornerBuffer[3].x) - padding;
+        float maxX = Mathf.Max(cornerBuffer[0].x, cornerBuffer[1].x, cornerBuffer[2].x, cornerBuffer[3].x) + padding;
+        float minY = Mathf.Min(cornerBuffer[0].y, cornerBuffer[1].y, cornerBuffer[2].y, cornerBuffer[3].y) - padding;
+        float maxY = Mathf.Max(cornerBuffer[0].y, cornerBuffer[1].y, cornerBuffer[2].y, cornerBuffer[3].y) + padding;
+        return Rect.MinMaxRect(minX, minY, maxX, maxY);
     }
 
     void UpdateButtonStates()

@@ -16,8 +16,8 @@ public class K1L0StatusMode : MonoBehaviour
     private RectTransform lineBgContainer;
     private readonly List<Image> lineBgPool = new List<Image>();
     private float lastUpdate;
-    private float simulatedHydration;
     private float simulatedDust;
+    private bool initialized;
 
     public void Initialize(RectTransform parent, TMP_FontAsset monoFont)
     {
@@ -56,14 +56,17 @@ public class K1L0StatusMode : MonoBehaviour
         bodyText.overflowMode = TextOverflowModes.Overflow;
         bodyText.richText = true;
 
-        simulatedHydration = Random.Range(0.42f, 0.86f);
         simulatedDust = Random.Range(0.28f, 0.74f);
+        initialized = true;
         Request7DaySteps();
         UpdateMetrics();
     }
 
     private void OnEnable()
     {
+        if (!initialized)
+            return;
+
         UpdateMetrics();
         Request7DaySteps();
     }
@@ -87,13 +90,15 @@ public class K1L0StatusMode : MonoBehaviour
 
     private void UpdateMetrics()
     {
+        if (!initialized || bodyText == null || lineBgContainer == null)
+            return;
+
         lastUpdate = Time.time;
 
         var ped = Object.FindFirstObjectByType<PedometerService>();
         int steps24 = ped != null ? ped.stepsLast24Hours : -1;
         int steps7d = ped != null ? ped.stepsLast7Days : -1;
 
-        simulatedHydration = Mathf.Clamp01(simulatedHydration + Random.Range(-0.04f, 0.03f));
         simulatedDust = Mathf.Clamp01(simulatedDust + Random.Range(-0.03f, 0.05f));
 
         float movement = steps24 > 0 ? Mathf.Clamp01(steps24 / 14000f) : 0.08f;
@@ -102,9 +107,8 @@ public class K1L0StatusMode : MonoBehaviour
 
         StringBuilder sb = new StringBuilder(512);
         sb.AppendLine("<color=#8EFF9F>> STATUS / LOCAL NODE</color>");
-        sb.AppendLine("<color=#6EFF84>> four live system rails follow</color>");
+        sb.AppendLine("<color=#6EFF84>> three live system rails follow</color>");
         sb.AppendLine();
-        sb.AppendLine(BuildMetricLine("HYDRATION", simulatedHydration, $"{Mathf.RoundToInt(simulatedHydration * 100f)}%"));
         sb.AppendLine(BuildMetricLine("SIGNAL", signal, $"{Mathf.RoundToInt(signal * 100f)}%"));
         sb.AppendLine(BuildMetricLine("24H STEPS", movement, steps24 > 0 ? $"{steps24:N0}" : "pending"));
         sb.AppendLine(BuildMetricLine("DUST", simulatedDust, $"{Mathf.RoundToInt(Mathf.Lerp(28f, 420f, simulatedDust))}g"));

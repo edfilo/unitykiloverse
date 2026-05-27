@@ -68,8 +68,26 @@ namespace KiloWorld.UI.Stories
             stories.Clear();
             if (newStories != null)
             {
-                stories.AddRange(newStories);
+                foreach (var story in newStories)
+                {
+                    if (StoryHasPlayableMedia(story))
+                    {
+                        stories.Add(story);
+                    }
+                }
             }
+
+            stories.Sort((a, b) =>
+            {
+                long aCreated = a != null ? a.createdAt : 0;
+                long bCreated = b != null ? b.createdAt : 0;
+                int createdCompare = bCreated.CompareTo(aCreated);
+                if (createdCompare != 0) return createdCompare;
+
+                string aId = a != null ? a.id : null;
+                string bId = b != null ? b.id : null;
+                return string.CompareOrdinal(bId, aId);
+            });
 
             Rebuild();
         }
@@ -126,6 +144,7 @@ namespace KiloWorld.UI.Stories
         private void HandleStoryClicked(StoryGroup story)
         {
             if (story == null) return;
+            if (!StoryHasPlayableMedia(story)) return;
 
             StorySelected?.Invoke(story);
 
@@ -176,6 +195,20 @@ namespace KiloWorld.UI.Stories
             if (storyViewer == null) return;
             storyViewer.SlideChanged -= HandleSlideChanged;
             storyViewer.StoryCompleted -= HandleStoryCompleted;
+        }
+
+        private static bool StoryHasPlayableMedia(StoryGroup story)
+        {
+            if (story == null || story.slides == null) return false;
+            for (int i = 0; i < story.slides.Count; i++)
+            {
+                var slide = story.slides[i];
+                if (slide != null && !string.IsNullOrWhiteSpace(slide.mediaUrl))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 }

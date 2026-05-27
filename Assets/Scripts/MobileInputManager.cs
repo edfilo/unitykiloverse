@@ -7,6 +7,7 @@ public class MobileInputManager : MonoBehaviour
 {
     private static MobileInputManager instance;
     private static float lastCameraToggleTime = -10f;
+    private static float lastGpsToggleTime = -10f;
 
     [Header("Settings")]
     public bool forceMobileMode = false;
@@ -82,10 +83,10 @@ public class MobileInputManager : MonoBehaviour
                 }
             }
 
-            // Map inputs to controller
-            // X = Rotation (Horizontal Drag)
-            // Y = 0 (Movement disabled on touch - rely on GPS/Keys)
-            playerController.externalInput = new Vector2(rotateInput.x, 0f); 
+            // Map inputs to controller. With GPS on, drag only rotates (movement comes from real GPS).
+            // With GPS testing-disabled, drag-Y also moves forward/back so the player can be walked manually.
+            float moveY = GPSLocationController.GPSDisabled ? moveInput.y : 0f;
+            playerController.externalInput = new Vector2(rotateInput.x, moveY);
             
             // Debug.Log($"[MobileInputManager] Sending Input: {playerController.externalInput}");
             
@@ -121,12 +122,14 @@ public class MobileInputManager : MonoBehaviour
             eventSystem.AddComponent<StandaloneInputModule>();
         }
 
-        // Create Full Screen Touch Panel
+        // Create Full Screen Touch Panel (below the GPS toggle so the button stays clickable).
+        // - GPS enabled (normal): horizontal drag rotates camera (no movement).
+        // - GPS disabled (debug): vertical drag moves forward/back, horizontal rotates.
         GameObject touchPanel = new GameObject("TouchPanel");
         touchPanel.transform.SetParent(canvasGO.transform);
         Image panelImg = touchPanel.AddComponent<Image>();
         panelImg.color = Color.clear; // Invisible
-        
+
         RectTransform panelRect = touchPanel.GetComponent<RectTransform>();
         panelRect.anchorMin = Vector2.zero;
         panelRect.anchorMax = Vector2.one;
@@ -136,20 +139,89 @@ public class MobileInputManager : MonoBehaviour
         // Add Drag Handler
         FullScreenDragHandler handler = touchPanel.AddComponent<FullScreenDragHandler>();
         handler.sensitivity = 0.005f; // Adjust sensitivity as needed
-        handler.OnInput = (move, rotate) => 
+        handler.OnInput = (move, rotate) =>
         {
-            moveInput = new Vector2(0, move); // Y is forward/back
+            // Only allow manual movement when GPS is disabled.
+            float gatedMove = GPSLocationController.GPSDisabled ? move : 0f;
+            moveInput = new Vector2(0, gatedMove); // Y is forward/back
             rotateInput = new Vector2(rotate, 0); // X is rotate left/right
             if (rotate != 0) currentRotateVelocity = rotate; // Capture velocity
         };
         handler.OnStateChange = (dragging) => { isTouching = dragging; };
         handler.OnTap = () =>
         {
-            if (playerController == null) return;
-            if (Time.unscaledTime - lastCameraToggleTime < 0.35f) return;
-            lastCameraToggleTime = Time.unscaledTime;
-            playerController.ToggleCameraView();
+            // Camera toggle tap is handled in KiloFirstPersonController (so it works
+            // consistently across desktop + mobile without double-toggling).
         };
+
+        // GPS toggle button (testing only) — small, bottom-right — inside safe area.
+        RectTransform safeArea = CreateSafeAreaRect(canvasGO.transform);
+        CreateGpsToggleButton(safeArea);
+    }
+
+    RectTransform CreateSafeAreaRect(Transform parent)
+    {
+        var go = new GameObject("SafeArea");
+        go.transform.SetParent(parent, false);
+        var rt = go.AddComponent<RectTransform>();
+
+        Rect safe = Screen.safeArea;
+        Vector2 anchorMin = new Vector2(safe.xMin / Screen.width, safe.yMin / Screen.height);
+        Vector2 anchorMax = new Vector2(safe.xMax / Screen.width, safe.yMax / Screen.height);
+        rt.anchorMin = anchorMin;
+        rt.anchorMax = anchorMax;
+        rt.offsetMin = Vector2.zero;
+        rt.offsetMax = Vector2.zero;
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        return rt;
+    }
+
+    void CreateGpsToggleButton(Transform parent)
+    {
+        var go = new GameObject("GpsToggleButton");
+        go.transform.SetParent(parent, false);
+
+        var img = go.AddComponent<Image>();
+        img.color = new Color(0f, 0f, 0f, 0.55f);
+
+        var rt = go.GetComponent<RectTransform>();
+        // Bottom-left inside safe area, but lifted above the dock icons (Geo/etc).
+        rt.anchorMin = new Vector2(0f, 0f);
+        rt.anchorMax = new Vector2(0f, 0f);
+        rt.pivot = new Vector2(0f, 0f);
+        rt.anchoredPosition = new Vector2(24f, 260f);
+        rt.sizeDelta = new Vector2(160f, 56f);
+
+        var btn = go.AddComponent<Button>();
+
+        var labelGo = new GameObject("Label");
+        labelGo.transform.SetParent(go.transform, false);
+        var label = labelGo.AddComponent<Text>();
+        label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        label.alignment = TextAnchor.MiddleCenter;
+        label.fontSize = 22;
+        label.color = Color.white;
+        label.text = GPSLocationController.GPSDisabled ? "GPS: OFF" : "GPS: ON";
+        var lrt = label.GetComponent<RectTransform>();
+        lrt.anchorMin = Vector2.zero;
+        lrt.anchorMax = Vector2.one;
+        lrt.offsetMin = Vector2.zero;
+        lrt.offsetMax = Vector2.zero;
+
+        btn.onClick.AddListener(() =>
+        {
+            // Some scenes have multiple active UI input modules; on iOS this can result in
+            // duplicate click events for a single tap. Debounce to avoid toggling twice.
+            if (Time.unscaledTime - lastGpsToggleTime < 0.35f) return;
+            lastGpsToggleTime = Time.unscaledTime;
+
+            GPSLocationController.GPSDisabled = !GPSLocationController.GPSDisabled;
+            label.text = GPSLocationController.GPSDisabled ? "GPS: OFF" : "GPS: ON";
+            img.color = GPSLocationController.GPSDisabled
+                ? new Color(0.6f, 0.1f, 0.1f, 0.7f)
+                : new Color(0f, 0f, 0f, 0.55f);
+            Debug.Log($"[MobileInput] GPSDisabled toggled → {GPSLocationController.GPSDisabled}");
+        });
     }
 
     // Helper class for full screen drag logic
@@ -247,13 +319,12 @@ public class MobileInputManager : MonoBehaviour
             // Determine Axis Lock if not yet locked
             if (lockedAxis == Axis.None)
             {
-                if (Mathf.Abs(delta.x) > LOCK_THRESHOLD_PX)
+                float ax = Mathf.Abs(delta.x);
+                float ay = Mathf.Abs(delta.y);
+                if (ax > LOCK_THRESHOLD_PX || ay > LOCK_THRESHOLD_PX)
                 {
-                    lockedAxis = Axis.Horizontal; // Lock to Rotation
-                }
-                else if (Mathf.Abs(delta.y) > LOCK_THRESHOLD_PX)
-                {
-                    lockedAxis = Axis.Vertical; // Lock to Movement
+                    // Lock to the dominant axis (prevents tiny sideways jitter from breaking vertical movement).
+                    lockedAxis = ax >= ay ? Axis.Horizontal : Axis.Vertical;
                 }
             }
 

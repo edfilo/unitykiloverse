@@ -14,6 +14,7 @@ public class K1L0GlassPanel : MonoBehaviour, IDragHandler, IPointerDownHandler
     public RectTransform contentArea;
     public Image background;
     public System.Action OnCloseClicked;
+    public bool draggable = true;
 
     private K1L0GlassChrome chrome;
     private CanvasGroup canvasGroup;
@@ -45,7 +46,7 @@ public class K1L0GlassPanel : MonoBehaviour, IDragHandler, IPointerDownHandler
         chrome = K1L0GlassFactory.AttachChrome(transform, "Panel", K1L0GlassFactory.PanelStyle);
         background = chrome.blurFill;
         chrome.blurFill.material = null;
-        chrome.blurFill.color = new Color(0f, 0f, 0f, 0.55f); // Semi-transparent
+        chrome.blurFill.color = new Color(0f, 0f, 0f, 0f);
         chrome.overlay.color = new Color(0f, 0f, 0f, 0f);
         chrome.border.color = TerminalBorder;
         chrome.shadow.color = new Color(0f, 0f, 0f, 0f);
@@ -71,17 +72,18 @@ public class K1L0GlassPanel : MonoBehaviour, IDragHandler, IPointerDownHandler
         closeRT.anchorMin = new Vector2(1, 1);
         closeRT.anchorMax = new Vector2(1, 1);
         closeRT.pivot = new Vector2(1, 1);
-        closeRT.anchoredPosition = new Vector2(-10f, -10f);
-        closeRT.sizeDelta = new Vector2(34f, 34f);
+        closeRT.anchoredPosition = new Vector2(-18f, -18f);
+        closeRT.sizeDelta = new Vector2(72f, 72f);
         closeRectTransform = closeRT;
 
         K1L0GlassChrome closeChrome = K1L0GlassFactory.AttachChrome(closeGO.transform, "Close", K1L0GlassFactory.ControlStyle);
         closeChrome.blurFill.material = null;
-        closeChrome.blurFill.color = new Color(0.02f, 0.07f, 0.02f, 0.96f);
-        closeChrome.overlay.color = new Color(0.01f, 0.04f, 0.01f, 0.90f);
+        closeChrome.blurFill.color = new Color(0f, 0f, 0f, 1f);
+        closeChrome.overlay.color = new Color(0f, 0f, 0f, 0f);
         closeChrome.border.color = TerminalBorder;
-        closeChrome.accent.color = new Color(0.24f, 1f, 0.34f, 0.06f);
-        closeChrome.sheen.color = new Color(0.45f, 1f, 0.55f, 0.03f);
+        closeChrome.accent.color = new Color(0f, 0f, 0f, 0f);
+        closeChrome.sheen.color = new Color(0f, 0f, 0f, 0f);
+        closeChrome.shadow.color = new Color(0f, 0f, 0f, 0f);
         closeChrome.blurFill.raycastTarget = true;
 
         Button closeBtn = closeGO.AddComponent<Button>();
@@ -99,7 +101,7 @@ public class K1L0GlassPanel : MonoBehaviour, IDragHandler, IPointerDownHandler
         TextMeshProUGUI xTMP = xGO.AddComponent<TextMeshProUGUI>();
         xTMP.text = "×";
         xTMP.font = font;
-        xTMP.fontSize = 20;
+        xTMP.fontSize = 42;
         xTMP.color = TerminalGreen;
         xTMP.alignment = TextAlignmentOptions.Center;
         xTMP.raycastTarget = false;
@@ -108,12 +110,15 @@ public class K1L0GlassPanel : MonoBehaviour, IDragHandler, IPointerDownHandler
     // --- Drag support ---
     public void OnPointerDown(PointerEventData eventData)
     {
+        if (!draggable) return;
+
         // Bring to front
         transform.SetAsLastSibling();
     }
 
     public void OnDrag(PointerEventData eventData)
     {
+        if (!draggable) return;
         if (rectTransform == null) return;
         if (parentCanvas == null)
             parentCanvas = GetComponentInParent<Canvas>();
@@ -152,9 +157,14 @@ public class K1L0GlassPanel : MonoBehaviour, IDragHandler, IPointerDownHandler
     public void Show()
     {
         gameObject.SetActive(true);
+        transform.SetAsLastSibling();
         isShowing = true;
+        animProgress = 1f;
+        ApplyAnim();
         BeginTerminalReveal();
     }
+
+    public float CurrentAlpha => canvasGroup != null ? canvasGroup.alpha : -1f;
 
     public void Hide()
     {
@@ -169,6 +179,22 @@ public class K1L0GlassPanel : MonoBehaviour, IDragHandler, IPointerDownHandler
     {
         if (revealRoutine != null)
             StopCoroutine(revealRoutine);
+
+        List<TextMeshProUGUI> texts = new List<TextMeshProUGUI>(GetComponentsInChildren<TextMeshProUGUI>(true));
+        List<Button> buttons = new List<Button>(GetComponentsInChildren<Button>(true));
+        foreach (TextMeshProUGUI text in texts)
+        {
+            if (text != null) text.maxVisibleCharacters = 0;
+        }
+        foreach (Button button in buttons)
+        {
+            if (button == null) continue;
+            CanvasGroup group = button.GetComponent<CanvasGroup>();
+            if (group == null) group = button.gameObject.AddComponent<CanvasGroup>();
+            group.alpha = 0f;
+            group.interactable = false;
+            group.blocksRaycasts = false;
+        }
 
         revealRoutine = StartCoroutine(TerminalRevealRoutine());
     }

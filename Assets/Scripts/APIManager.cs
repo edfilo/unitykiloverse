@@ -48,7 +48,11 @@ public class APIManager : MonoBehaviour
 
     // Environment URLs
     private const string LOCALHOST_URL = "http://localhost:3000";
-    private const string TETHERED_URL = "http://172.20.10.5:3000";
+    // Dev LAN / tether endpoints. Auto-connect will try both unless overridden by profile.
+    // Prefer mDNS on LAN so the phone doesn't depend on a specific IP.
+    private const string LAN_MDNS_URL = "http://fred.local:3000";
+    private const string LAN_URL = "http://192.168.40.34:3000";
+    private const string HOTSPOT_URL = "http://172.20.10.5:3000";
     private const string TUNNEL_URL = "https://api-tunnel.kilo.gallery";
     private const string PRODUCTION_URL = "https://api.kilomeme.com";
 
@@ -127,13 +131,13 @@ public class APIManager : MonoBehaviour
 #if !UNITY_EDITOR
                 // On device, localhost means the phone — redirect to tethered
                 Debug.LogWarning("[APIManager] Localhost selected but running on device — redirecting to Tethered (localhost = phone, not Mac)");
-                m_activeURL = overrideTether ?? TETHERED_URL;
+                m_activeURL = overrideTether ?? LAN_MDNS_URL;
 #else
                 m_activeURL = overrideLocal ?? LOCALHOST_URL;
 #endif
                 break;
             case APIEnvironment.Tethered:
-                m_activeURL = overrideTether ?? TETHERED_URL;
+                m_activeURL = overrideTether ?? LAN_MDNS_URL;
                 break;
             case APIEnvironment.Tunnel:
                 m_activeURL = TUNNEL_URL;
@@ -142,16 +146,14 @@ public class APIManager : MonoBehaviour
                 m_activeURL = PRODUCTION_URL;
                 break;
             case APIEnvironment.Auto:
-                // Auto mode will be determined by TryAutoConnect
-#if UNITY_EDITOR
-                m_activeURL = overrideLocal ?? LOCALHOST_URL; // Editor: default to localhost
-#else
-                m_activeURL = overrideTether ?? TETHERED_URL; // Device: default to tethered
-#endif
+                // Auto mode is determined lazily by TryAutoConnect on first request.
+                // Do NOT prefill m_activeURL here; otherwise Auto will never fall back
+                // (e.g. if LAN/mDNS fails, we'll never try tunnel/production).
+                m_activeURL = null;
                 break;
         }
 
-        Debug.Log($"[APIManager] Base URL: {m_activeURL}");
+        Debug.Log($"[APIManager] Base URL: {m_activeURL ?? "None (Auto)"}");
         return m_activeURL;
     }
 
@@ -225,8 +227,26 @@ public class APIManager : MonoBehaviour
         // On device: localhost can never reach the Mac, skip it entirely
         Debug.Log("[APIManager] Skipping localhost on device build (localhost = phone, not Mac)");
 #endif
-        urls.Add(overrideTether ?? TETHERED_URL);
-        names.Add("Tethered");
+        // First: profile override (if any), else LAN.
+        // NOTE: On iOS, mDNS/DNS resolution can stall UnityWebRequest before timeouts apply.
+        // Prefer the direct LAN IP first, then try mDNS.
+        if (overrideTether != null)
+        {
+            urls.Add(overrideTether);
+            names.Add("Tether Override");
+        }
+        else
+        {
+            urls.Add(LAN_URL);
+            names.Add("LAN IP");
+            urls.Add(LAN_MDNS_URL);
+            names.Add("LAN mDNS");
+        }
+        if (overrideTether == null)
+        {
+            urls.Add(HOTSPOT_URL);
+            names.Add("Hotspot");
+        }
         urls.Add(TUNNEL_URL);
         names.Add("Tunnel");
         urls.Add(PRODUCTION_URL);
@@ -239,8 +259,11 @@ public class APIManager : MonoBehaviour
             Debug.Log($"[APIManager] Testing {names[i]}: {urls[i]}/ping");
 
             bool success = false;
-            // In editor use shorter timeout so dead localhost doesn't feel like a lockup
-            int timeoutSec = Application.isEditor ? 5 : 30;
+            // Keep auto-connect snappy on device: LAN/mDNS failures must fall back quickly.
+            int timeoutSec;
+            if (Application.isEditor) timeoutSec = 5;
+            else if (names[i].Contains("LAN") || names[i].Contains("Hotspot")) timeoutSec = 3;
+            else timeoutSec = 8;
 
             // Send minimal POST request (ping endpoint requires POST, not GET)
             string testPayload = "{\"userId\":\"test\",\"lastActive\":0}";
@@ -284,6 +307,11 @@ public class APIManager : MonoBehaviour
     {
         float callStart = Time.realtimeSinceStartup;
         Debug.Log($"[APIManager] ➔ POST {endpoint} (Env: {m_currentEnvironment}, Active URL: {m_activeURL ?? "None (Auto-connecting...)"})");
+
+        if (!string.IsNullOrEmpty(jsonPayload) && jsonPayload.Contains("\"transmissionType\":\"transmitter\""))
+        {
+            Debug.Log($"[APIManager] (tx) payload includes transmitter directive (bytes={System.Text.Encoding.UTF8.GetByteCount(jsonPayload)})");
+        }
 
         // Auto mode: determine connection if not already set
         if (m_currentEnvironment == APIEnvironment.Auto && m_activeURL == null)

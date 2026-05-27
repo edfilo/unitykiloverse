@@ -136,10 +136,19 @@ public class UserPresenceManager : MonoBehaviour
     IEnumerator SendHeartbeatCoroutine()
     {
         BootDiagnostics.Mark("Presence.SendHeartbeat begin");
-        
+
         // Yield first to prevent blocking boot sequence
         yield return null;
-        
+
+        // Prefer Firebase Auth UID — it may not be ready at Start() time, so
+        // re-resolve before every ping. Falls back to deviceId if not signed in.
+        var auth = FirebaseAuthManager.Instance;
+        if (auth != null)
+        {
+            string resolved = auth.GetUserId();
+            if (!string.IsNullOrEmpty(resolved)) userId = resolved;
+        }
+
         // Gather Data
         long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         

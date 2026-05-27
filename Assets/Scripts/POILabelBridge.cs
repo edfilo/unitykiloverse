@@ -38,7 +38,19 @@ public class POILabelBridge : MonoBehaviour
     private List<POIEntry> _entries = new List<POIEntry>();
     private bool _firstLog = true;
     private static POILabelBridge _instance;
+    private static bool _hudSuppressed;
     private int _tickCount = 0;
+
+    public static void SetHudSuppressed(bool suppressed)
+    {
+        _hudSuppressed = suppressed;
+        if (_instance == null) return;
+        foreach (var entry in _instance._entries)
+        {
+            if (entry != null && entry.uiLabel != null)
+                entry.uiLabel.SetActive(!suppressed);
+        }
+    }
 
     void Start()
     {
@@ -192,6 +204,16 @@ public class POILabelBridge : MonoBehaviour
 
     private void UpdateScreenPositions()
     {
+        if (_hudSuppressed)
+        {
+            foreach (var entry in _entries)
+            {
+                if (entry != null && entry.uiLabel != null && entry.uiLabel.activeSelf)
+                    entry.uiLabel.SetActive(false);
+            }
+            return;
+        }
+
         IMapInformation mapInfo = _overtureManager?.map?.MapInformation;
         Vector3 mapPos = _overtureManager?.map != null ? _overtureManager.map.transform.position : Vector3.zero;
 

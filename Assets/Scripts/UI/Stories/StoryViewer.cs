@@ -29,6 +29,7 @@ namespace KiloWorld.UI.Stories
 
         [Header("Playback")]
         [SerializeField] private float defaultImageDuration = 5f;
+        [SerializeField] private float minimumSlideDuration = 5f;
         [SerializeField] private float tapMaxDuration = 0.25f;
         [SerializeField] private float tapMaxDistance = 20f;
         [SerializeField] private float dismissDragThreshold = 120f;
@@ -390,6 +391,7 @@ namespace KiloWorld.UI.Stories
 
             videoPlayer.source = VideoSource.Url;
             videoPlayer.url = slide.mediaUrl;
+            videoPlayer.isLooping = true;
             videoPlayer.Prepare();
 
             prepareElapsed = 0f;
@@ -427,29 +429,14 @@ namespace KiloWorld.UI.Stories
         private IEnumerator RunVideoProgress(float duration, int token)
         {
             float elapsed = 0f;
-            float safeDuration = duration > 0.01f ? duration : defaultImageDuration;
+            float safeDuration = Mathf.Max(minimumSlideDuration, duration > 0.01f ? duration : defaultImageDuration);
 
             while (token == slideToken && videoPlayer != null && videoPlayer.isPrepared)
             {
                 if (!isPaused)
                 {
                     elapsed += Time.unscaledDeltaTime;
-                    double length = videoPlayer.length;
-                    double time = videoPlayer.time;
-                    if (length > 0.01)
-                    {
-                        if (progressBar != null)
-                        {
-                            progressBar.SetProgress(currentIndex, (float)(time / length));
-                        }
-
-                        if (time >= length - 0.05f)
-                        {
-                            Next();
-                            yield break;
-                        }
-                    }
-                    else if (safeDuration > 0.01f)
+                    if (safeDuration > 0.01f)
                     {
                         if (progressBar != null)
                         {
@@ -509,13 +496,6 @@ namespace KiloWorld.UI.Stories
                 progressRoutine = null;
             }
 
-            if (prepareElapsed > 0.01f && source.length > 0.01f && prepareDuration > 0.01f)
-            {
-                float safeLength = Mathf.Max(0f, (float)source.length - 0.05f);
-                float normalized = Mathf.Clamp01(prepareElapsed / prepareDuration);
-                source.time = safeLength * normalized;
-            }
-
             if (!isPaused)
             {
                 source.Play();
@@ -524,14 +504,13 @@ namespace KiloWorld.UI.Stories
             TryShowVideoTexture(source);
             SetBackgroundColor(defaultBackgroundColor);
 
-            float duration = source.length > 0.01 ? (float)source.length : defaultImageDuration;
+            float duration = source.length > 0.01 ? Mathf.Max(minimumSlideDuration, (float)source.length) : minimumSlideDuration;
             progressRoutine = StartCoroutine(RunVideoProgress(duration, slideToken));
         }
 
         private void HandleVideoFinished(VideoPlayer source)
         {
             if (!isVisible || source.url != pendingVideoUrl) return;
-            Next();
         }
 
         private void HandleVideoError(VideoPlayer source, string message)
@@ -567,9 +546,8 @@ namespace KiloWorld.UI.Stories
 
         private float GetSlideDuration(StorySlide slide)
         {
-            if (slide == null) return defaultImageDuration;
-            if (slide.durationSeconds > 0f) return slide.durationSeconds;
-            return defaultImageDuration;
+            float duration = slide != null && slide.durationSeconds > 0f ? slide.durationSeconds : defaultImageDuration;
+            return Mathf.Max(minimumSlideDuration, duration);
         }
 
         private void StopPlayback()
@@ -737,6 +715,7 @@ namespace KiloWorld.UI.Stories
             imageView.sprite = sprite;
             imageView.color = Color.white;
             imageView.preserveAspect = true;
+            ApplyAspectFit(imageView.rectTransform, sprite.rect.width, sprite.rect.height);
         }
 
         private void ApplySlideText(StorySlide slide)
@@ -764,11 +743,13 @@ namespace KiloWorld.UI.Stories
                 imageView.sprite = fallbackSprite;
                 imageView.color = color;
                 imageView.preserveAspect = false;
+                StretchToFill(imageView.rectTransform);
             }
             if (videoView != null)
             {
                 videoView.enabled = false;
                 videoView.texture = null;
+                StretchToFill(videoView.rectTransform);
             }
             SetBackgroundColor(color);
         }
@@ -796,6 +777,7 @@ namespace KiloWorld.UI.Stories
             {
                 videoView.texture = texture;
             }
+            ApplyAspectFit(videoView.rectTransform, texture.width, texture.height);
 
             if (!videoView.enabled)
             {
@@ -807,6 +789,49 @@ namespace KiloWorld.UI.Stories
             {
                 imageView.enabled = false;
             }
+        }
+
+        private void ApplyAspectFit(RectTransform target, float mediaWidth, float mediaHeight)
+        {
+            if (target == null || mediaWidth <= 0f || mediaHeight <= 0f) return;
+
+            RectTransform boundsRect = target.parent as RectTransform;
+            if (boundsRect == null) boundsRect = rootRect;
+            if (boundsRect == null) return;
+
+            Rect bounds = boundsRect.rect;
+            if (bounds.width <= 0f || bounds.height <= 0f) return;
+
+            float mediaAspect = mediaWidth / mediaHeight;
+            float boundsAspect = bounds.width / bounds.height;
+            float width;
+            float height;
+            if (mediaAspect > boundsAspect)
+            {
+                width = bounds.width;
+                height = width / mediaAspect;
+            }
+            else
+            {
+                height = bounds.height;
+                width = height * mediaAspect;
+            }
+
+            target.anchorMin = new Vector2(0.5f, 0.5f);
+            target.anchorMax = new Vector2(0.5f, 0.5f);
+            target.pivot = new Vector2(0.5f, 0.5f);
+            target.anchoredPosition = Vector2.zero;
+            target.sizeDelta = new Vector2(width, height);
+        }
+
+        private void StretchToFill(RectTransform target)
+        {
+            if (target == null) return;
+            target.anchorMin = Vector2.zero;
+            target.anchorMax = Vector2.one;
+            target.pivot = new Vector2(0.5f, 0.5f);
+            target.offsetMin = Vector2.zero;
+            target.offsetMax = Vector2.zero;
         }
 
         private float GetCurrentSlideDuration()

@@ -1,6 +1,8 @@
+using System.Collections;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.UI;
 
 public struct K1L0GlassStyle
@@ -19,6 +21,108 @@ public struct K1L0GlassStyle
     public Color accentColor;
     public Color shadowColor;
     public Vector2 shadowOffset;
+}
+
+public static class K1L0ModalContrastMode
+{
+    private static int depth;
+    private static bool hasSavedContrast;
+    private static float savedContrast;
+    private static int fadeToken;
+
+    public static void Begin(MonoBehaviour owner)
+    {
+        var pfx = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.postFX;
+        if (pfx == null) return;
+
+        if (depth == 0)
+        {
+            savedContrast = pfx.contrast;
+            hasSavedContrast = true;
+            FadeTo(owner, -100f, 0.18f);
+        }
+
+        depth++;
+    }
+
+    public static void End(MonoBehaviour owner)
+    {
+        if (depth > 0) depth--;
+        if (depth != 0 || !hasSavedContrast) return;
+
+        FadeTo(owner, savedContrast, 0.22f);
+        hasSavedContrast = false;
+    }
+
+    private static void FadeTo(MonoBehaviour owner, float target, float duration)
+    {
+        fadeToken++;
+        if (owner != null && owner.isActiveAndEnabled)
+            owner.StartCoroutine(FadeContrast(target, duration, fadeToken));
+        else
+            SetContrast(target);
+    }
+
+    private static IEnumerator FadeContrast(float target, float duration, int token)
+    {
+        var pfx = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.postFX;
+        if (pfx == null) yield break;
+
+        float start = pfx.contrast;
+        float t = 0f;
+        while (t < duration)
+        {
+            if (token != fadeToken) yield break;
+            t += Time.unscaledDeltaTime;
+            float k = duration > 0f ? Mathf.Clamp01(t / duration) : 1f;
+            pfx.contrast = Mathf.Lerp(start, target, k);
+            yield return null;
+        }
+
+        if (token == fadeToken) pfx.contrast = target;
+    }
+
+    private static void SetContrast(float value)
+    {
+        var pfx = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.postFX;
+        if (pfx != null) pfx.contrast = value;
+    }
+}
+
+public static class K1L0ModalHudMode
+{
+    private static int depth;
+    private static bool savedHudActive;
+    private static bool hasSavedHud;
+
+    public static void Begin()
+    {
+        var hud = K1L0CanvasRoot.HUD;
+        if (hud == null) return;
+
+        if (depth == 0)
+        {
+            savedHudActive = hud.gameObject.activeSelf;
+            hasSavedHud = true;
+            hud.gameObject.SetActive(false);
+            SignalBeamBridge.SetHudSuppressed(true);
+            POILabelBridge.SetHudSuppressed(true);
+        }
+
+        depth++;
+    }
+
+    public static void End()
+    {
+        if (depth > 0) depth--;
+        if (depth != 0 || !hasSavedHud) return;
+
+        var hud = K1L0CanvasRoot.HUD;
+        if (hud != null) hud.gameObject.SetActive(savedHudActive);
+        SignalBeamBridge.SetHudSuppressed(false);
+        POILabelBridge.SetHudSuppressed(false);
+        hasSavedHud = false;
+    }
 }
 
 public sealed class K1L0GlassChrome
@@ -240,6 +344,64 @@ public static class K1L0GlassFactory
         return image;
     }
 
+    public static K1L0ModalStaticEffect AttachTerminalStatic(Transform parent, string name = "TerminalStatic")
+    {
+        GameObject go = new GameObject(name, typeof(RectTransform), typeof(RawImage), typeof(K1L0ModalStaticEffect));
+        go.transform.SetParent(parent, false);
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = Vector2.zero;
+        rt.anchorMax = Vector2.one;
+        rt.offsetMin = Vector2.zero;
+        rt.offsetMax = Vector2.zero;
+
+        RawImage image = go.GetComponent<RawImage>();
+        image.raycastTarget = false;
+        image.color = new Color(0.47f, 1f, 0.54f, 0.045f);
+
+        var effect = go.GetComponent<K1L0ModalStaticEffect>();
+        effect.Configure(image);
+        return effect;
+    }
+
+    public static Button CreateTerminalCloseButton(Transform parent, TMP_FontAsset font, UnityAction onClick)
+    {
+        GameObject go = new GameObject("CloseButton", typeof(RectTransform), typeof(Image), typeof(Button));
+        go.transform.SetParent(parent, false);
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(1f, 1f);
+        rt.anchorMax = new Vector2(1f, 1f);
+        rt.pivot = new Vector2(1f, 1f);
+        rt.anchoredPosition = new Vector2(-20f, -20f);
+        rt.sizeDelta = new Vector2(72f, 72f);
+
+        Image img = go.GetComponent<Image>();
+        img.sprite = ControlRectSprite;
+        img.type = Image.Type.Sliced;
+        img.color = new Color(0f, 0f, 0f, 1f);
+
+        Button button = go.GetComponent<Button>();
+        button.transition = Selectable.Transition.None;
+        button.targetGraphic = img;
+        if (onClick != null) button.onClick.AddListener(onClick);
+
+        var labelGO = new GameObject("Label", typeof(RectTransform));
+        labelGO.transform.SetParent(go.transform, false);
+        var labelRt = labelGO.GetComponent<RectTransform>();
+        labelRt.anchorMin = Vector2.zero;
+        labelRt.anchorMax = Vector2.one;
+        labelRt.offsetMin = Vector2.zero;
+        labelRt.offsetMax = Vector2.zero;
+
+        var label = labelGO.AddComponent<TextMeshProUGUI>();
+        label.font = font != null ? font : TMP_Settings.defaultFontAsset;
+        label.fontSize = 42f;
+        label.color = new Color(0.56f, 1f, 0.62f, 1f);
+        label.alignment = TextAlignmentOptions.Center;
+        label.raycastTarget = false;
+        label.text = "×";
+        return button;
+    }
+
     public static void ClearCachedMaterials()
     {
         foreach (var kvp in SharedMaterials)
@@ -399,5 +561,59 @@ public static class K1L0GlassFactory
         int maxReasonableBorder = Mathf.Max(4, Mathf.FloorToInt(minDimension * 0.15f));
         int roundedBorder = Mathf.RoundToInt(radius * 0.32f) + padding;
         return Mathf.Clamp(roundedBorder, 4, maxReasonableBorder);
+    }
+}
+
+public class K1L0ModalStaticEffect : MonoBehaviour
+{
+    private RawImage image;
+    private Texture2D texture;
+    private Color32[] pixels;
+    private float nextTick;
+
+    public void Configure(RawImage target)
+    {
+        image = target;
+        if (texture == null)
+        {
+            texture = new Texture2D(96, 96, TextureFormat.RGBA32, false);
+            texture.filterMode = FilterMode.Point;
+            texture.wrapMode = TextureWrapMode.Repeat;
+            pixels = new Color32[96 * 96];
+        }
+        image.texture = texture;
+        WriteNoise();
+    }
+
+    private void OnEnable()
+    {
+        if (image == null) image = GetComponent<RawImage>();
+        if (image != null && texture == null) Configure(image);
+        nextTick = 0f;
+    }
+
+    private void Update()
+    {
+        if (Time.unscaledTime < nextTick) return;
+        nextTick = Time.unscaledTime + 0.075f;
+        WriteNoise();
+        if (image != null)
+        {
+            image.color = new Color(0.47f, 1f, 0.54f, Random.Range(0.028f, 0.070f));
+            image.uvRect = new Rect(Random.value, Random.value, 1f + Random.value * 0.08f, 1f);
+        }
+    }
+
+    private void WriteNoise()
+    {
+        if (texture == null || pixels == null) return;
+        for (int i = 0; i < pixels.Length; i++)
+        {
+            byte v = (byte)Random.Range(80, 255);
+            byte a = (byte)Random.Range(12, 58);
+            pixels[i] = new Color32(v, v, v, a);
+        }
+        texture.SetPixels32(pixels);
+        texture.Apply(false);
     }
 }

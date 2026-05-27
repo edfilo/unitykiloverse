@@ -1,0 +1,257 @@
+K1L0 TRANSMISSION VIDEO PIPELINE — v43 RECIPE
+================================================
+
+What this is: the exact pipeline used to produce a 30-second K1L0 transmission
+video (preroll + body + postroll, 9:16, 464×832 @ 24fps) starring "Ed" the
+silver-foil-cloaked figure at a Sheetz gas station with synchronized humanoid
+robots dancing behind him.
+
+Stages run in order: NanoBanana still → WAN 2.2 i2v → ACE-Step music
+(text2music bed + lego vocal stem) → ffmpeg composite (build script).
+
+----------------------------------------------------------------
+0. PREREQS
+----------------------------------------------------------------
+
+- kiloworld-api running locally on port 3000 (pm2-managed).
+- /Users/kiloverse/kiloworldapi has node_modules + .env with:
+    REPLICATE_API_TOKEN  (for WAN 2.2 via Replicate)
+    GOOGLE creds         (for Vertex / Gemini 2.5 Flash Image i.e. NanoBanana)
+    Modal credentials    (for ACE-Step on Modal L40)
+- Frozen K1L0 ref images live at https://cdn.kilo.gallery/k1l0/ref/
+- Font: /Users/kiloverse/unitykiloverse/Assets/TextMesh Pro/Fonts/MartianMono-Regular.ttf
+
+----------------------------------------------------------------
+1. SCENE BG UPLOAD (one-off per scene)
+----------------------------------------------------------------
+
+Upload the location photo to a tmp CDN URL:
+
+    curl -sS -X POST -F "image=@/path/to/bg.jpg" \
+      http://127.0.0.1:3000/api/generate/image/upload
+
+For v43 the source was: /tmp/tedfred/image_20260519_001901_150278.jpg
+                       (night Sheetz canopy + brick pavers + FRYZ sign)
+Returned URL: https://cdn.kilo.gallery/tmp/upload_1779164465371_wd23.jpg
+
+----------------------------------------------------------------
+2. ROBOT REF UPLOAD (one-off per concept)
+----------------------------------------------------------------
+
+For the dancing cyborgs, used the Figure 03 official press photo from
+https://www.figure.ai/figure (the desktop full-body image at
+images.ctfassets.net). Same upload endpoint as above.
+v43 result: https://cdn.kilo.gallery/tmp/upload_1779167736600_1iqp.png
+
+----------------------------------------------------------------
+3. NANOBANANA STILL (Gemini 2.5 Flash Image, 9:16)
+----------------------------------------------------------------
+
+Endpoint: POST http://127.0.0.1:3000/api/generate/nanobanana
+Body: { prompt, inputImage: [array of ref URLs] }
+
+Five-to-six ref images, in order:
+  1. https://cdn.kilo.gallery/k1l0/ref/edhelmetsunglasses.png  (helmet+sunglasses)
+  2. https://cdn.kilo.gallery/k1l0/ref/ed_selfie.png            (face)
+  3. https://cdn.kilo.gallery/k1l0/ref/cloak2.png               (silver foil cloak)
+  4. https://cdn.kilo.gallery/k1l0/ref/aurora.png               (sky-only aurora)
+  5. <scene bg URL>                                             (location)
+  6. <robot ref URL>                                            (optional, for cyborgs)
+
+Prompt rules (IMPORTANT — the recipe is opinionated):
+  - LEAD with "ONE single uncropped vertical 9:16 photograph — no collage, no
+    panels, no split frame." NB will otherwise produce a multi-tile collage.
+  - DO NOT describe the face or beard. Just say
+    "Reference image 2 is the face — use it exactly as shown, no alteration."
+    Any prescriptive description (e.g. "salt-and-pepper full beard") makes NB
+    exaggerate features and overrides the actual reference. Let the ref do the
+    work.
+  - For each remaining ref, write a single sentence naming what it supplies
+    ("Reference image 1 supplies the helmet and sunglasses." etc.).
+  - End the prompt with "Output ONE single image only."
+
+v43 full prompt is in /tmp/nb_v43_payload.json. The cyborg note read:
+    "Behind him, spread across the pump island and the lot behind it, stand
+    SIX TO EIGHT humanoid robots, identical, motionless, facing forward —
+    Figure 03 humanoid robots as shown in reference image 6: glossy black
+    ovoid head, soft pale-grey upholstered torso, F.03 chest badge, glossy
+    black ball-joint shoulders/elbows/knees..."
+
+Result for v43: https://cdn.kilo.gallery/tmp/nano_banana_9x16_swuo0.png
+
+If NB returns a collage: regenerate with stronger "Output ONE single image"
+guard. If a feature drifts (face wrong, helmet missing): strengthen the
+specific ref's sentence, but never describe what the feature should look like
+beyond pointing at the reference.
+
+----------------------------------------------------------------
+4. WAN 2.2 i2v (Replicate)
+----------------------------------------------------------------
+
+Easiest path is to call runWan22Pipeline directly from a node script in the
+kiloworldapi directory (the /api/generate/wan2.2 endpoint queues to Firebase
+and is harder to poll without a shotId):
+
+    cd /Users/kiloverse/kiloworldapi && node <<'JS'
+    const Replicate = require('replicate');
+    const { runWan22Pipeline } = require('./generation-apis');
+    require('dotenv').config();
+    const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
+    (async () => {
+      const url = await runWan22Pipeline(
+        replicate,
+        '<NB still URL>',
+        '<motion prompt>',
+        null,                                  // last_image (optional)
+        { durationSeconds: 7.5, framesPerSecond: 16 }
+      );
+      console.log('WAN_URL:', url);
+    })();
+    JS
+
+Motion prompt rules:
+  - Describe what each subject does. For v43: "The man in the silver foil
+    cloak and the rows of identical humanoid robots behind him perform a
+    single synchronized choreographed dance together — all of them move in
+    perfect unison: weight shifts, arms raising and lowering together, slow
+    head turns in sync. They move as one organism, like a flash mob."
+  - Always close with: "16mm film grain, gate weave, available light, deep
+    blacks, [scene key light]. No subtitles, no captions, no text outside
+    the existing signage."
+  - 7.5s is the WAN 2.2 cap (121 frames at 16fps).
+
+Result for v43: https://replicate.delivery/xezq/...rXAlKNTLA/output.mp4
+Download to /tmp/wan_v43.mp4 (curl -sS -o).
+
+----------------------------------------------------------------
+5. MUSIC (ACE-Step XL-Base + lego vocal stem on Modal)
+----------------------------------------------------------------
+
+Endpoint: POST http://127.0.0.1:3000/api/generate/acestep/auto
+Body:
+  prompt         — describe genre + bpm + key + subject in one sentence
+  duration       — 30 (for a 27s plus tail)
+  voice_style    — explicit vocal performance description (REPLACES defaults)
+  stem_vol       — 1.2 (lego vocal mix level)
+  bed_vol        — 1.4 (instrumental mix level)
+  lyrics         — manual lyrics, with [verse]/[chorus] markers
+
+v43 recipe (heavy distorted trap with vocoder chorus + group backups):
+  prompt: "a heavy distorted trap with a vocoder/talkbox chorus and group
+           backup singers, dark trap verses with a hooky group-shouted
+           chorus, ... 78 bpm, A minor, ..."
+  voice_style: "verses: gruff weathered narrator, intimate close-mic
+                mumble-sung, ... CHORUS: heavy vocoder/talkbox autotuned
+                lead, robot-voice harmonized with a group of backup singers
+                — both male and female voices stacked, ..."
+  lyrics: [verse]/[chorus] structure, original K1L0 vocabulary (wire/brick/
+          red sign/pump/fryz/foil/paper note/aurora). Chorus repeats hook
+          line ("you my bad bitch at sheetz").
+
+Returns: { url, instrumental_url, lego_stem_url, lego_vocal_caption, ... }
+The `url` is the final mixed mp3 (bed + stem amix + alimiter).
+
+Modal cold-boot can be 1-3 min on first call; warm ~30-60s.
+Save to /tmp/music_v43.mp3 via curl.
+
+⚠ NEVER trim or shift the lego vocal stem. The LoRA's natural timing,
+including any leading silence, is part of its musical phrasing. Trimming
+pulls vocals out of time with the bed. See memory/feedback_lora_vocals_natural.md.
+
+----------------------------------------------------------------
+6. BUILD SCRIPT (ffmpeg composite — /tmp/build_v43.py)
+----------------------------------------------------------------
+
+Structure:
+  PREROLL (3s)  +  BODY (17s)  +  POSTROLL (10s)  = 30s
+  Music starts at t=3s, runs for 27s. BPM 78 → BEAT = 0.769s.
+
+PREROLL:
+  - Solid black background
+  - Glitched RGB-shifted text "kiloverse nightly scan" at fontsize 14, at
+    y = int(H * 0.46). Three layers: red (-3px), cyan (+3px), white center,
+    each with its own per-frame flicker enable expression like
+    "gt(mod(t*7\\,2.0)\\,0.06)" so layers blink slightly out of sync.
+  - Persistent header drawn on top (date+time, weather).
+
+BODY (jump-cut composite of the WAN clip):
+  - 38 cuts derived from CUT_OPTIONS = [BEAT*0.25, *0.5, *0.75, *1.0, *1.5,
+    *2.0] with weights heavily biased toward sub-beat (faster cuts).
+  - Speed PTS multipliers: 0.5, 0.75, 1.0, 1.5, 2.0, 2.5 — random with
+    weights toward 1.0–1.5.
+  - Face moments: 4 scheduled close-ups at body t = 4s, 8s, 12s, 15s.
+    Face center derived from NB image (for v43: visor band at y=543 in
+    768×1344 → face_cx=232, face_cy=346 in 464×832).
+  - Crop presets for face: (90×160), (130×230), (180×320), (60×107).
+  - Treatments randomly applied per non-hold cut: rgb_shift, rgb_shift_heavy,
+    invert, hue_rotate, bw_contrast, posterize, color_isolate, vflip,
+    invert_rgb, hue_invert, datamosh_blur, high_grain.
+  - Hold phase = first 1.5s of body: no treatment, slower 1.5x PTS speed,
+    longer cuts. Lets the first HUD line read clearly.
+  - 12 glitch inserts (1-2 frames of white/black/RGB-color flash) randomly
+    placed between cuts 3..end-1.
+  - HUD typewriter: per-line font size (e.g. hero step-count at 80pt),
+    fontfile=MartianMono, white text on box=black@0.70, slow char rate
+    (10cps), 0.35s line pause, holds 3.0s after last char typed.
+  - Persistent header layer drawn on top.
+
+POSTROLL (10s on black):
+  - "K1L0" typewriter at fontsize 110, char_rate 5.0, starts at t=0.3s.
+  - After K1L0 holds alone for ~3s, glitch subtitle appears at fontsize 14
+    via 3 RGB-shifted layers with flicker (same recipe as preroll text).
+  - For v43 the subtitle was "the signal is faint".
+
+FINAL ASSEMBLY:
+  Concat preroll + body + postroll video → vraw.
+  Music (mp3) → aecho 0.7:0.7:120|240:0.18|0.10 → loudnorm I=-13:LRA=11:TP=-1.0
+  → atrim to 27s → adelay 3000|3000 (so it lines up with body start) → apad.
+  Mux vraw + audio → /tmp/final_v43.mp4 (libx264 crf 19, aac 192k, faststart).
+
+Then web-encode for browser compat:
+  ffmpeg -i /tmp/final_v43.mp4 \
+    -c:v libx264 -profile:v main -level 4.0 -crf 20 -preset medium -pix_fmt yuv420p \
+    -c:a aac -ar 48000 -ac 2 -b:a 192k -movflags +faststart \
+    /tmp/final_v43_compat.mp4
+
+Upload to CDN:
+  curl -sS -X POST -F "video=@/tmp/final_v43_compat.mp4" \
+    http://127.0.0.1:3000/api/generate/video/upload
+
+----------------------------------------------------------------
+7. HUD DESIGN NOTES (the part that changes most often)
+----------------------------------------------------------------
+
+Persistent header (top-left, fontsize 22, white):
+  TUE MAY 19  1:24 AM
+  CLEAR  58 F
+
+Body HUD (slow typewriter, per-line font sizes, white text on black@0.70 box):
+  - Lead line (regular, 20-22pt): "Ed walked to cranberry sheetz."
+  - Hero stat (LARGE, 80pt): "5,847"
+  - Sub-caption (20pt): "steps today"
+  - Status lines (18pt each): "hydration: low" / "money: low"
+  - Gap, then claim line (16pt): "he left a gatorade bottle of"
+  - Item line (20pt): "dysprosium."   ← random rare earth as cursed-tech anchor
+
+Rules of the lore:
+  - Step counts should be non-round natural numbers ("5,847" not "6,000").
+  - The "he left a gatorade bottle of <X>" is a recurring K1L0 motif where
+    X is a rare earth element (dysprosium, neodymium, yttrium, holmium, etc.).
+  - Numbers and rare resources reinforce the "low on assets, cursed-tech
+    mythology" tone.
+  - HUD totals about 6 lines plus a deliberate empty gap — typewriter takes
+    ~12-14s to type at 10cps, leaves ~3s of hold before fade to postroll.
+
+----------------------------------------------------------------
+8. v43 RESULT
+----------------------------------------------------------------
+
+Final video CDN URL (latest):
+  https://cdn.kilo.gallery/tmp/video_upload_1779170051406_noql7.mp4
+
+Final music CDN URL:
+  https://cdn.kilo.gallery/audio/acestep_lego_mix_1779169143619_mdfuq8.mp3
+
+NB still: https://cdn.kilo.gallery/tmp/nano_banana_9x16_swuo0.png
+WAN raw: /tmp/wan_v43.mp4 (downloaded from replicate.delivery)
+Build script: /tmp/build_v43.py

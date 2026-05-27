@@ -11,6 +11,9 @@ public class K1L0HUD : MonoBehaviour
     private RectTransform safeArea;
     private TextMeshProUGUI weatherText;
     private TextMeshProUGUI memText;
+    private Image terminalToggleBg;
+    private TextMeshProUGUI terminalToggleGlyph;
+    private bool hudUserVisible = true;
 
     public static K1L0HUD Instance { get; private set; }
 
@@ -47,10 +50,19 @@ public class K1L0HUD : MonoBehaviour
     private bool initialized;
     private Image sceneDimmer;
     private float dimmerTarget;
-    private const float DimmerAlpha = 0.15f;
+    private const string PanelMapBrightnessPref = "k1lo_panelMapBrightness.v2";
     private const float DimmerSpeed = 4f;
+    private float lastDockDebugUploadTime = -999f;
 
     public static Sprite RoundedRectSprite { get; private set; }
+    public static float PanelMapBrightness => Mathf.Clamp01(PlayerPrefs.GetFloat(PanelMapBrightnessPref, 0.01f));
+
+    public static void SetPanelMapBrightness(float value)
+    {
+        PlayerPrefs.SetFloat(PanelMapBrightnessPref, Mathf.Clamp01(value));
+        PlayerPrefs.Save();
+        if (Instance != null) Instance.RefreshPanelDimmer();
+    }
 
     void Start()
     {
@@ -154,14 +166,16 @@ public class K1L0HUD : MonoBehaviour
         EnsureEventSystem();
         CreateSceneDimmer();
         CreateWeatherBar();
-        CreateMemLabel();
         CreateDock();
+        CreateTerminalHudToggle();
         CreatePanels();
 
         EnsureStoriesUI();
         EnsureScreenshot();
-        EnsureLocationBeams();
+        // Disabled: legacy POI location beams (K1L0LocationBeams).
+        // Locations are now represented as SignalDirectorV2 LocationTransmission signals instead.
         EnsureTransmissionFrame();
+        EnsureTransmitterEnterModal();
         HideOldUI();
         Debug.Log("[K1L0HUD] Initialized successfully");
 
@@ -241,21 +255,9 @@ public class K1L0HUD : MonoBehaviour
 
     void CreateWeatherBar()
     {
-        GameObject go = new GameObject("WeatherBar");
-        go.transform.SetParent(safeArea, false);
-        RectTransform rt = go.AddComponent<RectTransform>();
-        rt.anchorMin = new Vector2(0, 1);
-        rt.anchorMax = new Vector2(1, 1);
-        rt.pivot = new Vector2(0, 1);
-        rt.anchoredPosition = new Vector2(12, -6);
-        rt.sizeDelta = new Vector2(-24, 18);
-
-        weatherText = go.AddComponent<TextMeshProUGUI>();
-        weatherText.font = monoFontLight;
-        weatherText.fontSize = 15;
-        weatherText.color = new Color(0.75f, 0.85f, 1f, 0.7f);
-        weatherText.alignment = TextAlignmentOptions.TopLeft;
-        weatherText.text = "";
+        // CityWeatherOverlay is now the single owner of the top city/weather row.
+        // Keeping a second WeatherBar here caused duplicate top-left HUD text.
+        weatherText = null;
     }
 
     void CreateMemLabel()
@@ -301,27 +303,141 @@ public class K1L0HUD : MonoBehaviour
         dock.OnButtonTapped = OnDockButtonTapped;
     }
 
+    void CreateTerminalHudToggle()
+    {
+        return;
+
+        GameObject go = new GameObject("TerminalHUDToggle", typeof(RectTransform), typeof(Image), typeof(Button));
+        go.transform.SetParent(K1L0CanvasRoot.Modal, false);
+        go.transform.SetAsFirstSibling();
+
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(1f, 1f);
+        rt.anchorMax = new Vector2(1f, 1f);
+        rt.pivot = new Vector2(1f, 1f);
+        rt.anchoredPosition = new Vector2(-12f, -12f);
+        rt.sizeDelta = new Vector2(58f, 46f);
+
+        terminalToggleBg = go.GetComponent<Image>();
+        terminalToggleBg.sprite = K1L0GlassFactory.ControlRectSprite;
+        terminalToggleBg.type = Image.Type.Sliced;
+        terminalToggleBg.color = new Color(0f, 0f, 0f, 0.92f);
+        terminalToggleBg.raycastTarget = true;
+
+        var titleBar = new GameObject("TitleBar", typeof(RectTransform), typeof(Image));
+        titleBar.transform.SetParent(go.transform, false);
+        var titleRt = titleBar.GetComponent<RectTransform>();
+        titleRt.anchorMin = new Vector2(0f, 1f);
+        titleRt.anchorMax = new Vector2(1f, 1f);
+        titleRt.pivot = new Vector2(0.5f, 1f);
+        titleRt.offsetMin = new Vector2(5f, -12f);
+        titleRt.offsetMax = new Vector2(-5f, -5f);
+        var titleImg = titleBar.GetComponent<Image>();
+        titleImg.color = new Color(0.78f, 0.78f, 0.78f, 0.9f);
+        titleImg.raycastTarget = false;
+
+        var glyphGO = new GameObject("Glyph", typeof(RectTransform));
+        glyphGO.transform.SetParent(go.transform, false);
+        var glyphRt = glyphGO.GetComponent<RectTransform>();
+        glyphRt.anchorMin = Vector2.zero;
+        glyphRt.anchorMax = Vector2.one;
+        glyphRt.offsetMin = new Vector2(6f, 10f);
+        glyphRt.offsetMax = new Vector2(-6f, -3f);
+
+        terminalToggleGlyph = glyphGO.AddComponent<TextMeshProUGUI>();
+        terminalToggleGlyph.font = monoFont;
+        terminalToggleGlyph.fontSize = 19f;
+        terminalToggleGlyph.alignment = TextAlignmentOptions.Center;
+        terminalToggleGlyph.text = ">_";
+        terminalToggleGlyph.raycastTarget = false;
+
+        var btn = go.GetComponent<Button>();
+        btn.transition = Selectable.Transition.None;
+        btn.targetGraphic = terminalToggleBg;
+        btn.onClick.AddListener(ToggleHudVisible);
+
+        RefreshTerminalToggle();
+    }
+
+    void ToggleHudVisible()
+    {
+        SetHudVisible(!hudUserVisible);
+    }
+
+    void SetHudVisible(bool visible)
+    {
+        hudUserVisible = visible;
+
+        if (!visible)
+        {
+            for (int i = 0; i < panelOpen.Length; i++)
+            {
+                if (!panelOpen[i]) continue;
+                panelOpen[i] = false;
+                if (panels != null && panels[i] != null) panels[i].Hide();
+                if (dock != null) dock.SetActiveButton(i, false);
+            }
+            RefreshPanelDimmer();
+        }
+
+        var hud = K1L0CanvasRoot.HUD;
+        if (hud != null) hud.gameObject.SetActive(visible);
+
+        ApplyMapHudSuppression(!visible);
+
+        RefreshTerminalToggle();
+    }
+
+    void ApplyMapHudSuppression(bool suppress)
+    {
+        K1L0HudLayoutController.SetMapHudVisible(hudUserVisible && !suppress);
+        SignalBeamBridge.SetHudSuppressed(suppress);
+        POILabelBridge.SetHudSuppressed(suppress);
+
+        var director = SignalDirectorV2.Instance;
+        if (director != null) director.SuppressHUD(suppress);
+    }
+
+    void RefreshTerminalToggle()
+    {
+        if (terminalToggleBg != null)
+            terminalToggleBg.color = hudUserVisible ? new Color(0f, 0f, 0f, 0.92f) : new Color(0.02f, 0.18f, 0.04f, 0.96f);
+        if (terminalToggleGlyph != null)
+            terminalToggleGlyph.color = hudUserVisible ? new Color(0.56f, 1f, 0.62f, 1f) : new Color(0.56f, 1f, 0.62f, 0.55f);
+    }
+
+    void RefreshPanelDimmer()
+    {
+        bool anyOpen = false;
+        for (int i = 0; i < panelOpen.Length; i++)
+            if (panelOpen[i]) { anyOpen = true; break; }
+
+        dimmerTarget = anyOpen ? 1f - PanelMapBrightness : 0f;
+    }
+
     private static readonly float panelTopY = -96f;
 
     void CreatePanels()
     {
         Vector2 centeredPos = new Vector2(0, panelTopY);
 
-        nearbyPanel = CreateOnePanel("NearbyPanel", centeredPos, new Vector2(0f, 500f), new Vector4(12f, 18f, 12f, 48f));
+        nearbyPanel = CreateOnePanel("NearbyPanel", centeredPos, new Vector2(0f, 500f), new Vector4(18f, 24f, 18f, 96f));
+        nearbyPanel.draggable = false;
         nearbyPanel.OnCloseClicked = () => TogglePanel(0, false);
         GameObject nearbyGO = new GameObject("NearbyMode");
         nearbyMode = nearbyGO.AddComponent<K1L0NearbyMode>();
         nearbyMode.Initialize(nearbyPanel.contentArea, monoFont);
         nearbyPanel.gameObject.SetActive(false);
 
-        statusPanel = CreateOnePanel("StatusPanel", centeredPos, new Vector2(0f, 356f), new Vector4(12f, 18f, 12f, 48f));
+        statusPanel = CreateOnePanel("StatusPanel", centeredPos, new Vector2(0f, 356f), new Vector4(18f, 24f, 18f, 96f));
         statusPanel.OnCloseClicked = () => TogglePanel(1, false);
         GameObject statusGO = new GameObject("StatusMode");
         statusMode = statusGO.AddComponent<K1L0StatusMode>();
         statusMode.Initialize(statusPanel.contentArea, monoFont);
         statusPanel.gameObject.SetActive(false);
 
-        profilePanel = CreateOnePanel("ProfilePanel", centeredPos, new Vector2(0f, 620f), new Vector4(12f, 18f, 12f, 48f));
+        profilePanel = CreateOnePanel("ProfilePanel", centeredPos, new Vector2(0f, 620f), new Vector4(18f, 24f, 18f, 96f));
+        profilePanel.draggable = false;
         profilePanel.OnCloseClicked = () => TogglePanel(2, false);
         GameObject profileGO = new GameObject("ProfileMode");
         profileMode = profileGO.AddComponent<K1L0ProfileMode>();
@@ -333,15 +449,18 @@ public class K1L0HUD : MonoBehaviour
 
     void HandleDockTouchFallback()
     {
-        if (Input.touchCount == 0)
-            return;
-
         Camera eventCamera = canvas != null && canvas.renderMode == RenderMode.ScreenSpaceCamera ? canvas.worldCamera : null;
 
         for (int i = 0; i < Input.touchCount; i++)
         {
             Touch touch = Input.GetTouch(i);
             if (touch.phase != TouchPhase.Began)
+                continue;
+
+            if (TryHandleDockPoint(touch.position, eventCamera, "touch-began"))
+                break;
+
+            if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject(touch.fingerId))
                 continue;
 
             bool handled = false;
@@ -360,12 +479,94 @@ public class K1L0HUD : MonoBehaviour
             if (!handled && TryHandlePanelButtonFallback(touch.position))
                 handled = true;
 
-            if (!handled && dock != null && dock.TryHandleScreenPoint(touch.position, eventCamera))
-                handled = true;
-
             if (handled)
                 break;
         }
+
+        if (Input.GetMouseButtonDown(0))
+        {
+            if (TryHandleDockPoint(Input.mousePosition, eventCamera, "mouse-down"))
+                return;
+
+            if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
+                return;
+        }
+    }
+
+    bool TryHandleDockPoint(Vector2 point, Camera eventCamera, string source)
+    {
+        if (dock == null)
+            return false;
+
+        bool hit = false;
+        string error = null;
+        try
+        {
+            hit = dock.TryHandleScreenPoint(point, eventCamera);
+        }
+        catch (System.Exception e)
+        {
+            error = e.GetType().Name + ": " + e.Message;
+            Debug.LogError($"[K1L0HUD] Dock handling exception: {error}");
+        }
+
+        UploadDockDebug(source, point, hit, error);
+        return hit;
+    }
+
+    void UploadDockDebug(string source, Vector2 point, bool hit, string error = null)
+    {
+        if (Time.realtimeSinceStartup - lastDockDebugUploadTime < 1.0f)
+            return;
+
+        lastDockDebugUploadTime = Time.realtimeSinceStartup;
+        string dockSummary = dock != null ? dock.GetDebugHitSummary(point) : "dock=null";
+        string json =
+            "{" +
+            "\"kind\":\"dock-input\"," +
+            "\"source\":\"" + EscapeJson(source) + "\"," +
+            "\"hit\":" + (hit ? "true" : "false") + "," +
+            "\"x\":" + point.x.ToString("F0", System.Globalization.CultureInfo.InvariantCulture) + "," +
+            "\"y\":" + point.y.ToString("F0", System.Globalization.CultureInfo.InvariantCulture) + "," +
+            "\"screen\":\"" + Screen.width + "x" + Screen.height + "\"," +
+            "\"safeArea\":\"" + EscapeJson(Screen.safeArea.ToString()) + "\"," +
+            "\"hudActive\":" + (K1L0CanvasRoot.HUD != null && K1L0CanvasRoot.HUD.gameObject.activeInHierarchy ? "true" : "false") + "," +
+            "\"error\":\"" + EscapeJson(error ?? "") + "\"," +
+            "\"panels\":\"" + EscapeJson(BuildPanelDebugState()) + "\"," +
+            "\"dock\":\"" + EscapeJson(dockSummary) + "\"" +
+            "}";
+
+        StartCoroutine(APIManager.Instance.Post("/beam-debug", json, (success, response) =>
+        {
+            Debug.Log($"[K1L0HUD] Dock debug upload success={success} response={response}");
+        }));
+    }
+
+    static string EscapeJson(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        return value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+    }
+
+    string BuildPanelDebugState()
+    {
+        if (panels == null) return "panels=null";
+        System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
+        for (int i = 0; i < panels.Length; i++)
+        {
+            K1L0GlassPanel panel = panels[i];
+            if (panel == null)
+            {
+                sb.Append($" p{i}=null");
+                continue;
+            }
+
+            RectTransform rt = panel.transform as RectTransform;
+            Vector2 pos = rt != null ? rt.anchoredPosition : Vector2.zero;
+            Vector2 size = rt != null ? rt.sizeDelta : Vector2.zero;
+            sb.Append($" p{i}:open={(i < panelOpen.Length && panelOpen[i])} activeSelf={panel.gameObject.activeSelf} activeHier={panel.gameObject.activeInHierarchy} visible={panel.IsVisible} alpha={panel.CurrentAlpha:F2} pos=({pos.x:F0},{pos.y:F0}) size=({size.x:F0},{size.y:F0})");
+        }
+        return sb.ToString();
     }
 
     bool TryHandlePanelButtonFallback(Vector2 screenPoint)
@@ -421,11 +622,13 @@ public class K1L0HUD : MonoBehaviour
         panelGO.transform.SetParent(safeArea, false);
 
         RectTransform panelRT = panelGO.AddComponent<RectTransform>();
-        panelRT.anchorMin = new Vector2(0f, 1);
-        panelRT.anchorMax = new Vector2(1f, 1);
-        panelRT.pivot = new Vector2(0.5f, 1);
-        panelRT.anchoredPosition = pos;
-        panelRT.sizeDelta = new Vector2(-18f, size.y);
+        panelRT.anchorMin = Vector2.zero;
+        panelRT.anchorMax = Vector2.one;
+        panelRT.pivot = new Vector2(0.5f, 0.5f);
+        panelRT.anchoredPosition = Vector2.zero;
+        panelRT.sizeDelta = Vector2.zero;
+        panelRT.offsetMin = Vector2.zero;
+        panelRT.offsetMax = Vector2.zero;
 
         K1L0GlassPanel gp = panelGO.AddComponent<K1L0GlassPanel>();
         gp.InitializeVisual(monoFont, contentPadding);
@@ -459,12 +662,7 @@ public class K1L0HUD : MonoBehaviour
 
     void EnsureLocationBeams()
     {
-        if (FindFirstObjectByType<K1L0LocationBeams>() == null)
-        {
-            var go = new GameObject("K1L0LocationBeams");
-            var beams = go.AddComponent<K1L0LocationBeams>();
-            beams.Initialize(monoFont);
-        }
+        // Intentionally disabled.
     }
 
     void EnsureTransmissionFrame()
@@ -474,6 +672,16 @@ public class K1L0HUD : MonoBehaviour
             var go = new GameObject("TransmissionFrame");
             var frame = go.AddComponent<TransmissionFrame>();
             frame.Initialize();
+        }
+    }
+
+    void EnsureTransmitterEnterModal()
+    {
+        if (FindFirstObjectByType<TransmitterEnterModal>() == null)
+        {
+            var go = new GameObject("TransmitterEnterModal");
+            var modal = go.AddComponent<TransmitterEnterModal>();
+            modal.Initialize();
         }
     }
 
@@ -517,11 +725,30 @@ public class K1L0HUD : MonoBehaviour
     void OnDockButtonTapped(int index)
     {
         if (index < 0) return;
+        Debug.Log($"[K1L0HUD] Dock button tapped index={index} currentlyOpen={panelOpen[index]}");
         TogglePanel(index, !panelOpen[index]);
     }
 
     void TogglePanel(int index, bool show)
     {
+        if (index < 0 || index >= panelOpen.Length)
+        {
+            Debug.LogWarning($"[K1L0HUD] TogglePanel ignored invalid index={index}");
+            return;
+        }
+
+        if (panels == null || index >= panels.Length || panels[index] == null)
+        {
+            Debug.LogWarning($"[K1L0HUD] TogglePanel rebuilding missing panels for index={index} panelsNull={panels == null}");
+            CreatePanels();
+        }
+
+        if (panels == null || index >= panels.Length || panels[index] == null)
+        {
+            Debug.LogError($"[K1L0HUD] TogglePanel failed: panel index={index} is still missing");
+            return;
+        }
+
         if (show)
         {
             // Close any other open panel first — only 1 at a time
@@ -530,8 +757,8 @@ public class K1L0HUD : MonoBehaviour
                 if (i != index && panelOpen[i])
                 {
                     panelOpen[i] = false;
-                    panels[i].Hide();
-                    dock.SetActiveButton(i, false);
+                    if (panels[i] != null) panels[i].Hide();
+                    if (dock != null) dock.SetActiveButton(i, false);
                 }
             }
             panelOpen[index] = true;
@@ -540,18 +767,17 @@ public class K1L0HUD : MonoBehaviour
         else
         {
             panelOpen[index] = false;
-            panels[index].Hide();
+            if (panels[index] != null) panels[index].Hide();
         }
-        dock.SetActiveButton(index, show);
+        if (dock != null) dock.SetActiveButton(index, show);
 
         bool anyOpen = false;
         for (int i = 0; i < panelOpen.Length; i++)
             if (panelOpen[i]) { anyOpen = true; break; }
-        dimmerTarget = anyOpen ? DimmerAlpha : 0f;
+        RefreshPanelDimmer();
 
         // Hide teasers when a panel is open (panels are now transparent)
-        var director = SignalDirectorV2.Instance;
-        if (director != null) director.SuppressHUD(anyOpen);
+        ApplyMapHudSuppression(anyOpen);
     }
 
 

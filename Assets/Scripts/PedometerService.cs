@@ -40,9 +40,14 @@ public class PedometerService : MonoBehaviour
     public int stepsLast24Hours = -1;
     public int stepsLast48Hours = -1;
     public int stepsLast7Days = -1;
+    public int kilosyncSteps = -1;
+    public int stepsLast6Hours = -1;
+    public bool kilosyncReady = false;
+    public bool isKilosyncInert = true;
 
     // Granular step data for ping button
     private Dictionary<int, int> cachedStepIntervals = new Dictionary<int, int>();
+    private float virtualStepRemainderMeters = 0f;
     
     // Static dictionary to map start timestamps to callbacks
     private static Dictionary<double, System.Action<int>> pendingIntervalCallbacks = new Dictionary<double, System.Action<int>>();
@@ -144,18 +149,62 @@ public class PedometerService : MonoBehaviour
 
         // Last 48 Hours
         _QueryPedometerData(now - 172800, now, On48HourStepsReceived);
+
+        GetLast24HoursBreakdown(UpdateKilosyncActivity);
         #else
-        // Fallback for Editor / Mac / Windows
-        stepsLast24Hours = Random.Range(0, 10000);
-        stepsLast48Hours = Random.Range(5000, 20000);
-        stepsLastHour = Random.Range(0, 1000);
+        stepsLast24Hours = 0;
+        stepsLast48Hours = 0;
+        stepsLastHour = 0;
+        stepsLast7Days = 0;
+        stepsLast6Hours = 0;
+        kilosyncSteps = 0;
+        isKilosyncInert = true;
+        kilosyncReady = true;
+        ResetSimulatedIntervalCache();
+        GetLast24HoursBreakdown(UpdateKilosyncActivity);
         
-        // stepsLast7Days is handled by the UI calling GetLast7DaysSteps, 
-        // but we can set a default here just in case UI reads it early
-        stepsLast7Days = Random.Range(0, 70000);
-        
-        Debug.Log($"[PedometerService] Simulated Data: 24h={stepsLast24Hours}, 1h={stepsLastHour}, 7d={stepsLast7Days}");
+        Debug.Log("[PedometerService] Simulated Data reset to zero for desktop testing.");
         #endif
+    }
+
+    private void UpdateKilosyncActivity(List<HourlyStepData> hourly)
+    {
+        if (hourly == null || hourly.Count == 0)
+        {
+            kilosyncReady = true;
+            kilosyncSteps = Mathf.Max(0, stepCount);
+            stepsLast6Hours = stepsLastHour >= 0 ? stepsLastHour : 0;
+            isKilosyncInert = stepsLast6Hours < 200;
+            return;
+        }
+
+        hourly.Sort((a, b) => a.time.CompareTo(b.time));
+        int latestInactiveIndex = -1;
+        int latestSixHourSteps = 0;
+        for (int i = 0; i < hourly.Count; i++)
+        {
+            System.DateTime windowEnd = hourly[i].time.AddHours(1);
+            System.DateTime windowStart = windowEnd.AddHours(-6);
+            int windowSteps = 0;
+            for (int j = 0; j < hourly.Count; j++)
+            {
+                if (hourly[j].time >= windowStart && hourly[j].time < windowEnd)
+                    windowSteps += Mathf.Max(0, hourly[j].steps);
+            }
+            latestSixHourSteps = windowSteps;
+            if (windowSteps < 200)
+                latestInactiveIndex = i;
+        }
+
+        int activeSteps = 0;
+        for (int i = latestInactiveIndex + 1; i < hourly.Count; i++)
+            activeSteps += Mathf.Max(0, hourly[i].steps);
+
+        kilosyncSteps = activeSteps + Mathf.Max(0, stepCount);
+        stepsLast6Hours = latestSixHourSteps;
+        isKilosyncInert = stepsLast6Hours < 200;
+        kilosyncReady = true;
+        Debug.Log($"[PedometerService] Kilosync steps={kilosyncSteps} 6h={stepsLast6Hours} inert={isKilosyncInert}");
     }
 
     public void GetLast7DaysSteps(System.Action<List<DailyStepData>> callback)
@@ -178,10 +227,10 @@ public class PedometerService : MonoBehaviour
             _QueryPedometerData(startTs, endTs, OnHistoryDayReceived);
         }
         #else
-        // Simulate for Editor
         var list = new List<DailyStepData>();
         for(int i=0; i<7; i++) {
-            list.Add(new DailyStepData { date = System.DateTime.Today.AddDays(-i), steps = Random.Range(1000, 10000) });
+            int steps = i == 0 ? Mathf.Max(0, stepsLast24Hours) : 0;
+            list.Add(new DailyStepData { date = System.DateTime.Today.AddDays(-i), steps = steps });
         }
         callback?.Invoke(list);
         #endif
@@ -210,7 +259,8 @@ public class PedometerService : MonoBehaviour
         var list = new List<HourlyStepData>();
         System.DateTime now = System.DateTime.Now;
         for(int i=0; i<24; i++) {
-            list.Add(new HourlyStepData { time = now.AddHours(-i), steps = Random.Range(50, 500) });
+            int steps = i == 0 ? Mathf.Max(0, stepsLastHour) : 0;
+            list.Add(new HourlyStepData { time = now.AddHours(-i), steps = steps });
         }
         callback?.Invoke(list);
         #endif
@@ -265,8 +315,7 @@ public class PedometerService : MonoBehaviour
 
         _QueryPedometerData(startTime, now, OnIntervalQueryReceived);
         #else
-        // Simulate for Editor - scale based on time interval
-        int simulatedSteps = Random.Range(minutes / 2, minutes * 2);
+        int simulatedSteps = GetSimulatedStepsForInterval(minutes);
         cachedStepIntervals[minutes] = simulatedSteps;
         callback?.Invoke(simulatedSteps);
         #endif
@@ -310,6 +359,26 @@ public class PedometerService : MonoBehaviour
     public int GetCachedStepsForInterval(int minutes)
     {
         return cachedStepIntervals.ContainsKey(minutes) ? cachedStepIntervals[minutes] : -1;
+    }
+
+    private int GetSimulatedStepsForInterval(int minutes)
+    {
+        if (minutes <= 0) return 0;
+        if (minutes >= 60) return Mathf.Max(0, stepsLastHour);
+        return Mathf.RoundToInt(Mathf.Max(0, stepsLastHour) * Mathf.Clamp01(minutes / 60f));
+    }
+
+    private void ResetSimulatedIntervalCache()
+    {
+        cachedStepIntervals.Clear();
+        for (int minutes = 10; minutes <= 60; minutes += 10)
+            cachedStepIntervals[minutes] = 0;
+    }
+
+    private void UpdateSimulatedIntervalCache()
+    {
+        for (int minutes = 10; minutes <= 60; minutes += 10)
+            cachedStepIntervals[minutes] = GetSimulatedStepsForInterval(minutes);
     }
 
     [AOT.MonoPInvokeCallback(typeof(PedometerCallback))]
@@ -434,6 +503,29 @@ public class PedometerService : MonoBehaviour
         lastStepTime = Time.time;
     }
 
+    public void RegisterVirtualMovementMeters(float meters)
+    {
+        if (meters <= 0f) return;
+
+        float stride = Mathf.Max(0.2f, EstimatedStrideLength);
+        virtualStepRemainderMeters += meters;
+        int steps = Mathf.FloorToInt(virtualStepRemainderMeters / stride);
+        if (steps <= 0) return;
+
+        virtualStepRemainderMeters -= steps * stride;
+        stepCount += steps;
+        distanceMeters += steps * stride;
+        stepsLastHour = Mathf.Max(0, stepsLastHour) + steps;
+        stepsLast24Hours = Mathf.Max(0, stepsLast24Hours) + steps;
+        stepsLast48Hours = Mathf.Max(0, stepsLast48Hours) + steps;
+        stepsLast7Days = Mathf.Max(0, stepsLast7Days) + steps;
+        stepsLast6Hours = Mathf.Max(0, stepsLast6Hours) + steps;
+        kilosyncSteps = Mathf.Max(0, kilosyncSteps) + steps;
+        kilosyncReady = true;
+        isKilosyncInert = stepsLast6Hours < 200;
+        UpdateSimulatedIntervalCache();
+    }
+
     void OnDisable()
     {
         #if UNITY_IOS && !UNITY_EDITOR
@@ -473,6 +565,18 @@ public class PedometerService : MonoBehaviour
     public void ResetSteps()
     {
         stepCount = 0;
+        previousStepCount = 0;
+        distanceMeters = 0;
+        stepsLastHour = 0;
+        stepsLast24Hours = 0;
+        stepsLast48Hours = 0;
+        stepsLast7Days = 0;
+        stepsLast6Hours = 0;
+        kilosyncSteps = 0;
+        isKilosyncInert = true;
+        kilosyncReady = true;
+        virtualStepRemainderMeters = 0f;
+        ResetSimulatedIntervalCache();
     }
 
     /// <summary>

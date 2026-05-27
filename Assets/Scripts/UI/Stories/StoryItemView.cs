@@ -26,6 +26,8 @@ namespace KiloWorld.UI.Stories
 
         private Action<StoryGroup> clickHandler;
         private bool isSeen;
+        private bool pointerDownInside;
+        private int lastClickFrame = -1;
 
         public StoryGroup BoundStory { get; private set; }
 
@@ -119,10 +121,55 @@ namespace KiloWorld.UI.Stories
             button.onClick.AddListener(HandleClick);
         }
 
+        private void Update()
+        {
+            if (BoundStory == null) return;
+
+            if (Input.touchCount > 0)
+            {
+                Touch touch = Input.GetTouch(0);
+                if (touch.phase == TouchPhase.Began)
+                {
+                    pointerDownInside = ContainsScreenPoint(touch.position);
+                }
+                else if (touch.phase == TouchPhase.Canceled)
+                {
+                    pointerDownInside = false;
+                }
+                else if ((touch.phase == TouchPhase.Ended) && pointerDownInside)
+                {
+                    bool releasedInside = ContainsScreenPoint(touch.position);
+                    pointerDownInside = false;
+                    if (releasedInside) HandleClick();
+                }
+            }
+            else
+            {
+                if (Input.GetMouseButtonDown(0))
+                {
+                    pointerDownInside = ContainsScreenPoint(Input.mousePosition);
+                }
+                else if (Input.GetMouseButtonUp(0) && pointerDownInside)
+                {
+                    bool releasedInside = ContainsScreenPoint(Input.mousePosition);
+                    pointerDownInside = false;
+                    if (releasedInside) HandleClick();
+                }
+            }
+        }
+
         private void HandleClick()
         {
             if (BoundStory == null) return;
+            if (lastClickFrame == Time.frameCount) return;
+            lastClickFrame = Time.frameCount;
             clickHandler?.Invoke(BoundStory);
+        }
+
+        private bool ContainsScreenPoint(Vector2 screenPoint)
+        {
+            var rect = transform as RectTransform;
+            return rect != null && RectTransformUtility.RectangleContainsScreenPoint(rect, screenPoint, null);
         }
 
         private void ApplyLayout()

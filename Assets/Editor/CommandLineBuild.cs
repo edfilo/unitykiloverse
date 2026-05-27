@@ -6,15 +6,21 @@ public class CommandLineBuild
 {
     public static void BuildiOS()
     {
+        // K1L0 uses a local HTTP endpoint on LAN (and falls back to HTTPS tunnel/production).
+        // iOS builds must allow insecure HTTP for UnityWebRequest, otherwise boot will throw:
+        // "Non-secure network connections disabled in Player Settings" / "Insecure connection not allowed".
+        PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
+
         var scenes = EditorBuildSettings.scenes
             .Where(s => s.enabled)
             .Select(s => s.path)
             .ToArray();
 
+        const string iosOut = "/Users/kiloverse/unitykiloverse/Builds/iOS";
         var options = new BuildPlayerOptions
         {
             scenes = scenes,
-            locationPathName = "/Users/kiloverse/unitykiloverse/Builds/iOS",
+            locationPathName = iosOut,
             target = BuildTarget.iOS,
             options = BuildOptions.None
         };
@@ -23,6 +29,59 @@ public class CommandLineBuild
         {
             EditorApplication.Exit(1);
         }
+
+        // Bake the >K1L0 icon into the exported AppIcon.appiconset. Unity's
+        // Standalone+iOS targets don't honor our PlayerSettings icons reliably,
+        // so we resize Assets/Icons/KiloverseAppIcon_K.png into every Icon-*.png
+        // slot via sips. Source of truth: the same PNG used by GenerateMacAppIcon.
+        try { GenerateIosAppIcons(iosOut); }
+        catch (System.Exception e) { UnityEngine.Debug.LogWarning($"[BuildiOS] Icon bake failed: {e.Message}"); }
+    }
+
+    static void GenerateIosAppIcons(string iosBuildPath)
+    {
+        const string sourcePng = "Assets/Icons/KiloverseAppIcon_K.png";
+        string sourceAbs = System.IO.Path.GetFullPath(sourcePng);
+        if (!System.IO.File.Exists(sourceAbs))
+        {
+            UnityEngine.Debug.LogWarning($"[BuildiOS] Icon source missing: {sourceAbs}");
+            return;
+        }
+        string iconset = System.IO.Path.Combine(iosBuildPath, "Unity-iPhone/Images.xcassets/AppIcon.appiconset");
+        if (!System.IO.Directory.Exists(iconset))
+        {
+            UnityEngine.Debug.LogWarning($"[BuildiOS] AppIcon.appiconset not found at {iconset}");
+            return;
+        }
+
+        // (size, filename) — every Icon-*.png slot Unity emits for iOS.
+        var slots = new (int, string)[] {
+            (1024, "Icon-Store-1024.png"),
+            (152,  "Icon-iPad-152.png"),
+            (167,  "Icon-iPad-167.png"),
+            (76,   "Icon-iPad-76.png"),
+            (20,   "Icon-iPad-Notification-20.png"),
+            (40,   "Icon-iPad-Notification-40.png"),
+            (29,   "Icon-iPad-Settings-29.png"),
+            (58,   "Icon-iPad-Settings-58.png"),
+            (40,   "Icon-iPad-Spotlight-40.png"),
+            (80,   "Icon-iPad-Spotlight-80.png"),
+            (120,  "Icon-iPhone-120.png"),
+            (180,  "Icon-iPhone-180.png"),
+            (40,   "Icon-iPhone-Notification-40.png"),
+            (60,   "Icon-iPhone-Notification-60.png"),
+            (29,   "Icon-iPhone-Settings-29.png"),
+            (58,   "Icon-iPhone-Settings-58.png"),
+            (87,   "Icon-iPhone-Settings-87.png"),
+            (120,  "Icon-iPhone-Spotlight-120.png"),
+            (80,   "Icon-iPhone-Spotlight-80.png"),
+        };
+        foreach (var (sz, name) in slots)
+        {
+            string dest = System.IO.Path.Combine(iconset, name);
+            RunCmd("/usr/bin/sips", $"-z {sz} {sz} \"{sourceAbs}\" --out \"{dest}\"");
+        }
+        UnityEngine.Debug.Log($"[BuildiOS] ✓ Baked {slots.Length} icon slots into {iconset}");
     }
 
     public static void BuildMac()
@@ -30,17 +89,19 @@ public class CommandLineBuild
         // Force asset pipeline + script compile refresh — batchmode with -quit sometimes
         // skips detecting edited .cs files and ships a stale assembly.
         AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-        UnityEditor.Compilation.CompilationPipeline.RequestScriptCompilation();
+        // NOTE: RequestScriptCompilation() can deadlock in batchmode in some Unity versions.
+        // BuildPipeline.BuildPlayer will trigger compilation as needed.
 
         var scenes = EditorBuildSettings.scenes
             .Where(s => s.enabled)
             .Select(s => s.path)
             .ToArray();
 
+        const string appPath = "/Users/kiloverse/unitykiloverse/Builds/Mac/K1L0.app";
         var options = new BuildPlayerOptions
         {
             scenes = scenes,
-            locationPathName = "/Users/kiloverse/unitykiloverse/Builds/Mac/K1L0.app",
+            locationPathName = appPath,
             target = BuildTarget.StandaloneOSX,
             options = BuildOptions.None
         };
@@ -48,6 +109,133 @@ public class CommandLineBuild
         if (report.summary.result != BuildResult.Succeeded)
         {
             EditorApplication.Exit(1);
+        }
+
+        // Bake the >K1L0 icon into the bundle. Unity's Standalone target doesn't
+        // honor the iPhone-tagged BuildTargetPlatformIcons, so the .app ships
+        // without a PlayerIcon.icns by default. We generate one from the source
+        // PNG via iconutil and drop it into Contents/Resources/.
+        try { GenerateMacAppIcon(appPath); }
+        catch (System.Exception e) { UnityEngine.Debug.LogWarning($"[BuildMac] Icon copy failed: {e.Message}"); }
+
+        // Speech-to-text on macOS requires this usage description for the permission prompt.
+        try { EnsureMacSpeechUsageDescription(appPath); }
+        catch (System.Exception e) { UnityEngine.Debug.LogWarning($"[BuildMac] Plist permission update failed: {e.Message}"); }
+
+        // Updating Info.plist invalidates the bundle signature; re-sign so macOS can launch it.
+        try { ResignMacApp(appPath); }
+        catch (System.Exception e) { UnityEngine.Debug.LogWarning($"[BuildMac] Re-sign failed: {e.Message}"); }
+
+        // Close + relaunch after every successful build so the running app never
+        // lags behind the latest build output.
+        try { RelaunchMacApp(appPath); }
+        catch (System.Exception e) { UnityEngine.Debug.LogWarning($"[BuildMac] Relaunch failed: {e.Message}"); }
+    }
+
+    static void EnsureMacSpeechUsageDescription(string appPath)
+    {
+        string plist = System.IO.Path.Combine(appPath, "Contents/Info.plist");
+        if (!System.IO.File.Exists(plist)) return;
+
+        const string key = "NSSpeechRecognitionUsageDescription";
+        const string value = "K1L0 uses speech recognition to transcribe your voice at music transmitters.";
+
+        // Set if exists, else add.
+        RunCmdAllowFail("/usr/libexec/PlistBuddy", $"-c \"Set :{key} \\\"{value}\\\"\" \"{plist}\"");
+        RunCmdAllowFail("/usr/libexec/PlistBuddy", $"-c \"Add :{key} string \\\"{value}\\\"\" \"{plist}\"");
+    }
+
+    static void ResignMacApp(string appPath)
+    {
+        // Prefer the installed Apple Development identity so Gatekeeper accepts the build.
+        // Fallback to ad-hoc if no identity is available.
+        string identity = "640064C92384F0D2AF983CECF45421DFCE72882B";
+        try
+        {
+            RunCmd("/usr/bin/codesign", $"--force --deep --sign {identity} \"{appPath}\"");
+        }
+        catch
+        {
+            RunCmd("/usr/bin/codesign", $"--force --deep --sign - \"{appPath}\"");
+        }
+    }
+
+    static void RelaunchMacApp(string appPath)
+    {
+        // Best-effort: pkill returns non-zero if the app isn't running.
+        RunCmdAllowFail("/usr/bin/pkill", "-x K1L0");
+        RunCmd("/usr/bin/open", $"\"{appPath}\"");
+        UnityEngine.Debug.Log($"[BuildMac] ✓ Relaunched {appPath}");
+    }
+
+    static void GenerateMacAppIcon(string appPath)
+    {
+        const string sourcePng = "Assets/Icons/KiloverseAppIcon_K.png";
+        string sourceAbs = System.IO.Path.GetFullPath(sourcePng);
+        if (!System.IO.File.Exists(sourceAbs))
+        {
+            UnityEngine.Debug.LogWarning($"[BuildMac] Icon source missing: {sourceAbs}");
+            return;
+        }
+
+        string iconsetDir = "/tmp/k1l0_iconset.iconset";
+        if (System.IO.Directory.Exists(iconsetDir)) System.IO.Directory.Delete(iconsetDir, true);
+        System.IO.Directory.CreateDirectory(iconsetDir);
+
+        // (size, filename) — iconutil expects this exact set.
+        var variants = new (int, string)[] {
+            (16,  "icon_16x16.png"),
+            (32,  "icon_16x16@2x.png"),
+            (32,  "icon_32x32.png"),
+            (64,  "icon_32x32@2x.png"),
+            (128, "icon_128x128.png"),
+            (256, "icon_128x128@2x.png"),
+            (256, "icon_256x256.png"),
+            (512, "icon_256x256@2x.png"),
+            (512, "icon_512x512.png"),
+            (1024,"icon_512x512@2x.png"),
+        };
+        foreach (var (sz, name) in variants)
+        {
+            RunCmd("/usr/bin/sips", $"-z {sz} {sz} \"{sourceAbs}\" --out \"{iconsetDir}/{name}\"");
+        }
+
+        string icnsOut = "/tmp/PlayerIcon.icns";
+        if (System.IO.File.Exists(icnsOut)) System.IO.File.Delete(icnsOut);
+        RunCmd("/usr/bin/iconutil", $"-c icns \"{iconsetDir}\" -o \"{icnsOut}\"");
+
+        string dest = System.IO.Path.Combine(appPath, "Contents/Resources/PlayerIcon.icns");
+        System.IO.File.Copy(icnsOut, dest, overwrite: true);
+        UnityEngine.Debug.Log($"[BuildMac] ✓ Wrote {dest}");
+    }
+
+    static void RunCmd(string bin, string args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(bin, args)
+        {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        using (var p = System.Diagnostics.Process.Start(psi))
+        {
+            p.WaitForExit();
+            if (p.ExitCode != 0)
+                throw new System.Exception($"{bin} {args} exited {p.ExitCode}: {p.StandardError.ReadToEnd()}");
+        }
+    }
+
+    static void RunCmdAllowFail(string bin, string args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(bin, args)
+        {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        using (var p = System.Diagnostics.Process.Start(psi))
+        {
+            p.WaitForExit();
         }
     }
 }

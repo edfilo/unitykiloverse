@@ -68,10 +68,17 @@ public class LoginUI : MonoBehaviour
         // Use shared Modal canvas — no private canvas
         loginCanvas = K1L0CanvasRoot.ModalCanvas.gameObject;
 
-        // Dark background panel — parent to Modal canvas directly (needs full screen coverage)
+        // Dark background panel — parent to Modal canvas directly (full-screen coverage)
         loginPanel = new GameObject("LoginPanel");
         loginPanel.layer = 5; // UI layer
+        // Guard: kill any stale login panels (scene reloads / duplicate LoginUI instances)
+        foreach (Transform child in K1L0CanvasRoot.ModalCanvas.transform)
+        {
+            if (child != null && child.name == "LoginPanel")
+                Destroy(child.gameObject);
+        }
         loginPanel.transform.SetParent(K1L0CanvasRoot.ModalCanvas.transform, false);
+        loginPanel.transform.SetAsLastSibling();
 
         Image bg = loginPanel.AddComponent<Image>();
 
@@ -80,6 +87,7 @@ public class LoginUI : MonoBehaviour
         panelRect.anchorMax = Vector2.one;
         panelRect.sizeDelta = Vector2.zero;
         panelRect.anchoredPosition = Vector2.zero;
+        panelRect.localScale = Vector3.one;
 
         bg.sprite = CreateWhiteSprite();
         bg.color = new Color(0.08f, 0.08f, 0.12f, 1f); // Dark background

@@ -114,6 +114,11 @@ public class BeamTapDetector : MonoBehaviour
 
         Debug.Log($"[BeamTapDetector] Beam {beamIndex} collected! Seed: {seed}, Distance: {distance:F1}m");
 
+        string beamName = BeamNameGenerator.GetNameFromSeed(seed);
+        string beamNoun = NounGenerator.GetFromSeed(seed);
+        if (TransmissionManager.Instance != null)
+            TransmissionManager.Instance.AddItemFromArtifactBeam(seed, beamIndex, beamName, beamNoun);
+
         // Send tapBeam ping
         StartCoroutine(SendTapBeamPing(beamIndex, seed, distance));
 

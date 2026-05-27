@@ -34,6 +34,9 @@ public class K1L0PerfOverlay : MonoBehaviour
     private string _thermalState = "?";
     private Color _thermalColor = Color.white;
 
+    // Pedometer (cached lookup)
+    private PedometerService _pedometer;
+
 #if UNITY_IOS && !UNITY_EDITOR
     [DllImport("__Internal")]
     private static extern int _GetThermalState();
@@ -142,9 +145,19 @@ public class K1L0PerfOverlay : MonoBehaviour
         string fpsHex = ColorUtility.ToHtmlStringRGB(fpsColor);
         string thermHex = ColorUtility.ToHtmlStringRGB(_thermalColor);
 
+        // Steps from PedometerService (-1 means not yet sampled)
+        if (_pedometer == null) _pedometer = Object.FindFirstObjectByType<PedometerService>();
+        string stepsStr = "";
+        if (_pedometer != null)
+        {
+            string s24 = _pedometer.stepsLast24Hours >= 0 ? _pedometer.stepsLast24Hours.ToString("N0") : "...";
+            string s7d = _pedometer.stepsLast7Days   >= 0 ? _pedometer.stepsLast7Days.ToString("N0")   : "...";
+            stepsStr = $"24h:{s24}  7d:{s7d}";
+        }
+
         _text.text =
             $"<#{fpsHex}>{_currentFps:F0} FPS</color> <color=#888>{worstMs:F0}ms</color>\n" +
-            $"<#{thermHex}>{_thermalState}</color> {allocMB}MB\n" +
+            $"<#{thermHex}>{_thermalState}</color> {allocMB}MB  {stepsStr}\n" +
             $"{batStr} {drainStr}%/hr ({totalDrop:F1}% in {totalElapsed / 60f:F0}m)";
     }
 

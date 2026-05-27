@@ -1,5 +1,7 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
 
 using KiloWorld.Rendering;
 using KiloWorld.Rendering.Systems;
@@ -25,7 +27,17 @@ public class KiloFirstPersonController : MonoBehaviour
 
     [Header("Movement Settings")]
     public float moveSpeed = 50f;
+    public float gpsOffMoveSpeed = 8f;
+    public float gpsOffKeyboardSpeedMultiplier = 3f;
+    public float gpsOffMobileSpeedMultiplier = 3f;
     public float rotationSpeed = 120f;
+
+    [Header("Direction Cone")]
+    public bool showDirectionCone = true;
+    public float directionConeDistance = 1.7f;
+    public float directionConeLength = 2.4f;
+    public float directionConeWidth = 1.1f;
+    public Color directionConeColor = new Color(0.25f, 1f, 0.35f, 0.72f);
     
     [Header("Animation Settings")]
     [SerializeField] private string speedParameter = "Speed";
@@ -40,6 +52,7 @@ public class KiloFirstPersonController : MonoBehaviour
     private Vector3 moveDirection = Vector3.zero;
     private float lastLogTime = -5f; // Start at -5 so first log happens immediately
     private bool hasSpeedParameter;
+    private PedometerService pedometerService;
 
     private string GetCardinalDirection(float yaw)
     {
@@ -56,6 +69,8 @@ public class KiloFirstPersonController : MonoBehaviour
     }
     private bool hasWalkingBoolParameter;
     private KiloWorldMasterProfile profile;
+    private GameObject directionConeObject;
+    private Material directionConeMaterial;
 
     private bool isGodViewActive = false; // Toggles between default and God View
     public bool IsGodView => isGodViewActive;
@@ -188,6 +203,7 @@ public class KiloFirstPersonController : MonoBehaviour
         //     Debug.Log($"Camera Position: {cameraTransform.position}");
 
         ReplaceHelmet();
+        EnsureDirectionCone();
     }
 
     void ReplaceHelmet()
@@ -256,8 +272,18 @@ public class KiloFirstPersonController : MonoBehaviour
 
     void Update()
     {
+        HandleDesktopGpsToggle();
         HandleMovement();
         HandleRotation();
+        HandleCameraToggleTap();
+    }
+
+    void HandleDesktopGpsToggle()
+    {
+        if (Application.isMobilePlatform || Keyboard.current == null) return;
+        if (!Keyboard.current.gKey.wasPressedThisFrame) return;
+        GPSLocationController.GPSDisabled = !GPSLocationController.GPSDisabled;
+        Debug.Log($"[Controller] Desktop GPSDisabled toggled → {GPSLocationController.GPSDisabled}");
     }
 
     void LateUpdate()
@@ -293,35 +319,58 @@ public class KiloFirstPersonController : MonoBehaviour
 
         // Start with external input (mobile joystick)
         float vertical = externalInput.y;
+        bool keyboardMovement = false;
 
         // Add Keyboard input if no external input
         if (vertical == 0f && Keyboard.current != null)
         {
             if (Keyboard.current.upArrowKey.isPressed || Keyboard.current.wKey.isPressed)
+            {
                 vertical = 1f;
+                keyboardMovement = true;
+            }
             else if (Keyboard.current.downArrowKey.isPressed || Keyboard.current.sKey.isPressed)
+            {
                 vertical = -1f;
+                keyboardMovement = true;
+            }
         }
 
-        // Calculate movement in meters (respecting moveSpeed)
-        float metersToMove = vertical * moveSpeed * Time.deltaTime;
+        float effectiveMoveSpeed = GPSLocationController.GPSDisabled ? gpsOffMoveSpeed : moveSpeed;
+        if (GPSLocationController.GPSDisabled && keyboardMovement)
+            effectiveMoveSpeed *= gpsOffKeyboardSpeedMultiplier;
+        else if (GPSLocationController.GPSDisabled && Application.isMobilePlatform)
+            effectiveMoveSpeed *= gpsOffMobileSpeedMultiplier;
+        float metersToMove = vertical * effectiveMoveSpeed * Time.deltaTime;
 
         if (metersToMove != 0f)
         {
-            // Calculate movement direction in Unity space (Web Mercator meters)
-            Vector3 movementVector = transform.forward * metersToMove;
+            // Calculate movement direction in Unity space (Web Mercator meters).
+            // GPS-off walking follows the character body heading; top/god camera forward can point sideways.
+            Vector3 moveForward = GPSLocationController.GPSDisabled ? GetPlanarCharacterForward() : transform.forward;
+            Vector3 movementVector = moveForward * metersToMove;
 
             // Convert current GPS to Web Mercator
             var mapCenterLatLng = new LatitudeLongitude(map.MapInformation.Position.Latitude, map.MapInformation.Position.Longitude);
             var playerLatLng = new LatitudeLongitude(playerGPS.Latitude, playerGPS.Longitude);
             var mapCenterMercator = Conversions.LatitudeLongitudeToWebMercator(mapCenterLatLng);
             var playerMercator = Conversions.LatitudeLongitudeToWebMercator(playerLatLng);
+            var previousPlayerMercator = playerMercator;
 
             // Add movement in Mercator space
             playerMercator = new Vector2d(
                 playerMercator.x + movementVector.x,
                 playerMercator.y + movementVector.z
             );
+
+            if (GPSLocationController.GPSDisabled)
+            {
+                double dx = playerMercator.x - previousPlayerMercator.x;
+                double dy = playerMercator.y - previousPlayerMercator.y;
+                float actualWorldMeters = (float)System.Math.Sqrt(dx * dx + dy * dy);
+                if (pedometerService == null) pedometerService = FindFirstObjectByType<PedometerService>();
+                if (pedometerService != null) pedometerService.RegisterVirtualMovementMeters(actualWorldMeters);
+            }
 
             // Convert back to GPS (this is now the source of truth)
             var latLonStruct = Conversions.WebMercatorToLatitudeLongitude(playerMercator);
@@ -371,6 +420,64 @@ public class KiloFirstPersonController : MonoBehaviour
         }
     }
 
+    private Vector3 GetPlanarCharacterForward()
+    {
+        Vector3 forward = transform.forward;
+        forward.y = 0f;
+        if (forward.sqrMagnitude < 0.0001f)
+            forward = Vector3.forward;
+        return forward.normalized;
+    }
+
+    private void EnsureDirectionCone()
+    {
+        if (!showDirectionCone || directionConeObject != null) return;
+
+        directionConeObject = new GameObject("PlayerDirectionCone");
+        directionConeObject.transform.SetParent(transform, false);
+        directionConeObject.transform.localPosition = new Vector3(0f, 0.06f, directionConeDistance);
+        directionConeObject.transform.localRotation = Quaternion.identity;
+        directionConeObject.transform.localScale = Vector3.one;
+
+        var meshFilter = directionConeObject.AddComponent<MeshFilter>();
+        meshFilter.sharedMesh = CreateDirectionConeMesh();
+
+        var meshRenderer = directionConeObject.AddComponent<MeshRenderer>();
+        Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
+        if (shader == null) shader = Shader.Find("Unlit/Color");
+        if (shader == null) shader = Shader.Find("Sprites/Default");
+        directionConeMaterial = new Material(shader);
+        directionConeMaterial.SetColor("_BaseColor", directionConeColor);
+        directionConeMaterial.SetColor("_Color", directionConeColor);
+        directionConeMaterial.renderQueue = 3000;
+        meshRenderer.material = directionConeMaterial;
+        meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        meshRenderer.receiveShadows = false;
+
+        Destroy(directionConeObject.GetComponent<Collider>());
+    }
+
+    private Mesh CreateDirectionConeMesh()
+    {
+        float halfWidth = Mathf.Max(0.05f, directionConeWidth * 0.5f);
+        float length = Mathf.Max(0.1f, directionConeLength);
+        Mesh mesh = new Mesh();
+        mesh.name = "PlayerDirectionConeMesh";
+        mesh.vertices = new[]
+        {
+            new Vector3(-halfWidth, 0f, 0f),
+            new Vector3(halfWidth, 0f, 0f),
+            new Vector3(0f, 0f, length),
+            new Vector3(-halfWidth * 0.35f, 0.01f, 0.15f),
+            new Vector3(halfWidth * 0.35f, 0.01f, 0.15f),
+            new Vector3(0f, 0.01f, length * 0.72f)
+        };
+        mesh.triangles = new[] { 0, 2, 1, 3, 4, 5 };
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+        return mesh;
+    }
+
     void HandleRotation()
     {
         // Start with external input (mobile joystick)
@@ -396,6 +503,78 @@ public class KiloFirstPersonController : MonoBehaviour
         {
             transform.Rotate(Vector3.up, horizontal * rotationSpeed * Time.deltaTime);
         }
+    }
+
+    // Tap/click toggles camera mode (God View <-> First Person).
+    // We keep this here (instead of a full-screen UI overlay) so we don't block
+    // map pan/tap interactions.
+    private Vector2 _tapStartPos;
+    private float _tapStartTime;
+    private bool _tapTracking;
+    private const float TapMaxDurationSeconds = 0.25f;
+    private const float TapMaxMovePixels = 18f;
+
+    void HandleCameraToggleTap()
+    {
+        // Mouse click (mac/editor)
+        if (!Application.isMobilePlatform)
+        {
+            bool leftClick = (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame) || Input.GetMouseButtonDown(0);
+            if (!leftClick) return;
+
+            Vector2 mousePos = Mouse.current != null ? Mouse.current.position.ReadValue() : (Vector2)Input.mousePosition;
+            bool overUi = IsPointerOverUI(mousePos);
+            Debug.Log($"[CameraToggleTap] click pos={mousePos} overUi={overUi} eventSystem={(EventSystem.current != null)}");
+            if (!overUi) ToggleCameraView();
+            return;
+        }
+
+        // Touch tap (iOS/Android)
+        if (Touchscreen.current == null)
+            return;
+
+        var touch = Touchscreen.current.primaryTouch;
+        Vector2 pos = touch.position.ReadValue();
+        bool pressed = touch.press.isPressed;
+
+        if (pressed && !_tapTracking)
+        {
+            if (IsPointerOverUI(pos)) return;
+            _tapTracking = true;
+            _tapStartPos = pos;
+            _tapStartTime = Time.unscaledTime;
+            return;
+        }
+
+        if (!pressed && _tapTracking)
+        {
+            _tapTracking = false;
+            float dt = Time.unscaledTime - _tapStartTime;
+            float dist = Vector2.Distance(pos, _tapStartPos);
+            if (dt <= TapMaxDurationSeconds && dist <= TapMaxMovePixels && !IsPointerOverUI(pos))
+                ToggleCameraView();
+        }
+    }
+
+    bool IsPointerOverUI(Vector2 screenPos)
+    {
+        if (EventSystem.current == null) return false;
+        var ped = new PointerEventData(EventSystem.current) { position = screenPos };
+        var results = new List<RaycastResult>();
+        EventSystem.current.RaycastAll(ped, results);
+        if (results == null || results.Count == 0) return false;
+
+        // Only treat "real" interactive UI as blocking the camera-toggle click.
+        // Some full-screen HUD panels are raycast targets for other reasons; those
+        // should not prevent click-to-toggle from working on desktop.
+        foreach (var r in results)
+        {
+            var go = r.gameObject;
+            if (go == null) continue;
+            if (go.GetComponentInParent<Selectable>() != null) return true;
+            if (go.GetComponentInParent<ScrollRect>() != null) return true;
+        }
+        return false;
     }
 
     private void CacheAnimatorParameters()
@@ -489,5 +668,15 @@ public class KiloFirstPersonController : MonoBehaviour
             cameraTransform.localPosition = targetPos;
             cameraTransform.localRotation = targetRot;
         }
+
+        var cameraComponent = cameraTransform != null ? cameraTransform.GetComponent<Camera>() : Camera.main;
+        if (cameraComponent != null)
+            cameraComponent.farClipPlane = profile.camera.farClipPlane;
+    }
+
+    public void ApplyCameraProfileNow()
+    {
+        currentCameraTransitionTime = 1f;
+        ApplyCameraRotation();
     }
 }

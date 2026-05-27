@@ -51,16 +51,10 @@ public class UILayoutManager : MonoBehaviour
     {
         // Use GameObject.Find by name - much faster than FindObjectsOfType<Canvas> which searches ALL objects
         var pedometerCanvas = GameObject.Find("PedometerCanvas");
-        var storiesCanvas = GameObject.Find("StoriesCanvas");
         if (pedometerCanvas != null)
         {
             canvasGO = pedometerCanvas;
             Debug.Log("[UILayoutManager] Found existing PedometerCanvas, using it");
-        }
-        else if (storiesCanvas != null)
-        {
-            canvasGO = storiesCanvas;
-            Debug.Log("[UILayoutManager] Found existing StoriesCanvas, using it");
         }
 
         if (canvasGO == null)

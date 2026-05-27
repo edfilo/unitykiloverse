@@ -3,6 +3,7 @@ using UnityEngine.Networking;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Firebase.Database;
 
@@ -22,7 +23,6 @@ public class TransmissionManager : MonoBehaviour
     // ── "Pursuit" story (drives HUD label/teaser). Points into storyStates. ─
     private string activeStoryId;
     private string pendingTeaser;
-    private bool isGeneratingShot;
     private bool isPriming;
 
     // ── Per-story state keyed by storyId ──────────────────
@@ -42,6 +42,8 @@ public class TransmissionManager : MonoBehaviour
 
     // signal.id → storyId (so HandleLocationEnter / shot gen knows which story belongs to the signal)
     private readonly Dictionary<string, string> signalStoryMap = new Dictionary<string, string>();
+    // storyId → signal metadata snapshot (so UI doesn't drift when the primary chains)
+    private readonly Dictionary<string, Signal> storySignalSnapshot = new Dictionary<string, Signal>();
 
     // ── Location transmission state ───────────────────────
     private Signal activeLocationSignal;
@@ -53,7 +55,61 @@ public class TransmissionManager : MonoBehaviour
 
     // ── Tracking which signals we've already handled ──────
     private readonly HashSet<string> primedSignals = new HashSet<string>();
+    private readonly HashSet<string> enteredSignals = new HashSet<string>();
     private readonly HashSet<string> shotTriggeredSignals = new HashSet<string>();
+    // Location signals that already have a generated shot — re-entering should
+    // re-show the cached transmission via the existing Firebase listener,
+    // not regenerate another shot. Keyed by locationName (lowercased) so a
+    // re-spawned Sheetz signal (new GUID, same place) reuses the same story.
+    private readonly Dictionary<string, string> locationStoryByName = new Dictionary<string, string>();
+    // Location keys whose prime is currently in flight — prevents a second
+    // Location ENTER (during the prime window) from racing in and creating a
+    // duplicate story for the same place.
+    private readonly HashSet<string> primingLocationKeys = new HashSet<string>();
+
+    // ── Items (Artifacts) — RTDB users/<userId>/items ─────
+    private readonly List<string> cachedItems = new List<string>();
+    private DatabaseReference itemsRef;
+    private EventHandler<ValueChangedEventArgs> itemsHandler;
+    private string itemsUserId;
+
+    static string LocationKey(Signal sig)
+    {
+        if (sig == null) return "";
+        // Only POI-bound signals get a name-based cache key. Pursuit/secondary
+        // beams may carry the "INCOMING TRANSMISSION" HUD placeholder which
+        // would otherwise collide every ambient beam onto one cache slot.
+        if (sig.role != SignalRole.LocationTransmission) return sig.id;
+        return string.IsNullOrEmpty(sig.locationName) ? sig.id : sig.locationName.Trim().ToLowerInvariant();
+    }
+
+    static string LocationDropKey(Signal sig)
+    {
+        string raw = LocationKey(sig);
+        if (string.IsNullOrWhiteSpace(raw)) raw = sig != null ? sig.id : "unknown";
+        var sb = new StringBuilder(raw.Length);
+        for (int i = 0; i < raw.Length; i++)
+        {
+            char c = raw[i];
+            if (char.IsLetterOrDigit(c) || c == '_' || c == '-') sb.Append(char.ToLowerInvariant(c));
+            else if (char.IsWhiteSpace(c)) sb.Append('_');
+        }
+        return sb.Length > 0 ? sb.ToString() : "unknown";
+    }
+    // Stories whose generate-shot request is queued, waiting for prime to
+    // finish in RTDB. The Firebase listener fires generate-shot the instant
+    // primeStatus → ready (observed via state.character being set).
+    // Value carries the location context so the deferred call still includes it.
+    private struct PendingShot
+    {
+        public string signalId;
+        public string locationName;
+        public string locationCategory;
+        public string transmissionType; // "location" | "artifact" | "transmitter"
+        public string artifact;         // optional override (transmitter flow)
+        public string userAction;       // optional user instruction (transmitter flow)
+    }
+    private readonly Dictionary<string, PendingShot> pendingShotForStory = new Dictionary<string, PendingShot>();
 
     // ── Events (for UI) ───────────────────────────────────
     public event Action<TransmissionData> OnTransmissionReady;
@@ -112,12 +168,15 @@ public class TransmissionManager : MonoBehaviour
         director.OnSignalStateChanged += HandleSignalStateChanged;
         director.OnPrimaryChained += HandlePrimaryChained;
         director.OnLocationEnter += HandleLocationEnter;
+        director.OnSignalRemoved += HandleSignalRemoved;
 
         Debug.Log("[TransmissionManager] Subscribed to SignalDirectorV2 events");
 
-        // Check if a primary already exists (spawned before we subscribed)
-        StartCoroutine(CheckExistingPrimary());
-        StartCoroutine(LocationTransmissionLoop());
+        // Memo: do not create/prime stories until the user ENTERs a beam (or hits SEND in transmitter UI).
+        // Disabled: location signals are now synced directly by SignalDirectorV2 from TransmitterScanner.
+
+        BeginItemsListener();
+        CleanupUnenteredBeamsOnInit();
     }
 
     IEnumerator CheckExistingPrimary()
@@ -154,25 +213,194 @@ public class TransmissionManager : MonoBehaviour
     void OnDestroy()
     {
         StopShotListener();
+        StopItemsListener();
         if (SignalDirectorV2.Instance != null)
         {
             SignalDirectorV2.Instance.OnSignalSpawned -= HandleSignalSpawned;
             SignalDirectorV2.Instance.OnSignalStateChanged -= HandleSignalStateChanged;
             SignalDirectorV2.Instance.OnPrimaryChained -= HandlePrimaryChained;
             SignalDirectorV2.Instance.OnLocationEnter -= HandleLocationEnter;
+            SignalDirectorV2.Instance.OnSignalRemoved -= HandleSignalRemoved;
         }
+    }
+
+    void BeginItemsListener()
+    {
+        FirebaseBootstrap.WhenReady(() =>
+        {
+            string uid = GetUserId();
+            if (string.IsNullOrWhiteSpace(uid)) return;
+            string safeUid = SanitizeUserId(uid);
+            if (itemsRef != null && itemsUserId == safeUid) return;
+            if (itemsRef != null) StopItemsListener();
+
+            string path = $"users/{safeUid}/items";
+            var db = FirebaseDatabase.DefaultInstance;
+            itemsRef = db.GetReference(path);
+            itemsUserId = safeUid;
+            itemsHandler = (sender, args) =>
+            {
+                if (args.DatabaseError != null) return;
+                if (args.Snapshot == null) return;
+
+                cachedItems.Clear();
+                foreach (var child in args.Snapshot.Children)
+                {
+                    if (child == null) continue;
+                    string a = child.Child("artifact")?.Value?.ToString();
+                    if (!string.IsNullOrWhiteSpace(a)) cachedItems.Add(a.Trim());
+                }
+
+                cachedItems.Sort(StringComparer.OrdinalIgnoreCase);
+                Debug.Log($"[TransmissionManager] Items updated: {cachedItems.Count}");
+
+                // If transmitter modal is open, refresh its inventory list.
+                var modal = TransmitterEnterModal.Instance;
+                if (modal != null) modal.RefreshInventory();
+            };
+            itemsRef.ValueChanged += itemsHandler;
+        });
+    }
+
+    void CleanupUnenteredBeamsOnInit()
+    {
+        FirebaseBootstrap.WhenReady(() =>
+        {
+            string uid = GetUserId();
+            if (string.IsNullOrWhiteSpace(uid)) return;
+
+            var db = FirebaseDatabase.DefaultInstance;
+            string path = $"users/{SanitizeUserId(uid)}/beams";
+            var beamsRef = db.GetReference(path);
+
+            beamsRef.GetValueAsync().ContinueWith(task =>
+            {
+                if (task == null || !task.IsCompletedSuccessfully) return;
+                var snap = task.Result;
+                if (snap == null || !snap.Exists) return;
+
+                foreach (var child in snap.Children)
+                {
+                    if (child == null) continue;
+                    bool entered = false;
+                    try
+                    {
+                        var ev = child.Child("entered")?.Value;
+                        if (ev is bool b) entered = b;
+                        else if (ev != null) bool.TryParse(ev.ToString(), out entered);
+                    }
+                    catch { /* ignore */ }
+
+                    if (!entered)
+                        beamsRef.Child(child.Key).RemoveValueAsync();
+                }
+            });
+        });
+    }
+
+    void StopItemsListener()
+    {
+        if (itemsRef != null && itemsHandler != null)
+            itemsRef.ValueChanged -= itemsHandler;
+        itemsRef = null;
+        itemsHandler = null;
+        itemsUserId = null;
+    }
+
+    // ── Beams (Live pool) — RTDB users/<userId>/beams/<signalId> ─────
+
+    void UpsertBeamRecord(Signal sig, string storyId, bool entered)
+    {
+        if (sig == null) return;
+        string uid = GetUserId();
+        if (string.IsNullOrWhiteSpace(uid)) return;
+
+        FirebaseBootstrap.WhenReady(() =>
+        {
+            var db = FirebaseDatabase.DefaultInstance;
+            string path = $"users/{SanitizeUserId(uid)}/beams/{sig.id}";
+            var beamRef = db.GetReference(path);
+
+            string t = (sig.transmissionType == TransmissionType.Location) ? "location"
+                : (sig.transmissionType == TransmissionType.Artifact ? "artifact" : "transmitter");
+
+            var payload = new Dictionary<string, object>
+            {
+                { "id", sig.id },
+                { "type", t },
+                { "lat", sig.latitude },
+                { "lng", sig.longitude },
+                { "externalKey", sig.externalKey ?? "" },
+                { "locationName", sig.locationName ?? "" },
+                { "locationCategory", sig.locationCategory ?? "" },
+                { "artifact", sig.specialItem ?? "" },
+                { "entered", entered },
+                { "storyId", storyId ?? "" },
+                { "updatedAt", ServerValue.Timestamp }
+            };
+
+            // Create createdAt only once (best-effort).
+            beamRef.Child("createdAt").GetValueAsync().ContinueWith(task =>
+            {
+                if (task == null || !task.IsCompletedSuccessfully) return;
+                if (task.Result == null || !task.Result.Exists)
+                    beamRef.Child("createdAt").SetValueAsync(ServerValue.Timestamp);
+                beamRef.UpdateChildrenAsync(payload);
+            });
+        });
+    }
+
+    void DeleteBeamRecord(string signalId)
+    {
+        if (string.IsNullOrWhiteSpace(signalId)) return;
+        string uid = GetUserId();
+        if (string.IsNullOrWhiteSpace(uid)) return;
+
+        FirebaseBootstrap.WhenReady(() =>
+        {
+            var db = FirebaseDatabase.DefaultInstance;
+            string path = $"users/{SanitizeUserId(uid)}/beams/{signalId}";
+            db.GetReference(path).RemoveValueAsync();
+        });
+    }
+
+    void AttachStoryToBeamRecord(string signalId, string storyId)
+    {
+        if (string.IsNullOrWhiteSpace(signalId)) return;
+        if (string.IsNullOrWhiteSpace(storyId)) return;
+        string uid = GetUserId();
+        if (string.IsNullOrWhiteSpace(uid)) return;
+
+        FirebaseBootstrap.WhenReady(() =>
+        {
+            var db = FirebaseDatabase.DefaultInstance;
+            string path = $"users/{SanitizeUserId(uid)}/beams/{signalId}";
+            var beamRef = db.GetReference(path);
+            var payload = new Dictionary<string, object>
+            {
+                { "storyId", storyId },
+                { "entered", true },
+                { "updatedAt", ServerValue.Timestamp }
+            };
+            beamRef.UpdateChildrenAsync(payload);
+        });
     }
 
     // ── Signal event handlers ─────────────────────────────
 
     void HandleSignalSpawned(Signal sig)
     {
-        if (sig.role != SignalRole.PrimaryPursuit) return;
-        if (primedSignals.Contains(sig.id)) return;
-        primedSignals.Add(sig.id);
+        if (sig == null) return;
 
-        // Prime a new story for this primary signal
-        StartCoroutine(PrimeStoryCoroutine(sig));
+        // Every visible beam is part of the live pool — persist to RTDB with no storyId.
+        UpsertBeamRecord(sig, storyId: null, entered: false);
+    }
+
+    void HandleSignalRemoved(Signal sig)
+    {
+        if (sig == null) return;
+        if (enteredSignals.Contains(sig.id)) return; // keep entered beams
+        DeleteBeamRecord(sig.id);
     }
 
     void HandleSignalStateChanged(Signal sig)
@@ -231,14 +459,21 @@ public class TransmissionManager : MonoBehaviour
         isPriming = true;
 
         var (lat, lng) = GetPlayerGPS();
+        // Only real POI signals (LocationTransmission) carry a real locationName.
+        // Pursuit/Secondary/Distant beams may have a placeholder ("INCOMING
+        // TRANSMISSION") stamped by EnsureLocationMetadata for HUD display —
+        // never let that placeholder reach the prompt.
+        bool isLocationSignal = sig != null && sig.role == SignalRole.LocationTransmission;
         var body = JsonUtility.ToJson(new PrimeRequest
         {
             userId = GetUserId(),
             location = $"{lat:F4},{lng:F4}",
-            coordinates = new Coords { latitude = lat, longitude = lng }
+            coordinates = new Coords { latitude = lat, longitude = lng },
+            locationName = isLocationSignal ? sig.locationName : null,
+            locationCategory = isLocationSignal ? sig.locationCategory : null
         });
 
-        Debug.Log($"[TransmissionManager] Priming story for signal {sig.id}");
+        Debug.Log($"[TransmissionManager] Priming story for signal {sig.id} (loc='{(isLocationSignal ? sig.locationName : "")}', role={sig?.role})");
 
         string responseText = null;
         bool success = false;
@@ -258,6 +493,7 @@ public class TransmissionManager : MonoBehaviour
             {
                 activeStoryId = resp.storyId;
                 signalStoryMap[sig.id] = resp.storyId;
+                storySignalSnapshot[resp.storyId] = sig;
                 if (!storyStates.ContainsKey(resp.storyId))
                     storyStates[resp.storyId] = new StoryState { storyId = resp.storyId };
                 Debug.Log($"[TransmissionManager] Story shell primed: {activeStoryId} (awaiting character via Firebase)");
@@ -282,26 +518,68 @@ public class TransmissionManager : MonoBehaviour
 
     IEnumerator GenerateShotCoroutine(Signal sig)
     {
-        if (isGeneratingShot) yield break;
-
         // Prefer the signal's own story; fall back to the current pursuit story.
         string storyId = null;
-        if (sig != null) signalStoryMap.TryGetValue(sig.id, out storyId);
+        bool sigOwnsStory = false;
+        if (sig != null && signalStoryMap.TryGetValue(sig.id, out storyId) && !string.IsNullOrEmpty(storyId))
+            sigOwnsStory = true;
         if (string.IsNullOrEmpty(storyId)) storyId = activeStoryId;
         if (string.IsNullOrEmpty(storyId)) yield break;
 
-        isGeneratingShot = true;
+        // Only inherit the signal's location context when:
+        //  (a) the signal *owns* this story (vs. falling back to active ambient), AND
+        //  (b) the signal is a real POI (LocationTransmission), not a pursuit beam
+        //      stamped with the "INCOMING TRANSMISSION" placeholder.
+        // Ambient beams stay independent of nearby POIs no matter what.
+        bool sigIsRealLocation = sig != null && sig.role == SignalRole.LocationTransmission;
+        var pending = new PendingShot
+        {
+            signalId = sig != null ? sig.id : null,
+            locationName = sigOwnsStory && sigIsRealLocation ? sig.locationName : null,
+            locationCategory = sigOwnsStory && sigIsRealLocation ? sig.locationCategory : null,
+            transmissionType = sig != null
+                ? sig.transmissionType.ToString().ToLowerInvariant()
+                : "artifact",
+            artifact = sig != null ? sig.specialItem : null,
+            userAction = null
+        };
 
+        // Make sure the listener is open so we observe prime completion.
+        BeginStoryListener(storyId);
+
+        // If prime is already ready (character known), fire immediately.
+        // Otherwise queue — the Firebase listener will fire when prime lands.
+        if (storyStates.TryGetValue(storyId, out var state) && !string.IsNullOrEmpty(state.character))
+        {
+            yield return FireGenerateShot(storyId, pending);
+        }
+        else
+        {
+            pendingShotForStory[storyId] = pending;
+            Debug.Log($"[TransmissionManager] Queued generate-shot for {storyId} (loc='{pending.locationName}') — waiting for prime via RTDB");
+        }
+    }
+
+    IEnumerator FireGenerateShot(string storyId, PendingShot pending)
+    {
         var (lat, lng) = GetPlayerGPS();
+        if (!string.IsNullOrEmpty(pending.signalId))
+            AttachStoryToBeamRecord(pending.signalId, storyId);
+
         var body = JsonUtility.ToJson(new GenerateShotRequest
         {
             userId = GetUserId(),
             storyId = storyId,
             location = $"{lat:F4},{lng:F4}",
-            coordinates = new Coords { latitude = lat, longitude = lng }
+            coordinates = new Coords { latitude = lat, longitude = lng },
+            locationName = pending.locationName,
+            locationCategory = pending.locationCategory,
+            transmissionType = string.IsNullOrEmpty(pending.transmissionType) ? "artifact" : pending.transmissionType,
+            artifact = string.IsNullOrEmpty(pending.artifact) ? null : pending.artifact,
+            userAction = string.IsNullOrEmpty(pending.userAction) ? null : pending.userAction
         });
 
-        Debug.Log($"[TransmissionManager] Generating shot for {storyId}, signal {(sig != null ? sig.id : "null")}");
+        Debug.Log($"[TransmissionManager] Generating shot for {storyId} (loc='{pending.locationName}')");
 
         bool shotSuccess = false;
         if (APIManager.Instance != null)
@@ -313,14 +591,123 @@ public class TransmissionManager : MonoBehaviour
 
         if (!shotSuccess)
         {
-            Debug.LogWarning("[TransmissionManager] Generate-shot failed");
-            isGeneratingShot = false;
-            yield break;
+            Debug.LogWarning($"[TransmissionManager] Generate-shot failed for {storyId}");
+        }
+    }
+
+    IEnumerator TransmitAndGenerateForTransmitter(Signal sig, string artifact, string userAction)
+    {
+        if (isPriming) yield break;
+        isPriming = true;
+
+        var (lat, lng) = GetPlayerGPS();
+        var (placeName, placeCategory) = GetNearbyPlaceContext(lat, lng);
+        if (sig != null && !string.IsNullOrWhiteSpace(sig.locationName))
+        {
+            placeName = sig.locationName.Trim();
+            if (!string.IsNullOrWhiteSpace(sig.locationCategory))
+                placeCategory = sig.locationCategory.Trim();
+        }
+        var body = JsonUtility.ToJson(new PrimeTransmitterRequest
+        {
+            userId = GetUserId(),
+            location = $"{lat:F4},{lng:F4}",
+            coordinates = new Coords { latitude = lat, longitude = lng },
+            locationName = placeName,
+            locationCategory = placeCategory,
+            transmissionType = "transmitter",
+            artifact = artifact,
+            userAction = userAction
+        });
+
+        string responseText = null;
+        bool success = false;
+        if (APIManager.Instance != null)
+        {
+            yield return APIManager.Instance.Post("/story/transmit", body, (ok, resp) => {
+                success = ok;
+                responseText = resp;
+            });
         }
 
-        // Ensure a listener exists for this specific story (idempotent).
-        BeginStoryListener(storyId);
-        isGeneratingShot = false;
+        if (success && !string.IsNullOrEmpty(responseText))
+        {
+            var resp = JsonUtility.FromJson<PrimeResponse>(responseText);
+            if (resp.ok && !string.IsNullOrEmpty(resp.storyId))
+            {
+                activeStoryId = resp.storyId;
+                signalStoryMap[sig.id] = resp.storyId;
+                storySignalSnapshot[resp.storyId] = sig;
+                if (!storyStates.ContainsKey(resp.storyId))
+                    storyStates[resp.storyId] = new StoryState { storyId = resp.storyId };
+
+                sig.specialItem = artifact;
+
+                var frame = TransmissionFrame.Instance;
+                if (frame != null)
+                    frame.ShowLoading("TRANSMISSION", "ambient", resp.storyId);
+
+                BeginStoryListener(resp.storyId);
+
+                UpdatePursuitHUD("...", null);
+            }
+            else
+            {
+                Debug.LogWarning($"[TransmissionManager] Transmitter transmit failed: {responseText}");
+            }
+        }
+        else
+        {
+            Debug.LogWarning($"[TransmissionManager] Transmitter transmit request failed: {responseText}");
+        }
+
+        isPriming = false;
+    }
+
+    // If the player is effectively "at" a POI location beam while transmitting, include it as context.
+    private (string name, string category) GetNearbyPlaceContext(double playerLat, double playerLng)
+    {
+        var dir = SignalDirectorV2.Instance;
+        if (dir == null) return (null, null);
+
+        string bestName = null;
+        string bestCat = null;
+        double bestDist = double.MaxValue;
+
+        var list = dir.ActiveSignals;
+        for (int i = 0; i < list.Count; i++)
+        {
+            var s = list[i];
+            if (s == null) continue;
+            if (s.role != SignalRole.LocationTransmission) continue;
+            if (string.IsNullOrWhiteSpace(s.locationName)) continue;
+            if (!double.IsFinite(s.latitude) || !double.IsFinite(s.longitude)) continue;
+
+            double d = HaversineMeters(playerLat, playerLng, s.latitude, s.longitude);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                bestName = s.locationName;
+                bestCat = s.locationCategory;
+            }
+        }
+
+        // Only attach place context when you're truly "at" the place (prevents random nearby POIs leaking in).
+        if (bestDist <= 25.0) return (bestName, bestCat);
+        return (null, null);
+    }
+
+    private static double HaversineMeters(double lat1, double lon1, double lat2, double lon2)
+    {
+        const double R = 6371000.0;
+        double dLat = (lat2 - lat1) * System.Math.PI / 180.0;
+        double dLon = (lon2 - lon1) * System.Math.PI / 180.0;
+        double a =
+            System.Math.Sin(dLat / 2) * System.Math.Sin(dLat / 2) +
+            System.Math.Cos(lat1 * System.Math.PI / 180.0) * System.Math.Cos(lat2 * System.Math.PI / 180.0) *
+            System.Math.Sin(dLon / 2) * System.Math.Sin(dLon / 2);
+        double c = 2 * System.Math.Atan2(System.Math.Sqrt(a), System.Math.Sqrt(1 - a));
+        return R * c;
     }
 
     // ── Firebase RTDB listener (replaces old polling) ────────────────
@@ -448,6 +835,14 @@ public class TransmissionManager : MonoBehaviour
                 OnStoryPrimed?.Invoke(state.character, state.premise);
                 UpdatePursuitHUD(state.character, pendingTeaser);
             }
+
+            // Prime is now ready — flush any queued generate-shot for this story.
+            if (pendingShotForStory.TryGetValue(storyId, out var queued))
+            {
+                pendingShotForStory.Remove(storyId);
+                Debug.Log($"[TransmissionManager] Prime ready, firing queued generate-shot for {storyId} (loc='{queued.locationName}')");
+                StartCoroutine(FireGenerateShot(storyId, queued));
+            }
         }
 
         // Deliver any newly-ready shots in order for this story.
@@ -463,7 +858,7 @@ public class TransmissionManager : MonoBehaviour
                 state.deliveredShotCount++;
                 state.deliveredVideoUrl[shot.shotNumber] = shot.videoUrl ?? "";
 
-                Debug.Log($"[TransmissionManager] Transmission #{shot.shotNumber} visible ({storyId}, status={shot.status}): {shot.dialog}");
+                Debug.Log($"[TransmissionManager] Transmission #{shot.shotNumber} visible ({storyId}, status={shot.status})");
 
                 DispatchTransmission(storyId, state, shot);
             }
@@ -509,24 +904,47 @@ public class TransmissionManager : MonoBehaviour
 
     void DispatchTransmission(string storyId, StoryState state, ShotStatus shot)
     {
-        var boundSignal = activeLocationSignal
-            ?? SignalDirectorV2.Instance?.GetCurrentPrimary();
+        var boundSignal = activeLocationSignal;
+        if (boundSignal == null)
+        {
+            if (!string.IsNullOrEmpty(storyId) && storySignalSnapshot.TryGetValue(storyId, out var snap) && snap != null)
+                boundSignal = snap;
+            else
+                boundSignal = SignalDirectorV2.Instance?.GetCurrentPrimary();
+        }
+        string nextTeaser = shot.nextTeaser;
+        if (boundSignal != null &&
+            boundSignal.transmissionType == TransmissionType.Transmitter &&
+            !string.IsNullOrEmpty(nextTeaser))
+        {
+            // UI copy tweak: "Transmitter Nearby" → "Musical Transmitter Nearby"
+            // (only for transmitter-type pursuit beams)
+            const string prefix = "Transmitter Nearby";
+            string trimmed = nextTeaser.TrimStart();
+            if (trimmed.StartsWith(prefix, System.StringComparison.OrdinalIgnoreCase))
+            {
+                nextTeaser = "Musical " + trimmed;
+            }
+        }
         var td = new TransmissionData
         {
             storyId = storyId,
             shotId = shot.id,
             shotNumber = shot.shotNumber,
             transmissionType = boundSignal != null
-                ? (SignalDirectorV2.IsLocationTransmission(boundSignal) ? "location" : "ambient")
+                ? boundSignal.transmissionType.ToString().ToLowerInvariant()
                 : null,
             character = state.character,
             specialItem = boundSignal != null ? boundSignal.specialItem : state.objectName,
-            nextTeaser = shot.nextTeaser,
-            dialog = shot.dialog,
+            nextTeaser = nextTeaser,
             latitude = boundSignal != null ? boundSignal.latitude : 0.0,
             longitude = boundSignal != null ? boundSignal.longitude : 0.0,
-            locationName = activeLocationSignal != null ? activeLocationSignal.locationName : null,
-            locationCategory = activeLocationSignal != null ? activeLocationSignal.locationCategory : null,
+            // Only stamp a concrete POI location when this transmission is explicitly a
+            // LocationTransmission. Pursuit/transmitter/artifact stories should not
+            // look like they occurred "at" the nearest coffee shop unless the user
+            // actually entered that POI beam.
+            locationName = (boundSignal != null && boundSignal.role == SignalRole.LocationTransmission) ? boundSignal.locationName : null,
+            locationCategory = (boundSignal != null && boundSignal.role == SignalRole.LocationTransmission) ? boundSignal.locationCategory : null,
             imageUrl = shot.imageUrl,
             audioUrl = shot.audioUrl,
             videoUrl = shot.videoUrl,
@@ -540,12 +958,12 @@ public class TransmissionManager : MonoBehaviour
         // Write the LLM-authored next-teaser onto the bound location signal
         // so UpdateLocationHUD renders it verbatim.
         if (activeLocationSignal != null)
-            activeLocationSignal.teaser = shot.nextTeaser;
+            activeLocationSignal.teaser = nextTeaser;
 
         // Pursuit HUD only tracks the active pursuit story.
         if (storyId == activeStoryId)
         {
-            pendingTeaser = shot.nextTeaser;
+            pendingTeaser = nextTeaser;
             OnTeaserUpdated?.Invoke(pendingTeaser);
             UpdatePursuitHUD(state.character, pendingTeaser);
         }
@@ -634,93 +1052,171 @@ public class TransmissionManager : MonoBehaviour
         // naturally rotate to the next-nearest place.
         candidates.Sort((a, b) => a.Distance.CompareTo(b.Distance));
         var pick = nearestClose ?? candidates[0];
-        string specialItem = SignalDirectorV2.PickSpecialItem();
-        string teaser = GenerateLocationTeaser(pick.Name, pick.MainCategoryGroup, specialItem);
 
         var sig = director.SpawnLocationTransmission(
             pick.GeoLocation.x, pick.GeoLocation.y,
-            pick.Name, pick.MainCategoryGroup, teaser, specialItem);
+            pick.Name, pick.MainCategoryGroup, "", "");
 
         if (sig != null)
         {
             activeLocationSignal = sig;
             locationSpawnTime = Time.time;
-            Debug.Log($"[TransmissionManager] Location transmission: '{pick.Name}' ({pick.MainCategoryGroup}) at {pick.Distance:F0}m — {teaser}");
-
-            // Proactively prime + generate so the slide is ready by the time the user arrives.
-            StartCoroutine(PrimeAndGenerateForLocation(sig));
+            Debug.Log($"[TransmissionManager] Location transmission: '{pick.Name}' ({pick.MainCategoryGroup}) at {pick.Distance:F0}m");
+            // Memo: do not prime/generate stories until the user explicitly ENTERs.
+            // Location ENTER triggers PrimeAndGenerateForLocation(sig).
         }
-    }
-
-    // {0} = place name, {1} = special item
-    static string GenerateLocationTeaser(string name, string category, string item)
-    {
-        string[] barTeasers = {
-            "WALK TO {0}. a {1} waits at the bar",
-            "GO. the bartender at {0} has a {1} with your name",
-            "MOVE. one {1} per walker. {0} pours nothing for sitters",
-            "WALK TO {0}. a {1} is on the third stool from the door",
-            "GO NOW. {0} only hands the {1} to people who walked"
-        };
-        string[] coffeeTeasers = {
-            "WALK TO {0}. a fresh {1} is steaming on the counter",
-            "GO. the barista at {0} set a {1} aside for you",
-            "MOVE. {0} brewed your {1} — it won't wait",
-            "WALK. a {1} sits next to a humming lightbulb at {0}",
-            "GO TO {0}. a {1} is yours if you arrive on foot"
-        };
-        string[] foodTeasers = {
-            "WALK TO {0}. a {1} is plated and waiting",
-            "GO. the kitchen at {0} prepped a {1} just for walkers",
-            "MOVE. {0} is holding a {1} at the counter — keep moving",
-            "WALK NOW. a {1} with your table number is at {0}",
-            "GO TO {0}. the {1} is yours. stand still and it's someone else's"
-        };
-        string[] defaultTeasers = {
-            "WALK TO {0}. a {1} will be handed to you at the door",
-            "GO. the {1} at {0} is real, but only if you walk",
-            "MOVE. {0} is the address. the {1} is the reward",
-            "WALK NOW. stand still and the {1} at {0} gets reassigned",
-            "GO TO {0}. a {1} is sitting under a flickering light"
-        };
-
-        string[] pool;
-        switch (category)
-        {
-            case "bar": pool = barTeasers; break;
-            case "coffee": pool = coffeeTeasers; break;
-            case "food": pool = foodTeasers; break;
-            default: pool = defaultTeasers; break;
-        }
-
-        string safeName = string.IsNullOrEmpty(name) ? "this place" : name;
-        string safeItem = string.IsNullOrEmpty(item) ? "mystery drop" : item;
-        return string.Format(pool[UnityEngine.Random.Range(0, pool.Length)], safeName, safeItem);
     }
 
     void HandleLocationEnter(Signal sig)
     {
         Debug.Log($"[TransmissionManager] Location ENTER: '{sig.locationName}'");
+        if (sig != null)
+        {
+            enteredSignals.Add(sig.id);
+            UpsertBeamRecord(sig, storyId: null, entered: true);
+        }
 
-        // If we have an active story, generate a shot at this location
+        string locKey = LocationKey(sig);
+
+        // Cached by location name — re-entering (even via a fresh signal
+        // GUID, or a duplicate POI registration) replays the existing story
+        // instead of generating a new shot.
+        if (!string.IsNullOrEmpty(locKey) && locationStoryByName.TryGetValue(locKey, out var cachedSid) && !string.IsNullOrEmpty(cachedSid))
+        {
+            Debug.Log($"[TransmissionManager] Location ENTER cached: '{locKey}' → {cachedSid}");
+            signalStoryMap[sig.id] = cachedSid;
+            BeginStoryListener(cachedSid);
+            StartCoroutine(FetchAndDeliver(cachedSid));
+            return;
+        }
+
+        // Race guard: if a prime is already in flight for this location key,
+        // a second ENTER shouldn't kick off another. Drop and let the first
+        // prime populate the cache; subsequent enters will hit the cache.
+        if (!string.IsNullOrEmpty(locKey) && primingLocationKeys.Contains(locKey))
+        {
+            Debug.Log($"[TransmissionManager] Location ENTER while prime in flight for '{locKey}' — dropping duplicate");
+            return;
+        }
+
+        // If we have an active story, attach the location to it.
         if (!string.IsNullOrEmpty(activeStoryId))
         {
+            if (!string.IsNullOrEmpty(locKey)) locationStoryByName[locKey] = activeStoryId;
+            // If a story was already primed (or even has an image ready),
+            // entering the location should immediately surface whatever exists.
+            BeginStoryListener(activeStoryId);
+            StartCoroutine(FetchAndDeliver(activeStoryId));
             StartCoroutine(GenerateShotCoroutine(sig));
+            return;
         }
-        else
-        {
-            // Prime a story first, then generate a shot
-            StartCoroutine(PrimeAndGenerateForLocation(sig));
-        }
+
+        // Claim the key BEFORE the prime kicks off so any concurrent ENTER
+        // (or POI-scanner duplicate signal) sees us mid-prime and bails.
+        if (!string.IsNullOrEmpty(locKey)) primingLocationKeys.Add(locKey);
+        StartCoroutine(PrimeAndGenerateForLocation(sig));
     }
 
     IEnumerator PrimeAndGenerateForLocation(Signal sig)
     {
-        yield return PrimeStoryCoroutine(sig);
-        if (!string.IsNullOrEmpty(activeStoryId))
+        string locKey = LocationKey(sig);
+        try
         {
-            yield return GenerateShotCoroutine(sig);
+            yield return PrimeStoryCoroutine(sig);
+            if (!string.IsNullOrEmpty(activeStoryId))
+            {
+                if (!string.IsNullOrEmpty(locKey)) locationStoryByName[locKey] = activeStoryId;
+                yield return GenerateShotCoroutine(sig);
+            }
         }
+        finally
+        {
+            if (!string.IsNullOrEmpty(locKey)) primingLocationKeys.Remove(locKey);
+        }
+    }
+
+    IEnumerator PrimeAndGenerateForLocationExchange(Signal sig, string artifact, string userAction)
+    {
+        if (sig == null) yield break;
+        if (isPriming) yield break;
+        isPriming = true;
+
+        string locKey = LocationKey(sig);
+        if (!string.IsNullOrEmpty(locKey)) primingLocationKeys.Add(locKey);
+
+        var (lat, lng) = GetPlayerGPS();
+        var body = JsonUtility.ToJson(new PrimeRequest
+        {
+            userId = GetUserId(),
+            location = $"{lat:F4},{lng:F4}",
+            coordinates = new Coords { latitude = lat, longitude = lng },
+            locationName = sig.locationName,
+            locationCategory = sig.locationCategory,
+            transmissionType = "location",
+            artifact = artifact,
+            userAction = userAction
+        });
+
+        string responseText = null;
+        bool success = false;
+        Debug.Log($"[TransmissionManager] Priming location exchange loc='{sig.locationName}' item='{artifact}'");
+
+        if (APIManager.Instance != null)
+        {
+            yield return APIManager.Instance.Post("/story/prime", body, (ok, resp) =>
+            {
+                success = ok;
+                responseText = resp;
+            });
+        }
+
+        if (success && !string.IsNullOrEmpty(responseText))
+        {
+            var resp = JsonUtility.FromJson<PrimeResponse>(responseText);
+            if (resp.ok && !string.IsNullOrEmpty(resp.storyId))
+            {
+                activeStoryId = resp.storyId;
+                signalStoryMap[sig.id] = resp.storyId;
+                storySignalSnapshot[resp.storyId] = sig;
+                if (!string.IsNullOrEmpty(locKey)) locationStoryByName[locKey] = resp.storyId;
+                if (!storyStates.ContainsKey(resp.storyId))
+                    storyStates[resp.storyId] = new StoryState { storyId = resp.storyId };
+
+                var pending = new PendingShot
+                {
+                    signalId = sig.id,
+                    locationName = sig.locationName,
+                    locationCategory = sig.locationCategory,
+                    transmissionType = "location",
+                    artifact = artifact,
+                    userAction = userAction
+                };
+
+                BeginStoryListener(resp.storyId);
+                if (storyStates.TryGetValue(resp.storyId, out var state) && !string.IsNullOrEmpty(state.character))
+                {
+                    yield return FireGenerateShot(resp.storyId, pending);
+                }
+                else
+                {
+                    pendingShotForStory[resp.storyId] = pending;
+                    Debug.Log($"[TransmissionManager] Queued location exchange shot for {resp.storyId} (loc='{sig.locationName}', item='{artifact}')");
+                }
+
+                UpdatePursuitHUD("...", null);
+            }
+            else
+            {
+                Debug.LogWarning($"[TransmissionManager] Location exchange prime failed: {responseText}");
+            }
+        }
+        else
+        {
+            Debug.LogWarning($"[TransmissionManager] Location exchange prime request failed: {responseText}");
+        }
+
+        if (!string.IsNullOrEmpty(locKey)) primingLocationKeys.Remove(locKey);
+        isPriming = false;
     }
 
     // ── HUD integration ─────────────────────────────────────
@@ -731,7 +1227,11 @@ public class TransmissionManager : MonoBehaviour
         if (director == null) return;
 
         if (!string.IsNullOrEmpty(character))
-            director.SetPursuitLabel(character.ToUpper());
+        {
+            int sp = character.IndexOf(' ');
+            string first = sp > 0 ? character.Substring(0, sp) : character;
+            director.SetPursuitLabel(first.ToUpper());
+        }
         else
             director.SetPursuitLabel(null);
 
@@ -744,7 +1244,277 @@ public class TransmissionManager : MonoBehaviour
     public string ActiveCharacter =>
         (!string.IsNullOrEmpty(activeStoryId) && storyStates.TryGetValue(activeStoryId, out var s)) ? s.character : null;
     public string PendingTeaser => pendingTeaser;
-    public bool IsGenerating => isGeneratingShot || isPriming;
+    public bool IsGenerating => isPriming || pendingShotForStory.Count > 0;
+
+    // Best-effort local inventory: all artifacts (objectName) we've seen from primed stories.
+    public List<string> GetKnownArtifacts()
+    {
+        BeginItemsListener();
+        if (cachedItems.Count > 0)
+            return new List<string>(cachedItems);
+
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in storyStates)
+        {
+            var obj = kv.Value != null ? kv.Value.objectName : null;
+            if (!string.IsNullOrWhiteSpace(obj)) set.Add(obj.Trim());
+        }
+        var list = set.ToList();
+        list.Sort(StringComparer.OrdinalIgnoreCase);
+        return list;
+    }
+
+    // Writes an accepted artifact into RTDB at: users/<userId>/items/<pushId>
+    public void AcceptItem(string artifact, string storyId, int shotNumber)
+    {
+        if (string.IsNullOrWhiteSpace(artifact)) return;
+        string itemName = artifact.Trim();
+        string uid = GetUserId();
+        if (string.IsNullOrWhiteSpace(uid)) return;
+
+        AddCachedItem(itemName);
+
+        FirebaseBootstrap.WhenReady(() =>
+        {
+            var db = FirebaseDatabase.DefaultInstance;
+            string path = $"users/{SanitizeUserId(uid)}/items";
+            var itemRef = db.GetReference(path).Push();
+
+            var payload = new Dictionary<string, object>
+            {
+                { "artifact", itemName },
+                { "storyId", storyId ?? "" },
+                { "shotNumber", shotNumber },
+                { "createdAt", ServerValue.Timestamp }
+            };
+
+            itemRef.SetValueAsync(payload);
+            Debug.Log($"[TransmissionManager] Accepted item '{itemName}' → {path}/{itemRef.Key}");
+        });
+    }
+
+    private void AddCachedItem(string itemName)
+    {
+        if (string.IsNullOrWhiteSpace(itemName)) return;
+        string clean = itemName.Trim();
+        if (!cachedItems.Exists(x => string.Equals(x, clean, StringComparison.OrdinalIgnoreCase)))
+        {
+            cachedItems.Add(clean);
+            cachedItems.Sort(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var modal = TransmitterEnterModal.Instance;
+        if (modal != null) modal.RefreshInventory();
+    }
+
+    public string GetLocationExchangeObject(Signal sig)
+    {
+        if (sig != null && !string.IsNullOrWhiteSpace(sig.specialItem))
+            return sig.specialItem.Trim();
+
+        string category = sig != null && !string.IsNullOrWhiteSpace(sig.locationCategory)
+            ? sig.locationCategory.ToLowerInvariant()
+            : "";
+
+        if (category.Contains("coffee") || category.Contains("cafe")) return "coffee sleeve";
+        if (category.Contains("bar") || category.Contains("brew") || category.Contains("pub")) return "bent coaster";
+        if (category.Contains("restaurant") || category.Contains("food")) return "receipt corner";
+        if (category.Contains("gas") || category.Contains("fuel")) return "pump receipt";
+        if (category.Contains("store") || category.Contains("shop")) return "paper tag";
+        return "folded receipt";
+    }
+
+    public IEnumerator FetchLocationExchangeObject(Signal sig, Action<string> onDone)
+    {
+        if (sig == null)
+        {
+            onDone?.Invoke(null);
+            yield break;
+        }
+
+        bool ready = false;
+        FirebaseBootstrap.WhenReady(() => ready = true);
+        float start = Time.unscaledTime;
+        while (!ready && Time.unscaledTime - start < 5f) yield return null;
+        if (!ready)
+        {
+            onDone?.Invoke(null);
+            yield break;
+        }
+
+        string path = $"k1l0/locationDrops/{LocationDropKey(sig)}";
+        var task = FirebaseDatabase.DefaultInstance.GetReference(path).GetValueAsync();
+        yield return new WaitUntil(() => task.IsCompleted);
+
+        if (task.IsFaulted || task.IsCanceled || task.Result == null || !task.Result.Exists)
+        {
+            onDone?.Invoke(null);
+            yield break;
+        }
+
+        string item = task.Result.Child("artifact").Value as string;
+        onDone?.Invoke(string.IsNullOrWhiteSpace(item) ? null : item.Trim());
+    }
+
+    private void SaveLocationExchangeItem(Signal sig, string item)
+    {
+        if (sig == null || string.IsNullOrWhiteSpace(item)) return;
+
+        FirebaseBootstrap.WhenReady(() =>
+        {
+            string key = LocationDropKey(sig);
+            string path = $"k1l0/locationDrops/{key}";
+            var payload = new Dictionary<string, object>
+            {
+                { "artifact", item.Trim() },
+                { "locationName", sig.locationName ?? "" },
+                { "locationCategory", sig.locationCategory ?? "" },
+                { "latitude", sig.latitude },
+                { "longitude", sig.longitude },
+                { "leftBy", GetUserId() ?? "" },
+                { "updatedAt", ServerValue.Timestamp }
+            };
+            FirebaseDatabase.DefaultInstance.GetReference(path).SetValueAsync(payload);
+            Debug.Log($"[TransmissionManager] Location drop saved '{item.Trim()}' → {path}");
+        });
+    }
+
+    // Artifact-beam collection: seed an item directly from local beam seed/name/noun.
+    public void AddItemFromArtifactBeam(int beamSeed, int beamIndex, string beamName, string beamNoun)
+    {
+        string artifact = $"{(beamName ?? "").Trim()} {(beamNoun ?? "").Trim()}".Trim();
+        if (string.IsNullOrWhiteSpace(artifact)) return;
+
+        string uid = GetUserId();
+        if (string.IsNullOrWhiteSpace(uid)) return;
+
+        FirebaseBootstrap.WhenReady(() =>
+        {
+            var db = FirebaseDatabase.DefaultInstance;
+            string path = $"users/{SanitizeUserId(uid)}/items";
+            var itemRef = db.GetReference(path).Push();
+
+            var payload = new Dictionary<string, object>
+            {
+                { "artifact", artifact },
+                { "kind", "artifact_beam" },
+                { "beamSeed", beamSeed },
+                { "beamIndex", beamIndex },
+                { "beamName", beamName ?? "" },
+                { "beamNoun", beamNoun ?? "" },
+                { "createdAt", ServerValue.Timestamp }
+            };
+
+            itemRef.SetValueAsync(payload);
+            Debug.Log($"[TransmissionManager] Collected artifact '{artifact}' → {path}/{itemRef.Key}");
+        });
+    }
+
+    // Transmitter-enter flow: user picks an artifact + action, then we prime + generate-shot with that directive.
+    public void StartTransmitterInteraction(Signal sig, string artifact, string userAction)
+    {
+        if (sig == null) return;
+        if (string.IsNullOrWhiteSpace(artifact)) return;
+        if (string.IsNullOrWhiteSpace(userAction)) return;
+        artifact = artifact.Trim();
+        userAction = BuildLiteralActionDirective(userAction.Trim());
+
+        var frame = TransmissionFrame.Instance;
+        if (frame != null)
+            frame.ShowLoading("TRANSMISSION", "ambient", null);
+
+        if (isPriming)
+        {
+            Debug.Log($"[TransmissionManager] Transmitter SEND queued (priming in progress) artifact='{artifact}'");
+            StartCoroutine(WaitThenPrimeTransmitter(sig, artifact, userAction));
+            return;
+        }
+
+        Debug.Log($"[TransmissionManager] Transmitter SEND starting artifact='{artifact}'");
+        StartCoroutine(TransmitAndGenerateForTransmitter(sig, artifact, userAction));
+    }
+
+    public void StartLocationExchange(Signal sig, string artifact, string userAction, string leftItem)
+    {
+        if (sig == null) return;
+        if (string.IsNullOrWhiteSpace(artifact)) artifact = GetLocationExchangeObject(sig);
+        if (string.IsNullOrWhiteSpace(userAction)) return;
+
+        artifact = artifact.Trim();
+        userAction = BuildLiteralActionDirective(userAction.Trim());
+
+        enteredSignals.Add(sig.id);
+        UpsertBeamRecord(sig, storyId: null, entered: true);
+        AcceptItem(artifact, null, 0);
+        SaveLocationExchangeItem(sig, leftItem);
+
+        var frame = TransmissionFrame.Instance;
+        if (frame != null)
+            frame.ShowLoading(sig.locationName, sig.locationCategory, null);
+
+        if (isPriming)
+        {
+            Debug.Log($"[TransmissionManager] Location exchange queued (priming in progress) item='{artifact}' loc='{sig.locationName}'");
+            StartCoroutine(WaitThenPrimeLocationExchange(sig, artifact, userAction));
+            return;
+        }
+
+        Debug.Log($"[TransmissionManager] Location exchange starting item='{artifact}' loc='{sig.locationName}'");
+        StartCoroutine(PrimeAndGenerateForLocationExchange(sig, artifact, userAction));
+    }
+
+    IEnumerator WaitThenPrimeLocationExchange(Signal sig, string artifact, string userAction)
+    {
+        float start = Time.unscaledTime;
+        while (isPriming && Time.unscaledTime - start < 12f)
+            yield return null;
+
+        if (sig == null || string.IsNullOrWhiteSpace(artifact) || string.IsNullOrWhiteSpace(userAction)) yield break;
+        StartCoroutine(PrimeAndGenerateForLocationExchange(sig, artifact.Trim(), userAction.Trim()));
+    }
+
+    IEnumerator WaitThenPrimeTransmitter(Signal sig, string artifact, string userAction)
+    {
+        float start = Time.unscaledTime;
+        while (isPriming && Time.unscaledTime - start < 12f)
+            yield return null;
+
+        if (sig == null) yield break;
+        if (string.IsNullOrWhiteSpace(artifact)) yield break;
+        if (string.IsNullOrWhiteSpace(userAction)) yield break;
+
+        Debug.Log($"[TransmissionManager] Transmitter SEND starting after wait ({Time.unscaledTime - start:F1}s) artifact='{artifact}'");
+        StartCoroutine(TransmitAndGenerateForTransmitter(sig, artifact.Trim(), BuildLiteralActionDirective(userAction.Trim())));
+    }
+
+    // Encourage the backend prompt builder to include the user's directive literally in image/video/music prompts.
+    // This prevents vague paraphrases like "a fresh look" when the user said "get a haircut".
+    private static string BuildLiteralActionDirective(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return raw;
+        string action = raw.Trim();
+        string gerund = ToGerund(action);
+        // Include both the normalized gerund phrase and the original wording.
+        return $"Depict literally: \"{gerund}\". User said: \"{action}\".";
+    }
+
+    private static string ToGerund(string action)
+    {
+        if (string.IsNullOrWhiteSpace(action)) return action;
+        string a = action.Trim();
+        // Very small, high-signal normalization for common imperatives.
+        if (a.StartsWith("get ", System.StringComparison.OrdinalIgnoreCase))
+            return "getting " + a.Substring(4);
+        if (a.StartsWith("go ", System.StringComparison.OrdinalIgnoreCase))
+            return "going " + a.Substring(3);
+        if (a.StartsWith("take ", System.StringComparison.OrdinalIgnoreCase))
+            return "taking " + a.Substring(5);
+        if (a.StartsWith("make ", System.StringComparison.OrdinalIgnoreCase))
+            return "making " + a.Substring(5);
+        if (a.StartsWith("do ", System.StringComparison.OrdinalIgnoreCase))
+            return "doing " + a.Substring(3);
+        return a;
+    }
 
     // Returns the storyId linked to a Signal id, or null.
     public string GetStoryIdForSignal(string signalId)
@@ -812,11 +1582,10 @@ public class TransmissionData
     // Transmission taxonomy — "location" or "ambient" (mirrors TransmissionType enum)
     public string transmissionType;
 
-    // Narrative metadata — shared across both types, drives teaser + dialog
+    // Narrative metadata — character/artifact for the slide header, teaser for HUD
     public string character;
     public string specialItem;
     public string nextTeaser;
-    public string dialog;
 
     // Coordinates of the transmission in the world
     public double latitude;
@@ -841,6 +1610,11 @@ class PrimeRequest
     public string userId;
     public string location;
     public Coords coordinates;
+    public string locationName;
+    public string locationCategory;
+    public string transmissionType; // "location" | "artifact" | "transmitter"
+    public string artifact;         // optional hint (artifact seeding)
+    public string userAction;       // optional user instruction (transmitter flow)
 }
 
 [Serializable]
@@ -850,6 +1624,24 @@ class GenerateShotRequest
     public string storyId;
     public string location;
     public Coords coordinates;
+    public string locationName;
+    public string locationCategory;
+    public string transmissionType; // "location" | "artifact" | "transmitter"
+    public string artifact;         // optional override (transmitter flow)
+    public string userAction;       // optional user instruction (transmitter flow)
+}
+
+[Serializable]
+class PrimeTransmitterRequest
+{
+    public string userId;
+    public string location;
+    public Coords coordinates;
+    public string locationName;
+    public string locationCategory;
+    public string transmissionType; // "transmitter"
+    public string artifact;
+    public string userAction;
 }
 
 [Serializable]
@@ -886,7 +1678,6 @@ class ShotStatus
     public string id;
     public int shotNumber;
     public string status;
-    public string dialog;
     public string nextTeaser;
     public string imageUrl;
     public string audioUrl;

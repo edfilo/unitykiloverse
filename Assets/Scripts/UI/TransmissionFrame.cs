@@ -27,6 +27,9 @@ public class TransmissionFrame : MonoBehaviour
     private VideoPlayer videoPlayer;
     private RenderTexture videoRT;
     private Button closeBtn;
+    private GameObject acceptBtnGO;
+    private Button acceptBtn;
+    private TextMeshProUGUI acceptBtnLabel;
     private CanvasGroup canvasGroup;
     private Coroutine typewriterRoutine;
     private Coroutine imageLoadRoutine;
@@ -34,12 +37,34 @@ public class TransmissionFrame : MonoBehaviour
     private string pendingCategory;
     private string currentImageUrl;
     private string currentVideoUrl;
+    private string currentAudioUrl;
+    private AudioSource musicSource;
+    private Coroutine musicLoadRoutine;
     private string pinnedStoryId;           // the storyId this frame is showing
     private bool shotDelivered;             // true once OnTransmissionReady has been handled
     private string pinnedCharacter;
     private string pinnedArtifact;
     private string pinnedShotStage;         // last status from OnShotProgress
     private int pinnedShotNumber;
+    private bool acceptRequired;
+    private string acceptArtifact;
+    private string acceptStoryId;
+    private bool sendTransmissionMode;
+    private bool dismissOnlyMode;
+    private bool initialized;
+    private bool contrastActive;
+    private Vector2 bodyDefaultAnchorMin;
+    private Vector2 bodyDefaultAnchorMax;
+    private Vector2 bodyDefaultPivot;
+    private Vector2 bodyDefaultAnchoredPosition;
+    private Vector2 bodyDefaultSizeDelta;
+    private TextAlignmentOptions bodyDefaultAlignment;
+    private float bodyDefaultFontSize;
+    private Vector2 acceptDefaultAnchorMin;
+    private Vector2 acceptDefaultAnchorMax;
+    private Vector2 acceptDefaultPivot;
+    private Vector2 acceptDefaultAnchoredPosition;
+    private Vector2 acceptDefaultSizeDelta;
 
     void Awake()
     {
@@ -53,7 +78,20 @@ public class TransmissionFrame : MonoBehaviour
 
     public void Initialize()
     {
+        if (initialized) return;
+        if (K1L0CanvasRoot.Modal == null)
+        {
+            Debug.LogWarning("[TransmissionFrame] Initialize deferred: K1L0CanvasRoot.Modal missing");
+            return;
+        }
+
         CreateUI();
+        initialized = frameRoot != null && canvasGroup != null;
+        if (!initialized)
+        {
+            Debug.LogWarning("[TransmissionFrame] Initialize failed: UI roots missing");
+            return;
+        }
 
         // Subscribe to transmission events
         var tm = FindFirstObjectByType<TransmissionManager>();
@@ -80,51 +118,44 @@ public class TransmissionFrame : MonoBehaviour
         if (_instance == this) _instance = null;
     }
 
-    void CreateUI()
-    {
-        // Full-screen overlay on Modal canvas (highest sorting order)
-        frameRoot = new GameObject("TransmissionFrame");
-        frameRoot.transform.SetParent(K1L0CanvasRoot.Modal, false);
+	    void CreateUI()
+	    {
+	        // Full-screen overlay on Modal canvas (highest sorting order)
+	        frameRoot = new GameObject("TransmissionFrame", typeof(RectTransform));
+	        frameRoot.transform.SetParent(K1L0CanvasRoot.Modal, false);
+	        // Ensure this sits above any other modal children without creating
+	        // a nested Canvas (nested Canvases can break CanvasScaler sizing on iOS).
+	        frameRoot.transform.SetAsLastSibling();
 
-        // Override sorting to be on top of everything
-        var overrideCanvas = frameRoot.AddComponent<Canvas>();
-        overrideCanvas.overrideSorting = true;
-        overrideCanvas.sortingOrder = 10500;
-        frameRoot.AddComponent<GraphicRaycaster>();
-
-        var rootRt = frameRoot.GetComponent<RectTransform>();
-        rootRt.anchorMin = Vector2.zero;
-        rootRt.anchorMax = Vector2.one;
-        rootRt.offsetMin = Vector2.zero;
+	        var rootRt = frameRoot.GetComponent<RectTransform>();
+	        rootRt.anchorMin = Vector2.zero;
+	        rootRt.anchorMax = Vector2.one;
+	        rootRt.offsetMin = Vector2.zero;
         rootRt.offsetMax = Vector2.zero;
 
         canvasGroup = frameRoot.AddComponent<CanvasGroup>();
         canvasGroup.alpha = 0f;
 
-        // Black background (letterbox around the portrait card)
+        // Transparent hit target; content/text provide their own contrast.
         var bg = frameRoot.AddComponent<Image>();
-        bg.color = new Color(0f, 0f, 0f, 0.96f);
+        bg.color = new Color(0f, 0f, 0f, 0f);
         bg.raycastTarget = true;
+        K1L0GlassFactory.AttachTerminalStatic(frameRoot.transform, "TransmissionStatic");
 
         var font = Resources.Load<TMP_FontAsset>("Fonts/IBMPlexMono-Regular SDF");
         if (font == null) font = TMP_Settings.defaultFontAsset;
 
-        // ── Portrait story card (9:16), centered, fits parent ──────────────
         var cardGO = new GameObject("StoryCard");
         cardGO.transform.SetParent(frameRoot.transform, false);
         var cardRt = cardGO.AddComponent<RectTransform>();
-        cardRt.anchorMin = new Vector2(0.5f, 0.5f);
-        cardRt.anchorMax = new Vector2(0.5f, 0.5f);
+        cardRt.anchorMin = Vector2.zero;
+        cardRt.anchorMax = Vector2.one;
         cardRt.pivot = new Vector2(0.5f, 0.5f);
-        cardRt.sizeDelta = new Vector2(900f, 1600f); // will be scaled by fitter
-        var cardFitter = cardGO.AddComponent<AspectRatioFitter>();
-        cardFitter.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
-        cardFitter.aspectRatio = 9f / 16f;
+        cardRt.offsetMin = Vector2.zero;
+        cardRt.offsetMax = Vector2.zero;
 
-        // Card background (dark, so the image frame is visible even before load)
-        var cardBg = cardGO.AddComponent<Image>();
-        cardBg.color = new Color(0.02f, 0.04f, 0.02f, 1f);
-        cardBg.raycastTarget = false;
+        // No card background — drop shadow on text provides legibility
+        // directly over the hero image.
 
         // Hero image — fills the entire card
         var heroGO = new GameObject("HeroImage");
@@ -166,29 +197,13 @@ public class TransmissionFrame : MonoBehaviour
         videoPlayer.prepareCompleted += OnVideoPrepared;
         videoPlayer.errorReceived += (vp, msg) => Debug.LogWarning($"[TransmissionFrame] Video error: {msg}");
 
-        // Top gradient scrim for legibility of the header/meta overlay
-        var topScrimGO = new GameObject("TopScrim");
-        topScrimGO.transform.SetParent(cardGO.transform, false);
-        var topScrimRt = topScrimGO.AddComponent<RectTransform>();
-        topScrimRt.anchorMin = new Vector2(0f, 0.72f);
-        topScrimRt.anchorMax = new Vector2(1f, 1f);
-        topScrimRt.offsetMin = Vector2.zero;
-        topScrimRt.offsetMax = Vector2.zero;
-        var topScrim = topScrimGO.AddComponent<Image>();
-        topScrim.color = new Color(0f, 0f, 0f, 0.55f);
-        topScrim.raycastTarget = false;
+        // Music — ACE-Step generated mp3 streamed from CDN; loops while the slide is open.
+        musicSource = frameRoot.AddComponent<AudioSource>();
+        musicSource.loop = true;
+        musicSource.playOnAwake = false;
+        musicSource.volume = 0.85f;
 
-        // Bottom scrim for dialog legibility
-        var botScrimGO = new GameObject("BottomScrim");
-        botScrimGO.transform.SetParent(cardGO.transform, false);
-        var botScrimRt = botScrimGO.AddComponent<RectTransform>();
-        botScrimRt.anchorMin = new Vector2(0f, 0f);
-        botScrimRt.anchorMax = new Vector2(1f, 0.30f);
-        botScrimRt.offsetMin = Vector2.zero;
-        botScrimRt.offsetMax = Vector2.zero;
-        var botScrim = botScrimGO.AddComponent<Image>();
-        botScrim.color = new Color(0f, 0f, 0f, 0.65f);
-        botScrim.raycastTarget = false;
+        // No top/bottom scrims — drop shadow on text handles legibility directly over the image.
 
         // Location header — overlaid near top-left of the card
         var locHeadGO = new GameObject("LocHeader");
@@ -241,6 +256,13 @@ public class TransmissionFrame : MonoBehaviour
         bodyText.alignment = TextAlignmentOptions.BottomLeft;
         bodyText.enableWordWrapping = true;
         bodyText.raycastTarget = false;
+        bodyDefaultAnchorMin = bodyRt.anchorMin;
+        bodyDefaultAnchorMax = bodyRt.anchorMax;
+        bodyDefaultPivot = bodyRt.pivot;
+        bodyDefaultAnchoredPosition = bodyRt.anchoredPosition;
+        bodyDefaultSizeDelta = bodyRt.sizeDelta;
+        bodyDefaultAlignment = bodyText.alignment;
+        bodyDefaultFontSize = bodyText.fontSize;
 
         // Status line — very bottom of the card
         var statusGO = new GameObject("Status");
@@ -258,44 +280,115 @@ public class TransmissionFrame : MonoBehaviour
         statusText.alignment = TextAlignmentOptions.BottomLeft;
         statusText.raycastTarget = false;
 
-        // Close button — top right, floating on letterbox edge of the card
-        var closeBtnGO = new GameObject("CloseBtn");
-        closeBtnGO.transform.SetParent(cardGO.transform, false);
-        var closeBtnRt = closeBtnGO.AddComponent<RectTransform>();
-        closeBtnRt.anchorMin = new Vector2(1f, 1f);
-        closeBtnRt.anchorMax = new Vector2(1f, 1f);
-        closeBtnRt.pivot = new Vector2(1f, 1f);
-        closeBtnRt.anchoredPosition = new Vector2(-12f, -12f);
-        closeBtnRt.sizeDelta = new Vector2(44f, 44f);
+        closeBtn = K1L0GlassFactory.CreateTerminalCloseButton(frameRoot.transform, font, Hide);
 
-        var closeBg = closeBtnGO.AddComponent<Image>();
-        closeBg.color = new Color(0f, 0f, 0f, 0f); // Invisible hit area
-        closeBg.raycastTarget = true;
+        // ACCEPT button (shown for transmitter transmissions)
+        acceptBtnGO = new GameObject("AcceptBtn");
+        acceptBtnGO.transform.SetParent(cardGO.transform, false);
+        var acceptRt = acceptBtnGO.AddComponent<RectTransform>();
+        acceptRt.anchorMin = new Vector2(0.5f, 0f);
+        acceptRt.anchorMax = new Vector2(0.5f, 0f);
+        acceptRt.pivot = new Vector2(0.5f, 0f);
+        acceptRt.anchoredPosition = new Vector2(0f, 270f);
+        acceptRt.sizeDelta = new Vector2(520f, 86f);
 
-        closeBtn = closeBtnGO.AddComponent<Button>();
-        closeBtn.targetGraphic = closeBg;
-        closeBtn.transition = Selectable.Transition.None;
-        closeBtn.onClick.AddListener(Hide);
+        var acceptBg = acceptBtnGO.AddComponent<Image>();
+        acceptBg.sprite = K1L0GlassFactory.ControlRectSprite;
+        acceptBg.type = Image.Type.Sliced;
+        acceptBg.color = new Color(0.02f, 0.09f, 0.02f, 0.92f);
+        acceptBg.raycastTarget = true;
 
-        var xGO = new GameObject("X");
-        xGO.transform.SetParent(closeBtnGO.transform, false);
-        var xRt = xGO.AddComponent<RectTransform>();
-        xRt.anchorMin = Vector2.zero;
-        xRt.anchorMax = Vector2.one;
-        xRt.offsetMin = Vector2.zero;
-        xRt.offsetMax = Vector2.zero;
-        var xTmp = xGO.AddComponent<TextMeshProUGUI>();
-        xTmp.font = font;
-        xTmp.fontSize = 28;
-        xTmp.text = "×";
-        xTmp.color = TerminalGreen;
-        xTmp.alignment = TextAlignmentOptions.Center;
-        xTmp.raycastTarget = false;
+        acceptBtn = acceptBtnGO.AddComponent<Button>();
+        acceptBtn.targetGraphic = acceptBg;
+        acceptBtn.transition = Selectable.Transition.None;
+        acceptBtn.onClick.AddListener(OnAcceptTapped);
+
+        var acceptLabelGO = new GameObject("Label");
+        acceptLabelGO.transform.SetParent(acceptBtnGO.transform, false);
+        var acceptLabelRt = acceptLabelGO.AddComponent<RectTransform>();
+        acceptLabelRt.anchorMin = Vector2.zero;
+        acceptLabelRt.anchorMax = Vector2.one;
+        acceptLabelRt.offsetMin = Vector2.zero;
+        acceptLabelRt.offsetMax = Vector2.zero;
+
+        acceptBtnLabel = acceptLabelGO.AddComponent<TextMeshProUGUI>();
+        acceptBtnLabel.font = font;
+        acceptBtnLabel.fontSize = 34;
+        acceptBtnLabel.text = "ACCEPT";
+        acceptBtnLabel.color = TerminalGreen;
+        acceptBtnLabel.alignment = TextAlignmentOptions.Center;
+        acceptBtnLabel.fontStyle = FontStyles.Bold;
+        acceptBtnLabel.raycastTarget = false;
+        acceptDefaultAnchorMin = acceptRt.anchorMin;
+        acceptDefaultAnchorMax = acceptRt.anchorMax;
+        acceptDefaultPivot = acceptRt.pivot;
+        acceptDefaultAnchoredPosition = acceptRt.anchoredPosition;
+        acceptDefaultSizeDelta = acceptRt.sizeDelta;
+
+        acceptBtnGO.SetActive(false);
+    }
+
+    private void UseDefaultBodyLayout()
+    {
+        if (bodyText == null) return;
+        var rt = bodyText.rectTransform;
+        rt.anchorMin = bodyDefaultAnchorMin;
+        rt.anchorMax = bodyDefaultAnchorMax;
+        rt.pivot = bodyDefaultPivot;
+        rt.anchoredPosition = bodyDefaultAnchoredPosition;
+        rt.sizeDelta = bodyDefaultSizeDelta;
+        bodyText.alignment = bodyDefaultAlignment;
+        bodyText.fontSize = bodyDefaultFontSize;
+    }
+
+    private void UseArtifactBodyLayout()
+    {
+        if (bodyText == null) return;
+        var rt = bodyText.rectTransform;
+        rt.anchorMin = new Vector2(0f, 0.5f);
+        rt.anchorMax = new Vector2(1f, 0.5f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = Vector2.zero;
+        rt.sizeDelta = new Vector2(-90f, 180f);
+        bodyText.alignment = TextAlignmentOptions.Center;
+        bodyText.fontSize = 30f;
+    }
+
+    private void UseDefaultAcceptLayout()
+    {
+        if (acceptBtnGO == null) return;
+        var rt = acceptBtnGO.GetComponent<RectTransform>();
+        if (rt == null) return;
+        rt.anchorMin = acceptDefaultAnchorMin;
+        rt.anchorMax = acceptDefaultAnchorMax;
+        rt.pivot = acceptDefaultPivot;
+        rt.anchoredPosition = acceptDefaultAnchoredPosition;
+        rt.sizeDelta = acceptDefaultSizeDelta;
+    }
+
+    private void UseArtifactAcceptLayout()
+    {
+        if (acceptBtnGO == null) return;
+        var rt = acceptBtnGO.GetComponent<RectTransform>();
+        if (rt == null) return;
+        rt.anchorMin = new Vector2(0.5f, 0.5f);
+        rt.anchorMax = new Vector2(0.5f, 0.5f);
+        rt.pivot = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = new Vector2(0f, -140f);
+        rt.sizeDelta = new Vector2(340f, 78f);
     }
 
     /// <summary>Show frame immediately with loading state when proximity is met.</summary>
     public void ShowLoading(string locationName, string category, string storyId = null)
     {
+        if (!initialized || frameRoot == null || canvasGroup == null)
+            Initialize();
+        if (frameRoot == null || canvasGroup == null)
+        {
+            Debug.LogWarning("[TransmissionFrame] ShowLoading failed: not initialized");
+            return;
+        }
+
         pendingLocationName = locationName;
         pendingCategory = category;
         pinnedStoryId = storyId;
@@ -304,11 +397,37 @@ public class TransmissionFrame : MonoBehaviour
         pinnedArtifact = null;
         pinnedShotStage = null;
         pinnedShotNumber = 0;
+        acceptRequired = false;
+        acceptArtifact = null;
+        acceptStoryId = null;
+        sendTransmissionMode = false;
+        dismissOnlyMode = false;
         frameRoot.SetActive(true);
+        frameRoot.transform.SetAsLastSibling();
+        if (!contrastActive)
+        {
+            K1L0ModalHudMode.Begin();
+            K1L0ModalContrastMode.Begin(this);
+            contrastActive = true;
+        }
+        // Ensure it's visible immediately even if a coroutine gets interrupted.
+        canvasGroup.alpha = 1f;
+        Debug.Log($"[TransmissionFrame] ShowLoading active={frameRoot.activeInHierarchy} alpha={canvasGroup.alpha} loc='{locationName}' storyId='{storyId}'");
+        UseDefaultBodyLayout();
+        UseDefaultAcceptLayout();
 
-        locationHeader.text = (locationName ?? "UNKNOWN LOCATION").ToUpper();
+        // Hide the HUD (pursuit/location rows + ENTER frame) while the
+        // transmission slide is open so they don't flash behind the modal.
+        var dir = SignalDirectorV2.Instance;
+        if (dir != null) dir.SuppressHUD(true);
+
+        // Transmitter UX: minimal header + clear generation status.
+        locationHeader.text = "TRANSMITTER";
+        headerText.text = "";
         bodyText.text = "";
-        statusText.text = "> decoding transmission — stand by_";
+        statusText.text = "";
+        if (acceptBtnGO != null) acceptBtnGO.SetActive(false);
+        if (closeBtn != null) closeBtn.gameObject.SetActive(true);
 
         // Clear any previous image
         if (heroImage != null)
@@ -343,22 +462,94 @@ public class TransmissionFrame : MonoBehaviour
             {
                 pinnedCharacter = shell.character;
                 pinnedArtifact = shell.objectName;
-                if (!string.IsNullOrEmpty(shell.premise))
-                {
-                    if (typewriterRoutine != null) StopCoroutine(typewriterRoutine);
-                    typewriterRoutine = null;
-                    bodyText.text = shell.premise;
-                }
+                // Premise is LLM-only context — never shown to the user.
             }
         }
 
         RefreshHeader();
+        // FadeIn is nice-to-have; keep it but we've already forced alpha to 1.
+        StartCoroutine(FadeIn());
+    }
+
+    /// <summary>
+    /// Artifact-beam UX: no story generation yet. Just a transmitting banner + accept button.
+    /// </summary>
+    public void ShowArtifactTransmitting(string artifactName, string fromLabel)
+    {
+        if (!initialized || frameRoot == null || canvasGroup == null)
+            Initialize();
+        if (frameRoot == null || canvasGroup == null)
+        {
+            Debug.LogWarning("[TransmissionFrame] ShowArtifactTransmitting failed: not initialized");
+            return;
+        }
+
+        shotDelivered = false;
+        pinnedStoryId = null;
+        pinnedCharacter = null;
+        pinnedArtifact = null;
+        pinnedShotStage = null;
+        pinnedShotNumber = 0;
+
+        acceptRequired = true;
+        acceptArtifact = string.IsNullOrWhiteSpace(artifactName) ? null : artifactName.Trim();
+        acceptStoryId = null;
+        sendTransmissionMode = false;
+        dismissOnlyMode = false;
+
+        frameRoot.SetActive(true);
+        frameRoot.transform.SetAsLastSibling();
+        if (!contrastActive)
+        {
+            K1L0ModalHudMode.Begin();
+            K1L0ModalContrastMode.Begin(this);
+            contrastActive = true;
+        }
+        canvasGroup.alpha = 1f;
+
+        var dir = SignalDirectorV2.Instance;
+        if (dir != null) dir.SuppressHUD(true);
+
+        string a = string.IsNullOrWhiteSpace(artifactName) ? "ARTIFACT" : artifactName.Trim();
+        string from = string.IsNullOrWhiteSpace(fromLabel) ? "UNKNOWN" : fromLabel.Trim();
+
+        locationHeader.text = "";
+        headerText.text = "";
+        statusText.text = "";
+        UseArtifactBodyLayout();
+        UseArtifactAcceptLayout();
+        bodyText.text = $"{from} is sending a {a}";
+
+        if (typewriterRoutine != null) StopCoroutine(typewriterRoutine);
+        typewriterRoutine = null;
+
+        if (heroImage != null)
+        {
+            heroImage.texture = null;
+            heroImage.color = new Color(1f, 1f, 1f, 0f);
+        }
+        currentImageUrl = null;
+
+        if (videoPlayer != null && videoPlayer.isPlaying) videoPlayer.Stop();
+        if (videoImage != null) videoImage.color = new Color(1f, 1f, 1f, 0f);
+        currentVideoUrl = null;
+
+        if (acceptBtnGO != null) acceptBtnGO.SetActive(true);
+        if (acceptBtnLabel != null) acceptBtnLabel.text = "ACCEPT";
+        if (closeBtn != null) closeBtn.gameObject.SetActive(true);
+
         StartCoroutine(FadeIn());
     }
 
     void RefreshHeader()
     {
         if (shotDelivered) return;
+        if (locationHeader != null && string.Equals(locationHeader.text, "TRANSMITTER", System.StringComparison.OrdinalIgnoreCase))
+        {
+            headerText.text = "";
+            statusText.text = "";
+            return;
+        }
 
         string status;
         if (string.IsNullOrEmpty(pinnedCharacter))
@@ -383,16 +574,23 @@ public class TransmissionFrame : MonoBehaviour
 
         if (!string.IsNullOrEmpty(pinnedCharacter))
         {
-            string charName = pinnedCharacter.ToUpper();
-            string seeking = !string.IsNullOrEmpty(pinnedArtifact) ? $"\n> SEEKING: {pinnedArtifact}" : "";
+            string charName = FirstName(pinnedCharacter).ToUpper();
+            string seeking = !string.IsNullOrEmpty(pinnedArtifact) ? $"\n> SENDING: {pinnedArtifact}" : "";
             string shotLine = pinnedShotNumber > 0 ? $"\n> SHOT: {pinnedShotNumber}" : "";
-            headerText.text = $"> SOURCE: {charName}{seeking}{shotLine}\n> STATUS: {status}";
+            headerText.text = $"> FROM: {charName}{seeking}{shotLine}\n> STATUS: {status}";
         }
         else
         {
             string cat = (pendingCategory ?? "unknown").ToUpper();
             headerText.text = $"> CATEGORY: {cat}\n> STATUS: {status}";
         }
+    }
+
+    static string FirstName(string fullName)
+    {
+        if (string.IsNullOrEmpty(fullName)) return "";
+        int sp = fullName.IndexOf(' ');
+        return sp > 0 ? fullName.Substring(0, sp) : fullName;
     }
 
     void OnStoryShellReady(string storyId, string character, string artifact, string premise)
@@ -404,13 +602,7 @@ public class TransmissionFrame : MonoBehaviour
 
         pinnedCharacter = character;
         pinnedArtifact = artifact;
-        if (!string.IsNullOrEmpty(premise))
-        {
-            // Stop the decoding animation and show the premise statically.
-            if (typewriterRoutine != null) StopCoroutine(typewriterRoutine);
-            typewriterRoutine = null;
-            bodyText.text = premise;
-        }
+        // Premise is LLM-only context — never shown to the user.
         RefreshHeader();
     }
 
@@ -447,21 +639,71 @@ public class TransmissionFrame : MonoBehaviour
                     videoPlayer.Prepare();
                 }
             }
+            if (!string.IsNullOrEmpty(data.audioUrl) && data.audioUrl != currentAudioUrl)
+            {
+                currentAudioUrl = data.audioUrl;
+                if (musicLoadRoutine != null) StopCoroutine(musicLoadRoutine);
+                musicLoadRoutine = StartCoroutine(LoadMusicRoutine(data.audioUrl));
+            }
             return;
         }
 
         shotDelivered = true;
         pinnedShotNumber = data.shotNumber;
         if (typewriterRoutine != null) StopCoroutine(typewriterRoutine);
+        UseDefaultBodyLayout();
+        UseDefaultAcceptLayout();
 
-        string charName = !string.IsNullOrEmpty(data.character) ? data.character.ToUpper() : "UNKNOWN";
-        // Keep the header pinned to the signal the user actually tapped.
-        // TransmissionData.locationName can leak an unrelated LocationTransmission
-        // (the nearest active POI) into pursuit-beam transmissions.
-        if (string.IsNullOrEmpty(pendingLocationName) && !string.IsNullOrEmpty(data.locationName))
-            locationHeader.text = data.locationName.ToUpper();
-        headerText.text = $"> SOURCE: {charName}\n> SHOT: {data.shotNumber}";
-        statusText.text = $"> transmission decoded — tap × to dismiss";
+        bool isTransmitter = string.Equals(data.transmissionType, "transmitter", System.StringComparison.OrdinalIgnoreCase);
+        bool isLocation = string.Equals(data.transmissionType, "location", System.StringComparison.OrdinalIgnoreCase);
+
+        // New rule: transmitter screen stays minimal; artifacts are the only thing you "accept".
+        if (isTransmitter)
+        {
+            locationHeader.text = "TRANSMITTER";
+            headerText.text = "";
+            statusText.text = "";
+            sendTransmissionMode = true;
+            dismissOnlyMode = false;
+            acceptRequired = false;
+            acceptArtifact = null;
+            acceptStoryId = null;
+            if (acceptBtnGO != null) acceptBtnGO.SetActive(true);
+            if (acceptBtnLabel != null) acceptBtnLabel.text = "TRANSMIT";
+            if (closeBtn != null) closeBtn.gameObject.SetActive(true);
+        }
+        else
+        {
+            if (isLocation)
+            {
+                sendTransmissionMode = false;
+                dismissOnlyMode = true;
+                acceptRequired = false;
+                acceptArtifact = null;
+                acceptStoryId = null;
+                if (acceptBtnGO != null) acceptBtnGO.SetActive(true);
+                if (acceptBtnLabel != null) acceptBtnLabel.text = "DONE";
+                if (closeBtn != null) closeBtn.gameObject.SetActive(true);
+                statusText.text = "";
+            }
+            else
+            {
+            // Artifact: accept artifacts only.
+            sendTransmissionMode = false;
+            dismissOnlyMode = false;
+            acceptRequired = true;
+            acceptArtifact = !string.IsNullOrEmpty(data.specialItem) ? data.specialItem : pinnedArtifact;
+            acceptStoryId = data.storyId;
+            if (acceptBtnGO != null) acceptBtnGO.SetActive(true);
+            if (acceptBtnLabel != null)
+            {
+                string a = string.IsNullOrWhiteSpace(acceptArtifact) ? "ARTIFACT" : acceptArtifact.Trim();
+                acceptBtnLabel.text = $"ACCEPT {a.ToUpper()}";
+            }
+            if (closeBtn != null) closeBtn.gameObject.SetActive(true);
+            statusText.text = "";
+            }
+        }
 
         // Load the image asynchronously
         if (!string.IsNullOrEmpty(data.imageUrl) && data.imageUrl != currentImageUrl)
@@ -483,8 +725,72 @@ public class TransmissionFrame : MonoBehaviour
             }
         }
 
-        // Typewriter reveal the dialog
-        typewriterRoutine = StartCoroutine(TypewriterReveal(data.dialog));
+        // Stream the ACE-Step music url and play it on loop.
+        if (!string.IsNullOrEmpty(data.audioUrl) && data.audioUrl != currentAudioUrl)
+        {
+            currentAudioUrl = data.audioUrl;
+            if (musicLoadRoutine != null) StopCoroutine(musicLoadRoutine);
+            musicLoadRoutine = StartCoroutine(LoadMusicRoutine(data.audioUrl));
+        }
+
+        // Dialog body intentionally blank — the visual is the video, the
+        // narrative is the song generated from the dialog as lyrics.
+        bodyText.text = "";
+    }
+
+    void OnAcceptTapped()
+    {
+        if (sendTransmissionMode)
+        {
+            Debug.Log("[TransmissionFrame] Send Transmission tapped");
+            Hide();
+            return;
+        }
+
+        if (dismissOnlyMode)
+        {
+            Hide();
+            return;
+        }
+
+        if (acceptRequired)
+        {
+            var tm = TransmissionManager.Instance;
+            if (tm != null && !string.IsNullOrEmpty(acceptArtifact))
+            {
+                tm.AcceptItem(acceptArtifact, acceptStoryId, pinnedShotNumber);
+            }
+        }
+        Hide();
+    }
+
+    IEnumerator LoadMusicRoutine(string url)
+    {
+        if (musicSource == null) yield break;
+        // .mp3 from CDN — use AudioType.MPEG.
+        using (var req = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.MPEG))
+        {
+            // DownloadHandlerAudioClip default is "stream once decoded"; that's fine here.
+            yield return req.SendWebRequest();
+            if (req.result != UnityWebRequest.Result.Success)
+            {
+                Debug.LogWarning($"[TransmissionFrame] Music load failed ({url}): {req.error}");
+                yield break;
+            }
+            var clip = DownloadHandlerAudioClip.GetContent(req);
+            if (clip == null)
+            {
+                Debug.LogWarning($"[TransmissionFrame] Music decode failed for {url}");
+                yield break;
+            }
+            // Skip if a newer URL came in while we were loading.
+            if (currentAudioUrl != url) yield break;
+            musicSource.Stop();
+            musicSource.clip = clip;
+            musicSource.Play();
+            Debug.Log($"[TransmissionFrame] Music playing: {url}");
+        }
+        musicLoadRoutine = null;
     }
 
     void OnVideoPrepared(VideoPlayer vp)
@@ -536,13 +842,15 @@ public class TransmissionFrame : MonoBehaviour
 
     IEnumerator LoadingBlink()
     {
-        string[] frames = { "decoding .", "decoding ..", "decoding ...", "decoding" };
+        string[] spin = { "|", "/", "-", "\\" };
         int i = 0;
         while (true)
         {
-            bodyText.text = $"\n\n    {frames[i % frames.Length]}";
+            if (statusText != null)
+                statusText.text = $"Generating transmission {spin[i % spin.Length]}";
+            bodyText.text = "";
             i++;
-            yield return new WaitForSecondsRealtime(0.4f);
+            yield return new WaitForSecondsRealtime(0.12f);
         }
     }
 
@@ -573,6 +881,9 @@ public class TransmissionFrame : MonoBehaviour
         }
         if (videoPlayer != null && videoPlayer.isPlaying) videoPlayer.Stop();
         currentVideoUrl = null;
+        if (musicLoadRoutine != null) { StopCoroutine(musicLoadRoutine); musicLoadRoutine = null; }
+        if (musicSource != null && musicSource.isPlaying) musicSource.Stop();
+        currentAudioUrl = null;
         StartCoroutine(FadeOutAndClose());
     }
 
@@ -587,6 +898,16 @@ public class TransmissionFrame : MonoBehaviour
         }
         canvasGroup.alpha = 0f;
         frameRoot.SetActive(false);
+        if (contrastActive)
+        {
+            K1L0ModalContrastMode.End(this);
+            K1L0ModalHudMode.End();
+            contrastActive = false;
+        }
+
+        // Restore HUD now that the transmission slide is dismissed.
+        var directorRestore = SignalDirectorV2.Instance;
+        if (directorRestore != null) directorRestore.SuppressHUD(false);
 
         // Transition signal to Resolved when frame is closed
         var director = SignalDirectorV2.Instance;

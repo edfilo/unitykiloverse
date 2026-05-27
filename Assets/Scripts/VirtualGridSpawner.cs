@@ -86,6 +86,16 @@ public class VirtualGridSpawner : MonoBehaviour
 
     void Start()
     {
+        // Legacy cosmetic beams. K1L0 now uses SignalDirectorV2 + SignalBeamBridge for ALL beams
+        // (interactive + concentric-ring pool). Disable the old spawner to prevent extra
+        // non-functional beams "all around the user".
+        if (SignalDirectorV2.Instance != null || FindFirstObjectByType<SignalDirectorV2>() != null)
+        {
+            Debug.Log("[VirtualGridSpawner] Disabled (SignalDirectorV2 active)");
+            enabled = false;
+            return;
+        }
+
         StartCoroutine(WaitForMapAndInitialize());
     }
 
@@ -400,6 +410,9 @@ public class VirtualGridSpawner : MonoBehaviour
         string beamName = BeamNameGenerator.GetNameFromSeed(seed);
         string beamNoun = NounGenerator.GetFromSeed(seed);
         Debug.Log($"[VirtualGridSpawner] Beam {beamIndex} tapped. Seed: {seed}, Name: {beamName}, Noun: {beamNoun}, Distance: {distance:F1}m");
+
+        if (TransmissionManager.Instance != null)
+            TransmissionManager.Instance.AddItemFromArtifactBeam(seed, beamIndex, beamName, beamNoun);
 
         StartCoroutine(SendTapBeamPing(beamIndex, seed, beamName, beamNoun, distance));
 

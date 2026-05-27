@@ -1,5 +1,9 @@
 using System.Collections;
 using UnityEngine;
+#if !UNITY_WEBGL
+using System.IO;
+using System;
+#endif
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -13,6 +17,12 @@ public class BootSequence : MonoBehaviour
 {
     [SerializeField] private float gpsReadyTimeoutSeconds = 45f;
 
+#if !UNITY_WEBGL
+    private static readonly object _deviceLogLock = new object();
+    private static bool _deviceLogInstalled;
+    private static string _deviceLogPath;
+#endif
+
 #if UNITY_EDITOR
     [Tooltip("If true, skip waiting for first tiles so editor can boot to skybox + player (test for lockup).")]
     [SerializeField] private bool skipTilesWaitInEditor = true;
@@ -22,19 +32,70 @@ public class BootSequence : MonoBehaviour
     private static void Init()
     {
 #if UNITY_STANDALONE_OSX && !UNITY_EDITOR
-        // Mac: start at a Maps-like window size
-        Screen.SetResolution(1280, 900, false);
+        // Mac Retina reports Unity player pixels at 2x the window points.
+        // This opens as an iPhone-shaped 390×844 point viewport.
+        Screen.SetResolution(780, 1688, false);
 #endif
 #if DEVELOPMENT_BUILD || UNITY_EDITOR
         BootDiagnostics.Mark("BootSequence Init");
 #endif
+#if !UNITY_WEBGL
+        InstallDeviceFileLogger();
+#endif
         var go = new GameObject("BootSequence");
         DontDestroyOnLoad(go);
         var component = go.AddComponent<BootSequence>();
+        // Ensure presence/heartbeat runs even if GPSLocationController is missing/disabled.
+        // This prevents the HUD getting stuck "scanning locations" with no weather/stories.
+        if (go.GetComponent<UserPresenceManager>() == null)
+            go.AddComponent<UserPresenceManager>();
         // Ensure component stays enabled
         component.enabled = true;
         go.SetActive(true);
     }
+
+#if !UNITY_WEBGL
+    private static void InstallDeviceFileLogger()
+    {
+        if (_deviceLogInstalled) return;
+        _deviceLogInstalled = true;
+
+        try
+        {
+            _deviceLogPath = Path.Combine(Application.persistentDataPath, "k1l0_device.log");
+            lock (_deviceLogLock)
+            {
+                File.WriteAllText(
+                    _deviceLogPath,
+                    $"===== K1L0 BOOT {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} =====\n" +
+                    $"persistentDataPath={Application.persistentDataPath}\n" +
+                    $"platform={Application.platform}\n" +
+                    $"version={Application.version}\n\n"
+                );
+            }
+
+            Application.logMessageReceivedThreaded += (condition, stackTrace, type) =>
+            {
+                try
+                {
+                    lock (_deviceLogLock)
+                    {
+                        File.AppendAllText(_deviceLogPath, $"{DateTime.Now:HH:mm:ss.fff} [{type}] {condition}\n");
+                        if (type == LogType.Error || type == LogType.Exception || type == LogType.Assert)
+                            File.AppendAllText(_deviceLogPath, $"{stackTrace}\n");
+                    }
+                }
+                catch { /* never throw from logger */ }
+            };
+
+            Debug.Log($"[BootSequence] Device file logger installed: {_deviceLogPath}");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[BootSequence] Failed to install device file logger: {e.Message}");
+        }
+    }
+#endif
 
     private void Awake()
     {
@@ -92,6 +153,10 @@ public class BootSequence : MonoBehaviour
         // Ensure one frame for scene objects to Awake
         yield return null;
 
+        // Force an early API connect probe so the app can't get stuck
+        // "scanning locations" with zero backend calls.
+        StartCoroutine(HealthProbe());
+
         BootDiagnostics.Mark("BootSequence before AllowRender");
         yield return BootTaskQueue.Enqueue("AllowRender", () => BootState.SetRenderAllowed());
         BootDiagnostics.Mark("BootSequence after AllowRender");
@@ -118,5 +183,16 @@ public class BootSequence : MonoBehaviour
         yield return BootTaskQueue.Enqueue("AllowMap", () => BootState.SetMapAllowed());
         yield return BootTaskQueue.Enqueue("AllowPlayer", () => BootState.SetPlayerAllowed());
         BootDiagnostics.Mark("BootSequence complete");
+    }
+
+    private IEnumerator HealthProbe()
+    {
+        // Give one frame so APIManager singleton creation doesn't contend with boot.
+        yield return null;
+        yield return APIManager.Instance.Get("/health", (success, response) =>
+        {
+            if (success) Debug.Log($"[BootSequence] HealthProbe OK: {response}");
+            else Debug.LogError($"[BootSequence] HealthProbe FAILED: {response}");
+        });
     }
 }

@@ -48,7 +48,8 @@ public class CityWeatherOverlay : MonoBehaviour
         rt.anchorMax = new Vector2(1, 1);
         rt.pivot = new Vector2(0, 1);
         rt.anchoredPosition = new Vector2(12, -6);
-        rt.sizeDelta = new Vector2(-24, 22);
+        rt.sizeDelta = new Vector2(-144, 20);
+        K1L0HudLayoutController.RegisterTopElement(rt, "CityWeatherLabel", 0, 20f, 20f);
 
         label = textGO.AddComponent<TextMeshProUGUI>();
 
@@ -57,7 +58,7 @@ public class CityWeatherOverlay : MonoBehaviour
         if (font == null) font = TMP_Settings.defaultFontAsset;
         label.font = font;
 
-        label.fontSize = 15;
+        label.fontSize = 12;
         label.color = new Color(0.75f, 0.85f, 1f, 0.85f);
         label.alignment = TextAlignmentOptions.TopLeft;
         label.text = "";

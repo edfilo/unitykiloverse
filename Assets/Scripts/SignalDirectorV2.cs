@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.UI;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using TMPro;
@@ -33,24 +34,28 @@ public enum SignalRole
 // ──────────────────────────────────────────────────────────────────
 // Everything the user sees as a "transmission" in the HUD is a Signal.
 // Every Signal carries `transmissionType` as first-class metadata.
-// There are exactly TWO user-facing types of transmission:
+// There are THREE user-facing types of transmission:
 //
 //   TransmissionType.Location
 //     — Bound to a real POI on the map (SignalRole.LocationTransmission)
 //     — Shown on the LocationRow of the HUD
 //     — Survives in the world until the 20-min refresh or ENTER/cooldown
 //
-//   TransmissionType.Ambient
-//     — Virtual/ephemeral pursuit signal not tied to a POI (every other
-//       SignalRole: PrimaryPursuit, SecondaryNearby, DistantBackground)
-//     — Shown on the AmbientRow (historically the "PursuitRow")
-//     — Drifts/churns with the pursuit cycle
+//   TransmissionType.Artifact
+//     — Virtual pursuit signal centered on an OBJECT (the LLM artifact).
+//     — Shown on the pursuit row alongside Transmitter signals.
 //
-// Both render as beams in the world, hence "beam" is not a type name.
-// When writing new code, refer to them as "location transmissions" and
-// "ambient transmissions". Branch on `sig.transmissionType` directly;
-// the IsLocationTransmission / IsAmbientTransmission helpers are sugar.
-public enum TransmissionType { Location, Ambient }
+//   TransmissionType.Transmitter
+//     — Virtual pursuit signal centered on a CHARACTER who is broadcasting.
+//     — Shown on the pursuit row alongside Artifact signals.
+//
+// Artifact + Transmitter together replace the legacy "Ambient" bucket.
+// When a non-Location signal spawns, it gets a 50/50 random Artifact /
+// Transmitter assignment so the world surfaces a healthy mix of both.
+// HUD branches that need "any non-location" should compare against
+// TransmissionType.Location directly (or use IsAmbientTransmission, which
+// is kept as sugar = anything that is not a Location transmission).
+public enum TransmissionType { Location, Artifact, Transmitter }
 
 public enum SignalType
 {
@@ -101,11 +106,17 @@ public class Signal
     // Narrative metadata — shared by both transmission types, drives teaser + dialog
     public string character;         // e.g. "cassie", "daniel" — null until a story primes
     public string specialItem;       // the object/reward — e.g. "red velvet ribbon"
+    public string artifactContainer; // backend-authored container detail for artifact beams
     public string teaser;            // the HUD sentence (backend-authored or locally generated)
 
-    // Location-only metadata (null on Ambient transmissions)
+    // Location-only metadata (null on Artifact / Transmitter transmissions)
     public string locationName;      // e.g. "Recon Brewing at Meeder"
     public string locationCategory;  // e.g. "brewery", "bar", "coffee_shop"
+    // Stable key for external sources (e.g., POI name). Used to de-dup multi-location beams.
+    public string externalKey;
+
+    // Optional ring-slot index used by the ambient pool spawner (1..N). -1 when not used.
+    public int poolRingIndex;
 
     // Runtime visual handle (set externally by whatever renders beams)
     [NonSerialized] public GameObject visualGO;
@@ -118,6 +129,7 @@ public class Signal
     {
         id = Guid.NewGuid().ToString("N").Substring(0, 8);
         pursuitStartTime = -1f;
+        poolRingIndex = -1;
     }
 
     public float Age => Time.time - spawnTime;
@@ -161,6 +173,85 @@ public class SignalDirectorV2 : MonoBehaviour
     [Header("Slot Limits")]
     public int maxSecondary = 2;
     public int maxDistant = 2;
+
+    [Header("Ambient Pool (Rings)")]
+    [Tooltip("If enabled, spawns a persistent pool of artifact/transmitter beams in 75m rings around the player.")]
+    public bool useConcentricAmbientPool = true;
+    [Tooltip("Ring spacing in meters.")]
+    public float ambientRingStepMeters = 75f;
+    [Tooltip("Remove and stop spawning ambient beams beyond this many miles.")]
+    public float ambientPoolMaxMiles = 1.1f;
+    [Tooltip("Hard cap on the number of ambient ring beams (prevents excessive spawns in dense road meshes).")]
+    public int ambientRingMaxCount = 256;
+    [Range(0f, 1f)]
+    [Tooltip("Chance each ambient beam is an Artifact (else Transmitter). Ignored when alternating rings is enabled.")]
+    public float ambientArtifactChance = 0.5f;
+    [Tooltip("If true, ring 1 is Artifact (closest), ring 2 is Transmitter, alternating outward.")]
+    public bool ambientAlternateArtifactTransmitter = true;
+
+    [Header("Location Beams (POI)")]
+    [Tooltip("Show purple beams for nearby locations within this many miles (from TransmitterScanner).")]
+    public float locationBeamMaxMiles = 1.1f;
+    [Tooltip("Max number of location beams to show at once.")]
+    public int maxLocationBeams = 20;
+
+    [Header("Ambient Pool (Backend)")]
+    [Tooltip("If enabled, non-location beams come from the backend shared Firestore pool (no fake local beams).")]
+    public bool useBackendConcentricBeams = true;
+    [Tooltip("How often to refresh ring beams from the backend (seconds).")]
+    public float backendBeamRefreshSeconds = 5f;
+    [Tooltip("Only rescan beams if the player moved at least this many meters since the last scan.")]
+    public float backendBeamRescanMeters = 50f;
+    [Tooltip("Failsafe: rescan at least this often even if movement threshold isn't crossed.")]
+    public float backendBeamMaxIntervalSeconds = 120f;
+    private float _lastBackendBeamRefreshTime = -999f;
+    private bool _backendBeamRequestInFlight = false;
+    private double _lastBackendScanLat = double.NaN;
+    private double _lastBackendScanLng = double.NaN;
+    private float _lastBackendScanTime = -999f;
+
+    [Serializable]
+    private class BackendBeamDoc
+    {
+        public string id;
+        public int ringIndex;
+        public string type; // "artifact" | "transmitter"
+        public double lat;
+        public double lng;
+        public string label;
+        public string material;
+        public string container;
+        public string senderName;
+        public string artifactSenderName;
+        public string lore;
+        public double distanceMeters;
+    }
+
+    [Serializable]
+    private class BackendNearbyBeamsResponse
+    {
+        public bool ok;
+        public float maxMiles;
+        public BackendBeamDoc[] beams;
+    }
+
+    private int ComputeAmbientRingIndex(float distanceMeters, float stepMeters, int ringCount)
+    {
+        if (stepMeters <= 0f || distanceMeters < 0f) return -1;
+        int ringIndex = Mathf.Max(1, Mathf.RoundToInt(distanceMeters / stepMeters));
+        if (ringIndex < 1 || ringIndex > ringCount) return -1;
+        return ringIndex;
+    }
+
+    [Serializable]
+    private class BackendFillMissingResponse
+    {
+        public bool ok;
+        public int created;
+        public BackendBeamDoc[] beams;
+    }
+
+    private float lastLocationSyncTime;
 
     [Header("Churn")]
     [Tooltip("Seconds of no-pursuit before abandoned signals may churn")]
@@ -214,9 +305,30 @@ public class SignalDirectorV2 : MonoBehaviour
     private KiloverseMapInfo map;
     private GameObject playerObj;
     private bool initialized;
+    private bool loggedAmbientPoolConfig;
 
     // ── On-screen debug overlay ───────────────────────────────
     private TextMeshProUGUI debugText;
+    private TextMeshProUGUI beamAuditText;
+    private float nextBeamAuditTime = 0f;
+    private string lastBeamAuditLine = "";
+    private string lastSettingsBeamDebugText = "RING DEBUG\nPORTAL AUDIT: waiting...";
+    private RectTransform storiesStripRect;
+    private const float TeaserRowLeftInset = 12f;
+    private const float TeaserRowHeight = 24f;
+    private const float TeaserRowGap = 2f;
+    private const float MainActionHeight = 46f;
+    private const float MainActionSubtextHeight = 34f;
+    private static readonly Color TeaserGreen = new Color(0.47f, 1f, 0.54f, 1f);
+    private static readonly Color TeaserRed = new Color(1f, 0.18f, 0.15f, 1f);
+    private static readonly string[] FallbackSenderNames =
+    {
+        "Mara", "Theo", "June", "Cass", "Iris", "Vale", "Nico", "Orla",
+        "Milo", "Zara", "Lena", "Otis", "Sable", "Remy", "Vera", "Jules"
+    };
+    private const float TeaserBelowStoriesGap = 8f;
+    private const float DefaultStoriesBottomFromTop = 196f;
+    [SerializeField] private bool showMapTeaserRows = false;
 
     // ── Player marker (discovery/zoomed-out mode) ─────────────
     private GameObject playerMarkerGO;
@@ -236,14 +348,31 @@ public class SignalDirectorV2 : MonoBehaviour
     private GameObject pursuitRow;
     private GameObject pursuitPanel;
     private Image pursuitRowBg;                // darker backing revealed in ENTER mode
+    private GameObject pursuitRowBorder;       // red 4-strip frame, visible only in ENTER mode
     private UnityEngine.UI.Button pursuitRowButton; // tap target in ENTER mode
-    private string pursuitLabelOverride;
-    private int pursuitLabelNormalFontSize = 16;
-    private int pursuitLabelEnterFontSize = 44;
-    private Vector2 pursuitLabelNormalOffset = new Vector2(52, 0);
+	    private string pursuitLabelOverride;
+	    private int pursuitLabelNormalFontSize = 12;
+	    private int pursuitLabelEnterFontSize = 44;
+	    private Vector2 pursuitLabelNormalOffset = new Vector2(34, 0);
 
-    // ── Location Transmission HUD ─────────────────────────────
-    private TextMeshProUGUI locLabel;         // green foreground (blinks)
+	    // ── Artifact Transmission HUD (second beam row) ───────────
+	    // Always shows the nearest artifact transmission so the player can
+	    // find/collect an artifact even when the primary beam is a transmitter.
+	    private TextMeshProUGUI artifactLabel;
+	    private TextMeshProUGUI artifactDist;
+	    private RectTransform artifactArrowRt;
+	    private Image artifactCompassRing;
+	    private GameObject artifactCompassGO;
+	    private GameObject artifactRow;
+	    private Image artifactRowBg;
+	    private GameObject artifactRowBorder;
+	    private UnityEngine.UI.Button artifactRowButton;
+	    private int artifactLabelNormalFontSize = 12;
+	    private int artifactLabelEnterFontSize = 44;
+	    private Vector2 artifactLabelNormalOffset = new Vector2(34, 0);
+
+	    // ── Location Transmission HUD ─────────────────────────────
+	    private TextMeshProUGUI locLabel;         // green foreground (blinks)
     private TextMeshProUGUI locDist;           // distance label under compass
     private RectTransform locArrowRt;
     private Image locCompassRing;
@@ -251,17 +380,35 @@ public class SignalDirectorV2 : MonoBehaviour
     private GameObject locRow;
     private GameObject locPanel;
     private Image locRowBg;                    // darker backing revealed when row is in ENTER mode
+    private GameObject locRowBorder;           // red 4-strip frame, visible only in ENTER mode
     private UnityEngine.UI.Button locRowButton; // tap target when row is ENTER mode
-    private int locLabelNormalFontSize = 16;
+    private int locLabelNormalFontSize = 12;
     private int locLabelEnterFontSize = 44;
-    private Vector2 locLabelNormalOffset = new Vector2(52, 0);
+    private Vector2 locLabelNormalOffset = new Vector2(34, 0);
     private Vector2 locLabelEnterOffset = Vector2.zero;
     private TextMeshProUGUI locEnterText;
+    private TextMeshProUGUI locEnterSubtext;
     private GameObject locEnterGO;
+    private GameObject locEnterBorder;
+    private Image locEnterButtonBg;
+    private UnityEngine.UI.Button locEnterButton;
+    private TextMeshProUGUI dailyStepsLabel;
+    private TextMeshProUGUI weeklyStepsLabel;
+    private PedometerService pedometerService;
+    private float nextInsideBuildingCheckTime;
+    private bool cachedInsideBuilding;
+    private bool enterOverlayPointerDown;
+    private int lastEnterOverlayFrame = -1;
     private float locEnterFirstShownTime = -1f;   // when ENTER first became eligible
     private Signal locEnterStickySignal;           // signal ENTER is sticking to
     private const float ENTER_MIN_VISIBLE_SECONDS = 120f; // keep ENTER on for at least 2 min
-    private const float ENTER_PROXIMITY_METERS = 10f;
+    // ENTER radius is type-specific:
+    // - Artifact + Transmitter beams: require very close proximity (<=10m)
+    // - Location beams: <=10m OR within 10m of the containing building footprint
+    private const float ENTER_PROXIMITY_BEAM_METERS = 10f;      // Artifact / Transmitter
+    private const float ENTER_PROXIMITY_LOCATION_METERS = 10f;  // Location point distance
+    private const float ENTER_PROXIMITY_BUILDING_EDGE_METERS = 10f; // Distance-to-footprint allowance
+    private const float ENTER_HIDE_DISTANCE_METERS = 20f; // hide ENTER after moving ~20m away
     private Signal enterCandidate;                 // the signal the ENTER button currently targets
 
     // ── Shared enter-state (populated by ComputeEnterState, read by both rows)
@@ -294,49 +441,136 @@ public class SignalDirectorV2 : MonoBehaviour
     public void SuppressHUD(bool suppress)
     {
         hudSuppressed = suppress;
-        if (pursuitRow != null) pursuitRow.SetActive(!suppress);
-        if (locRow != null) locRow.SetActive(!suppress);
+        if (pursuitRow != null) pursuitRow.SetActive(MapTeaserRowsVisible);
+        if (artifactRow != null) artifactRow.SetActive(MapTeaserRowsVisible);
+        if (locRow != null) locRow.SetActive(MapTeaserRowsVisible);
         if (locEnterGO != null) locEnterGO.SetActive(!suppress);
+        if (dailyStepsLabel != null) dailyStepsLabel.gameObject.SetActive(!suppress);
     }
 
-    // {0} = character, {1} = special item, {2} = countdown "M:SS" (already wrapped in white <color> at call site)
-    // Tone: assertive walk-to-retrieve. Lead with a verb in caps. Object stays Lynchian —
-    // booth seats, humming lightbulbs, things that know you.
-    private static readonly string[] pursuitTeasers = new[]
-    {
-        "WALK TO {0}. a {1} is on the booth seat {2}",
-        "GO. {0} has a {1} and the lights keep flickering {2}",
-        "MOVE. {0} is humming over a {1} that has your name {2}",
-        "WALK. {0} left the door cracked. the {1} is on the counter {2}",
-        "GO NOW. {0} is in the back booth with a {1} {2}",
-        "WALK TO {0}. the red curtain is already open. a {1} waits {2}",
-        "RUN. {0} won't hold the {1} forever {2}",
-        "MOVE. the {1} is wet and warm and it knows you {2}",
-        "WALK. {0} set two cups out. a {1} between them {2}",
-        "GO. {0} keeps saying your name backwards over a {1} {2}",
-        "WALK TO {0}. the {1} hums in their pocket {2}",
-        "MOVE. {0} keeps glancing at the door, holding a {1} {2}",
-        "GO. {0} only hands the {1} over in person {2}",
-        "WALK. the street dims every second you don't. {0}. {1} {2}",
-        "GO TO {0}. they're pretending not to wait. a {1} on the table {2}",
-        "WALK. {0} laid the {1} out like an offering {2}",
-    };
+    private bool MapTeaserRowsVisible => showMapTeaserRows && !hudSuppressed;
 
-    // Pool of walk-reward items. Short, seductive, Lynchian — diner booths, red curtains,
-    // small perfect objects that feel slightly wrong.
-    private static readonly string[] specialItems = new[]
+    public string GetNearbyTeaserText()
     {
-        "red velvet ribbon", "still-warm slice of pie", "humming lightbulb",
-        "owl feather", "single pearl earring", "cassette labeled MAYBE",
-        "lipstick kiss on a napkin", "key with no door", "matchbook from a place that closed",
-        "polaroid of a stranger with your face", "phone number written in eyeliner",
-        "lock of blonde hair", "small perfect peach", "silk bag of baby teeth",
-        "glass of milk, ice-cold", "postcard signed only X",
-    };
+        var playerMerc = GetPlayerMercator();
+        Signal artifact = GetNearestSignalByType(TransmissionType.Artifact, playerMerc);
+        Signal transmitter = GetNearestSignalByType(TransmissionType.Transmitter, playerMerc);
+        Signal location = GetNearestLocationTransmission();
 
-    public static string PickSpecialItem()
+        return $"> {TeaserLineOrDefault(artifactLabel, "scanning ambient locations...")}\n" +
+               $"> {TeaserLineOrDefault(pursuitLabel, "scanning ambient locations...")}\n" +
+               $"> {TeaserLineOrDefault(locLabel, "scanning locations...")}";
+    }
+
+    public struct NearbyTeaserInfo
     {
-        return specialItems[UnityEngine.Random.Range(0, specialItems.Length)];
+        public bool hasSignal;
+        public string title;
+        public string distanceText;
+        public float relativeAngle;
+        public string scanningText;
+    }
+
+    public NearbyTeaserInfo[] GetNearbyTeaserInfos()
+    {
+        var playerMerc = GetPlayerMercator();
+        Signal artifact = GetNearestSignalByType(TransmissionType.Artifact, playerMerc);
+        Signal transmitter = GetNearestSignalByType(TransmissionType.Transmitter, playerMerc);
+        Signal location = GetNearestLocationTransmission();
+
+        return new[]
+        {
+            BuildNearbyTeaserInfo(artifact, "scanning ambient locations...", TransmissionType.Artifact, playerMerc),
+            BuildNearbyTeaserInfo(transmitter, "scanning ambient locations...", TransmissionType.Transmitter, playerMerc),
+            BuildNearbyTeaserInfo(location, "scanning locations...", TransmissionType.Location, playerMerc),
+        };
+    }
+
+    private NearbyTeaserInfo BuildNearbyTeaserInfo(Signal signal, string scanningText, TransmissionType type, Vector2d playerMerc)
+    {
+        if (signal == null)
+        {
+            return new NearbyTeaserInfo
+            {
+                hasSignal = false,
+                title = scanningText,
+                distanceText = "",
+                relativeAngle = 0f,
+                scanningText = scanningText
+            };
+        }
+
+        string title;
+        if (type == TransmissionType.Artifact || type == TransmissionType.Transmitter)
+        {
+            string name = !string.IsNullOrEmpty(signal.specialItem) ? signal.specialItem : "artifact";
+            string senderFirst = GetSignalSenderName(signal);
+            title = $"{name} from {senderFirst}";
+        }
+        else
+        {
+            title = !string.IsNullOrEmpty(signal.locationName) ? signal.locationName : "location";
+        }
+
+        float distance = DistanceTo(signal, playerMerc);
+        return new NearbyTeaserInfo
+        {
+            hasSignal = true,
+            title = title.ToUpperInvariant(),
+            distanceText = FormatTeaserDistancePlain(distance),
+            relativeAngle = RelativeAngleTo(signal, playerMerc),
+            scanningText = scanningText
+        };
+    }
+
+    private static string TeaserLineOrDefault(TextMeshProUGUI label, string fallback)
+    {
+        if (label == null || string.IsNullOrWhiteSpace(label.text)) return fallback;
+        return label.text.Trim();
+    }
+
+    private static string GetSignalSenderName(Signal signal)
+    {
+        string named = FirstNameOrNull(signal != null ? signal.character : null);
+        if (!string.IsNullOrWhiteSpace(named)) return named;
+        string seed = signal != null && !string.IsNullOrWhiteSpace(signal.id) ? signal.id : "k1l0";
+        int index = Mathf.Abs(seed.GetHashCode()) % FallbackSenderNames.Length;
+        return FallbackSenderNames[index];
+    }
+
+    private static string FormatTeaserDistance(float meters)
+    {
+        return $"<color=#FFFFFF>{FormatTeaserDistancePlain(meters)}</color>";
+    }
+
+    private static string FormatTeaserDistancePlain(float meters)
+    {
+        float miles = meters / 1609.34f;
+        if (miles < 0.33f)
+            return $"{Mathf.RoundToInt(meters * 3.28084f)}ft";
+        return $"{miles:F1}mi";
+    }
+
+    private Signal GetNearestSignalByType(TransmissionType transmissionType, Vector2d playerMerc)
+    {
+        Signal best = null;
+        float bestDist = float.MaxValue;
+        for (int i = 0; i < signals.Count; i++)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role == SignalRole.LocationTransmission) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+            if (s.transmissionType != transmissionType) continue;
+
+            float d = DistanceTo(s, playerMerc);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                best = s;
+            }
+        }
+        return best;
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -345,13 +579,20 @@ public class SignalDirectorV2 : MonoBehaviour
     // is set at spawn time and is the source of truth.
     // ──────────────────────────────────────────────────────────────
     public static TransmissionType TypeOf(Signal sig)
-        => sig != null ? sig.transmissionType : TransmissionType.Ambient;
+        => sig != null ? sig.transmissionType : TransmissionType.Artifact;
 
     public static bool IsLocationTransmission(Signal sig)
         => sig != null && sig.transmissionType == TransmissionType.Location;
 
+    public static bool IsArtifactTransmission(Signal sig)
+        => sig != null && sig.transmissionType == TransmissionType.Artifact;
+
+    public static bool IsTransmitterTransmission(Signal sig)
+        => sig != null && sig.transmissionType == TransmissionType.Transmitter;
+
+    /// <summary>Sugar for "anything that is not a location transmission" (Artifact OR Transmitter).</summary>
     public static bool IsAmbientTransmission(Signal sig)
-        => sig != null && sig.transmissionType == TransmissionType.Ambient;
+        => sig != null && sig.transmissionType != TransmissionType.Location;
 
     /// <summary>Fired when user taps ENTER on a location transmission.</summary>
     public event Action<Signal> OnLocationEnter;
@@ -382,14 +623,6 @@ public class SignalDirectorV2 : MonoBehaviour
         go.AddComponent<SignalDirectorV2>();
         go.AddComponent<SignalBeamBridge>();
 
-        // Disable old VirtualGridSpawner so they don't fight
-        var oldSpawner = UnityEngine.Object.FindFirstObjectByType<VirtualGridSpawner>();
-        if (oldSpawner != null)
-        {
-            oldSpawner.enabled = false;
-            Debug.Log("[SignalDirector] Disabled old VirtualGridSpawner");
-        }
-
         Debug.Log("[SignalDirector] Auto-bootstrapped SignalDirectorV2 + SignalBeamBridge");
     }
 
@@ -401,6 +634,11 @@ public class SignalDirectorV2 : MonoBehaviour
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
+
+        // Game rule: concentric pool uses 75m spacing.
+        // Serialized scene values can drift; enforce at runtime to avoid showing too many rings at once.
+        ambientRingStepMeters = 75f;
+
         Input.compass.enabled = true;
         Input.location.Start();
     }
@@ -420,12 +658,17 @@ public class SignalDirectorV2 : MonoBehaviour
         // location and beam rows agree on which transmission (if any) is
         // currently the ENTER target.
         ComputeEnterState();
+        UpdateEnterOverlay();
+        UpdateEnterOverlayFallbackTap();
 
         // HUD updates every frame for smooth distance
+        ApplyTopHudVerticalLayout();
         UpdatePursuitHUD();
+        UpdateArtifactHUD();
         UpdateLocationHUD();
-        UpdatePlayerRing();
-        UpdatePlayerMarker();
+        UpdateStepsHUD();
+	        UpdatePlayerRing();
+	        UpdatePlayerMarker();
 
         if (Time.time - lastTickTime < tickInterval) return;
         lastTickTime = Time.time;
@@ -439,10 +682,12 @@ public class SignalDirectorV2 : MonoBehaviour
     }
 
     // ───────────────────────────────────────────────────────────
-    // Initialization (waits for GPS + map like VirtualGridSpawner)
-    // ───────────────────────────────────────────────────────────
+	    // Initialization (waits for GPS + map like VirtualGridSpawner)
+	    // ───────────────────────────────────────────────────────────
 
-    private float lastInitLogTime;
+	    private float lastInitLogTime;
+	    private float mapInitializedTime = -1f;
+	    private const float LocationRevealDelaySeconds = 8f;
 
     private void TryInitialize()
     {
@@ -468,12 +713,24 @@ public class SignalDirectorV2 : MonoBehaviour
         initialized = true;
         lastTickTime = Time.time;
         lastChurnTime = Time.time;
+        mapInitializedTime = Time.time;
         Debug.Log("[SignalDirector] Initialized.");
 
+        // Force the current "live pool" tuning on boot (prevents serialized scene values
+        // from drifting away from the intended defaults while we iterate).
+        if (useConcentricAmbientPool)
+        {
+            ambientRingStepMeters = 75f;
+            ambientPoolMaxMiles = 1.1f;
+            ambientAlternateArtifactTransmitter = true;
+        }
+
         CreateDebugOverlay();
+        CreateStepsHUD();
         CreatePursuitHUD();
+        CreateArtifactHUD();
         CreateLocationHUD();
-        CreatePlayerMarker();
+	        CreatePlayerMarker();
 
         // Seed the initial active set
         EnsurePrimary();
@@ -483,6 +740,10 @@ public class SignalDirectorV2 : MonoBehaviour
 
     private void CreateDebugOverlay()
     {
+        debugText = null;
+        beamAuditText = null;
+        return;
+
         var go = new GameObject("SignalDebugLabel");
         go.transform.SetParent(K1L0CanvasRoot.HUD, false);
 
@@ -506,12 +767,131 @@ public class SignalDirectorV2 : MonoBehaviour
         ProfileEditorModal.OnDebugTogglesChanged += () => {
             if (debugText != null) debugText.enabled = ProfileEditorModal.ShowBeamDebug;
         };
+
+        // Always-on beam audit line (every 10s) — quick sanity check for ring spacing.
+        var auditGO = new GameObject("BeamAuditLabel");
+        auditGO.transform.SetParent(K1L0CanvasRoot.HUD, false);
+        var art = auditGO.AddComponent<RectTransform>();
+        art.anchorMin = new Vector2(1f, 0f);
+        art.anchorMax = new Vector2(1f, 0f);
+        art.pivot = new Vector2(1f, 0f);
+        art.anchoredPosition = new Vector2(-20f, 230f);
+        art.sizeDelta = new Vector2(320f, 64f);
+
+        beamAuditText = auditGO.AddComponent<TextMeshProUGUI>();
+        beamAuditText.font = font;
+        beamAuditText.fontSize = 10f;
+        beamAuditText.color = new Color(0.47f, 1f, 0.54f, 0.95f);
+        beamAuditText.alignment = TextAlignmentOptions.BottomRight;
+        beamAuditText.raycastTarget = false;
+        beamAuditText.textWrappingMode = TextWrappingModes.Normal;
+        beamAuditText.overflowMode = TextOverflowModes.Truncate;
+        ApplyHeavyShadow(beamAuditText);
     }
 
-    private void CreatePursuitHUD()
+    private void CreateStepsHUD()
     {
-        var font = Resources.Load<TMP_FontAsset>("Fonts/IBMPlexMono-Regular SDF");
+        var font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
         if (font == null) font = TMP_Settings.defaultFontAsset;
+        dailyStepsLabel = CreateStepRow("StepsBlock", 19, BuildStepsHeroText(-1, -1, -1, "Start walking... Take 200 steps to establish kilosync."), font);
+        weeklyStepsLabel = null;
+    }
+
+    private TextMeshProUGUI CreateStepRow(string name, int order, string text, TMP_FontAsset font)
+    {
+        var row = new GameObject(name);
+        row.transform.SetParent(K1L0CanvasRoot.HUD, false);
+        var rowRt = row.AddComponent<RectTransform>();
+        rowRt.anchorMin = new Vector2(0f, 1f);
+        rowRt.anchorMax = new Vector2(1f, 1f);
+        rowRt.pivot = new Vector2(0f, 1f);
+        rowRt.sizeDelta = new Vector2(-24f, 150f);
+        K1L0HudLayoutController.RegisterTopElement(rowRt, name, order, 150f, 16f);
+
+        var label = row.AddComponent<TextMeshProUGUI>();
+        label.font = font;
+        label.fontSize = 10f;
+        label.lineSpacing = -14f;
+        label.alignment = TextAlignmentOptions.TopLeft;
+        label.color = new Color(0.47f, 1f, 0.54f, 0.68f);
+        label.margin = new Vector4(0f, 8f, 0f, 0f);
+        label.text = text;
+        label.raycastTarget = false;
+        label.richText = true;
+        label.textWrappingMode = TextWrappingModes.Normal;
+        label.overflowMode = TextOverflowModes.Overflow;
+        ApplyHeavyShadow(label);
+        return label;
+    }
+
+    private void UpdateStepsHUD()
+    {
+        if (dailyStepsLabel == null) return;
+        if (pedometerService == null) pedometerService = FindFirstObjectByType<PedometerService>();
+        int main = pedometerService != null ? pedometerService.kilosyncSteps : -1;
+        int daily = pedometerService != null ? pedometerService.stepsLast24Hours : -1;
+        int weekly = pedometerService != null ? pedometerService.stepsLast7Days : -1;
+        bool inert = pedometerService == null || !pedometerService.kilosyncReady || pedometerService.isKilosyncInert;
+        dailyStepsLabel.text = BuildStepsHeroText(main, daily, weekly, BuildActivityPrompt(inert));
+    }
+
+    private string BuildActivityPrompt(bool inert)
+    {
+        if (!inert) return "";
+
+        Signal loc = GetLocationTransmission();
+        if (loc != null && showEnter && enterTarget == loc && !string.IsNullOrWhiteSpace(loc.locationName))
+            return $"you are at {loc.locationName}. go outside and walk 200 steps to establish kilosync.";
+
+        if (IsPlayerInsideBuildingCached())
+            return "Go outside and take 200 steps to establish kilosync.";
+
+        return "Start walking... Take 200 steps to establish kilosync.";
+    }
+
+    private bool IsPlayerInsideBuildingCached()
+    {
+        if (Time.unscaledTime < nextInsideBuildingCheckTime) return cachedInsideBuilding;
+        nextInsideBuildingCheckTime = Time.unscaledTime + 2f;
+        cachedInsideBuilding = false;
+
+        if (playerObj == null) return false;
+        Vector3 p = playerObj.transform.position;
+        var renderers = FindObjectsByType<Renderer>(FindObjectsSortMode.None);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            var r = renderers[i];
+            if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+            string n = r.gameObject.name;
+            if (string.IsNullOrEmpty(n) || n.IndexOf("building", StringComparison.OrdinalIgnoreCase) < 0) continue;
+            Bounds b = r.bounds;
+            if (p.x >= b.min.x && p.x <= b.max.x && p.z >= b.min.z && p.z <= b.max.z && p.y >= b.min.y - 1f && p.y <= b.max.y + 3f)
+            {
+                cachedInsideBuilding = true;
+                break;
+            }
+        }
+        return cachedInsideBuilding;
+    }
+
+    private static string BuildStepsHeroText(int main, int daily, int weekly, string activityPrompt)
+    {
+        return $"<size=10>steps</size>\n" +
+               $"<size=54><b>{FormatStepCount(main)}</b></size>\n" +
+               $"<size=10>24hr: {FormatStepCount(daily)}    7d: {FormatStepCount(weekly)}</size>" +
+               (string.IsNullOrWhiteSpace(activityPrompt) ? "" : $"\n<size=12>{activityPrompt}</size>");
+    }
+
+    private static string FormatStepCount(int steps)
+    {
+        if (steps < 0) return "...";
+        return steps.ToString("N0");
+    }
+
+	    private void CreatePursuitHUD()
+	    {
+	        var font = Resources.Load<TMP_FontAsset>("Fonts/IBMPlexMono-Regular SDF");
+	        if (font == null) font = TMP_Settings.defaultFontAsset;
 
         // Row container — holds compass + text side by side. Morphs into an
         // ENTER button when the active enter target is a beam transmission.
@@ -521,8 +901,9 @@ public class SignalDirectorV2 : MonoBehaviour
         rowRt.anchorMin = new Vector2(0f, 1f);
         rowRt.anchorMax = new Vector2(1f, 1f);
         rowRt.pivot = new Vector2(0f, 1f);
-        rowRt.anchoredPosition = new Vector2(12, -165);
-        rowRt.sizeDelta = new Vector2(-24, 58);
+        rowRt.anchoredPosition = new Vector2(TeaserRowLeftInset, -(DefaultStoriesBottomFromTop + TeaserBelowStoriesGap));
+        rowRt.sizeDelta = new Vector2(-24, TeaserRowHeight);
+        K1L0HudLayoutController.RegisterTopElement(rowRt, "PursuitRow", 20, TeaserRowHeight, TeaserRowHeight);
         pursuitPanel = pursuitRow;
 
         // Row backing — transparent by default, darkens when the row becomes the ENTER button
@@ -531,8 +912,11 @@ public class SignalDirectorV2 : MonoBehaviour
         // Button on the row — only interactable when showEnter + target is a beam
         pursuitRowButton = pursuitRow.AddComponent<UnityEngine.UI.Button>();
         pursuitRowButton.targetGraphic = pursuitRowBg;
-        pursuitRowButton.onClick.AddListener(OnEnterLocationTapped);
+        pursuitRowButton.onClick.AddListener(OnTransmitTapped);
         pursuitRowButton.interactable = false;
+
+        // Red ENTER-mode border frame (4 thin strips). Hidden until ENTER state.
+        pursuitRowBorder = CreateBorderFrame(pursuitRow.transform, new Color(1f, 0.15f, 0.15f, 1f), 3f);
 
         // Compass circle + arrow (left side)
         pursuitCompassGO = CreateCompassWidget(pursuitRow.transform, "PursuitCompass", out pursuitCompassRing, out pursuitArrowRt, out pursuitDist);
@@ -542,8 +926,40 @@ public class SignalDirectorV2 : MonoBehaviour
         pursuitLabel.color = new Color(0.47f, 1f, 0.54f, 1f);
         ApplyHeavyShadow(pursuitLabel);
 
-        pursuitTeaser = null;
-    }
+	        pursuitTeaser = null;
+	    }
+
+	    private void CreateArtifactHUD()
+	    {
+	        var font = Resources.Load<TMP_FontAsset>("Fonts/IBMPlexMono-Regular SDF");
+	        if (font == null) font = TMP_Settings.defaultFontAsset;
+
+	        artifactRow = new GameObject("ArtifactRow");
+	        artifactRow.transform.SetParent(K1L0CanvasRoot.HUD, false);
+	        var rowRt = artifactRow.AddComponent<RectTransform>();
+	        rowRt.anchorMin = new Vector2(0f, 1f);
+	        rowRt.anchorMax = new Vector2(1f, 1f);
+	        rowRt.pivot = new Vector2(0f, 1f);
+	        rowRt.anchoredPosition = new Vector2(TeaserRowLeftInset, -(DefaultStoriesBottomFromTop + TeaserBelowStoriesGap + TeaserRowHeight + TeaserRowGap));
+	        rowRt.sizeDelta = new Vector2(-24, TeaserRowHeight);
+	        K1L0HudLayoutController.RegisterTopElement(rowRt, "ArtifactRow", 21, TeaserRowHeight, TeaserRowHeight);
+
+	        artifactRowBg = artifactRow.AddComponent<Image>();
+	        artifactRowBg.color = new Color(0f, 0f, 0f, 0f);
+
+	        artifactRowButton = artifactRow.AddComponent<UnityEngine.UI.Button>();
+	        artifactRowButton.targetGraphic = artifactRowBg;
+	        artifactRowButton.onClick.AddListener(OnViewArtifactTapped);
+	        artifactRowButton.interactable = false;
+
+	        artifactRowBorder = CreateBorderFrame(artifactRow.transform, new Color(1f, 0.15f, 0.15f, 1f), 3f);
+
+	        artifactCompassGO = CreateCompassWidget(artifactRow.transform, "ArtifactCompass", out artifactCompassRing, out artifactArrowRt, out artifactDist);
+
+	        artifactLabel = CreateHUDTextLayer(artifactRow.transform, "ArtifactLabel", font, artifactLabelNormalFontSize, artifactLabelNormalOffset);
+	        artifactLabel.color = new Color(0.47f, 1f, 0.54f, 1f);
+	        ApplyHeavyShadow(artifactLabel);
+	    }
 
     private void CreateLocationHUD()
     {
@@ -555,11 +971,12 @@ public class SignalDirectorV2 : MonoBehaviour
         locRow.transform.SetParent(K1L0CanvasRoot.HUD, false);
         var rowRt = locRow.AddComponent<RectTransform>();
         rowRt.anchorMin = new Vector2(0f, 1f);
-        rowRt.anchorMax = new Vector2(1f, 1f);
-        rowRt.pivot = new Vector2(0f, 1f);
-        rowRt.anchoredPosition = new Vector2(12, -245);
-        rowRt.sizeDelta = new Vector2(-24, 58);
-        locPanel = locRow;
+	        rowRt.anchorMax = new Vector2(1f, 1f);
+	        rowRt.pivot = new Vector2(0f, 1f);
+	        rowRt.anchoredPosition = new Vector2(TeaserRowLeftInset, -(DefaultStoriesBottomFromTop + TeaserBelowStoriesGap + (TeaserRowHeight + TeaserRowGap) * 2f));
+	        rowRt.sizeDelta = new Vector2(-24, TeaserRowHeight);
+	        K1L0HudLayoutController.RegisterTopElement(rowRt, "LocRow", 22, TeaserRowHeight, TeaserRowHeight);
+	        locPanel = locRow;
 
         // Row backing — transparent by default, darkens when the row becomes the ENTER button
         locRowBg = locRow.AddComponent<Image>();
@@ -570,6 +987,9 @@ public class SignalDirectorV2 : MonoBehaviour
         locRowButton.onClick.AddListener(OnEnterLocationTapped);
         locRowButton.interactable = false;
 
+        // Red ENTER-mode border frame (4 thin strips). Hidden until ENTER state.
+        locRowBorder = CreateBorderFrame(locRow.transform, new Color(1f, 0.15f, 0.15f, 1f), 3f);
+
         // Compass circle + arrow (left side)
         locCompassGO = CreateCompassWidget(locRow.transform, "LocCompass", out locCompassRing, out locArrowRt, out locDist);
 
@@ -578,38 +998,68 @@ public class SignalDirectorV2 : MonoBehaviour
         locLabel.color = new Color(0.47f, 1f, 0.54f, 1f);
         ApplyHeavyShadow(locLabel);
 
-        // ENTER button — centered, large, unmissable
-        locEnterGO = new GameObject("LocEnter");
+        // Main action button — full-width, flashing, shown when a beam/location is enterable.
+        locEnterGO = new GameObject("MainAction");
         locEnterGO.transform.SetParent(K1L0CanvasRoot.HUD, false);
         var eRt = locEnterGO.AddComponent<RectTransform>();
-        eRt.anchorMin = new Vector2(0.5f, 0.5f);
-        eRt.anchorMax = new Vector2(0.5f, 0.5f);
-        eRt.pivot = new Vector2(0.5f, 0.5f);
-        eRt.anchoredPosition = new Vector2(0, 0);
-        eRt.sizeDelta = new Vector2(700, 140);
+        eRt.anchorMin = new Vector2(0f, 1f);
+        eRt.anchorMax = new Vector2(1f, 1f);
+        eRt.pivot = new Vector2(0f, 1f);
+        eRt.anchoredPosition = new Vector2(TeaserRowLeftInset, -(DefaultStoriesBottomFromTop + TeaserBelowStoriesGap + (TeaserRowHeight + TeaserRowGap) * 3f + 6f));
+        eRt.sizeDelta = new Vector2(-24f, MainActionHeight + MainActionSubtextHeight + 3f);
 
-        // Tap area + subtle backing
-        var enterBgImg = locEnterGO.AddComponent<Image>();
-        enterBgImg.color = new Color(0f, 0f, 0f, 0.55f);
-        var enterBtn = locEnterGO.AddComponent<UnityEngine.UI.Button>();
-        enterBtn.onClick.AddListener(OnEnterLocationTapped);
+        var subtextGO = new GameObject("MainActionSubtext");
+        subtextGO.transform.SetParent(locEnterGO.transform, false);
+        var stRt = subtextGO.AddComponent<RectTransform>();
+        stRt.anchorMin = new Vector2(0f, 1f);
+        stRt.anchorMax = new Vector2(1f, 1f);
+        stRt.pivot = new Vector2(0.5f, 1f);
+        stRt.offsetMin = new Vector2(0f, -(MainActionSubtextHeight));
+        stRt.offsetMax = Vector2.zero;
+        locEnterSubtext = subtextGO.AddComponent<TextMeshProUGUI>();
+        locEnterSubtext.font = font;
+        locEnterSubtext.fontSize = 10f;
+        locEnterSubtext.lineSpacing = -10f;
+        locEnterSubtext.characterSpacing = 0f;
+        locEnterSubtext.text = "enter portal";
+        locEnterSubtext.color = new Color(1f, 0.18f, 0.15f, 0.8f);
+        locEnterSubtext.alignment = TextAlignmentOptions.Center;
+        locEnterSubtext.raycastTarget = false;
+        ApplyHeavyShadow(locEnterSubtext);
+
+        var buttonGO = new GameObject("MainActionButton");
+        buttonGO.transform.SetParent(locEnterGO.transform, false);
+        var btnRt = buttonGO.AddComponent<RectTransform>();
+        btnRt.anchorMin = new Vector2(0f, 0f);
+        btnRt.anchorMax = new Vector2(1f, 0f);
+        btnRt.pivot = new Vector2(0.5f, 0f);
+        btnRt.offsetMin = Vector2.zero;
+        btnRt.offsetMax = new Vector2(0f, MainActionHeight);
+
+        locEnterButtonBg = buttonGO.AddComponent<Image>();
+        locEnterButtonBg.color = new Color(0f, 0f, 0f, 0.70f);
+        locEnterButton = buttonGO.AddComponent<UnityEngine.UI.Button>();
+        locEnterButton.onClick.AddListener(OnEnterOverlayTapped);
+        locEnterBorder = CreateBorderFrame(buttonGO.transform, new Color(1f, 0.15f, 0.15f, 1f), 2.5f);
 
         // Enter fg layer
-        var enterFgGO = new GameObject("LocEnterFg");
-        enterFgGO.transform.SetParent(locEnterGO.transform, false);
+        var enterFgGO = new GameObject("MainActionText");
+        enterFgGO.transform.SetParent(buttonGO.transform, false);
         var efRt = enterFgGO.AddComponent<RectTransform>();
         efRt.anchorMin = Vector2.zero; efRt.anchorMax = Vector2.one;
         efRt.offsetMin = Vector2.zero; efRt.offsetMax = Vector2.zero;
         locEnterText = enterFgGO.AddComponent<TextMeshProUGUI>();
         locEnterText.font = font;
-        locEnterText.fontSize = 56;
+        locEnterText.fontSize = 14;
         locEnterText.text = "> ENTER TRANSMISSION_";
         locEnterText.color = new Color(0.47f, 1f, 0.54f, 1f);
         locEnterText.alignment = TextAlignmentOptions.Center;
         locEnterText.raycastTarget = false;
         locEnterText.richText = true;
+        locEnterText.overflowMode = TextOverflowModes.Ellipsis;
         ApplyHeavyShadow(locEnterText);
 
+        K1L0HudLayoutController.RegisterActionElement(eRt, "MainAction", 0, MainActionHeight + MainActionSubtextHeight + 3f, MainActionHeight + MainActionSubtextHeight + 3f);
         locPanel.SetActive(false);
         locEnterGO.SetActive(false);
     }
@@ -685,26 +1135,90 @@ public class SignalDirectorV2 : MonoBehaviour
 
     private void OnEnterLocationTapped()
     {
-        // Prefer the current enter candidate (nearest beam within 10m, any role);
-        // fall back to the active LocationTransmission if sticky-window kept ENTER visible
-        // after the player stepped away.
-        var target = enterCandidate ?? GetLocationTransmission();
+        // Location row should always enter the location (not "nearest beam").
+        var target = GetLocationTransmission();
+        HandleEnterTapped(target);
+    }
+
+    private void OnEnterOverlayTapped()
+    {
+        if (lastEnterOverlayFrame == Time.frameCount) return;
+        lastEnterOverlayFrame = Time.frameCount;
+        HandleEnterTapped(enterTarget);
+    }
+
+    private void OnTransmitTapped()
+    {
+        // Transmitter row should always enter the transmitter (primary pursuit).
+        var target = GetPrimary();
+        if (target == null || target.transmissionType != TransmissionType.Transmitter) return;
+        HandleEnterTapped(target);
+    }
+
+    private void OnViewArtifactTapped()
+    {
+        // Artifact row enters the nearest artifact. If the button is visible but
+        // we find none in-range, log it so we can debug mismatched distance gates.
+        var playerMerc = GetPlayerMercator();
+        Signal nearest = null;
+        float nearestDist = float.MaxValue;
+        for (int i = 0; i < signals.Count; i++)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role == SignalRole.LocationTransmission) continue;
+            if (s.transmissionType != TransmissionType.Artifact) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+            if (s.state == SignalState.Interpreting || s.state == SignalState.Resolved) continue;
+            float d = (float)DistanceTo(s, playerMerc);
+            if (d < nearestDist)
+            {
+                nearestDist = d;
+                nearest = s;
+            }
+        }
+
+        if (nearest == null)
+        {
+            Debug.LogWarning("[SignalDirector] View Artifact tapped but no artifact signals exist");
+            return;
+        }
+
+        if (nearestDist > ENTER_PROXIMITY_BEAM_METERS)
+        {
+            Debug.LogWarning($"[SignalDirector] View Artifact tapped but nearest is {nearestDist:F1}m away (needs <= {ENTER_PROXIMITY_BEAM_METERS}m)");
+            return;
+        }
+
+        HandleEnterTapped(nearest);
+    }
+
+    private void HandleEnterTapped(Signal target)
+    {
         if (target == null) return;
 
+        Debug.Log($"[SignalDirector] ENTER tapped (type={target.transmissionType}, role={target.role}, id={target.id})");
+
         EnsureLocationMetadata(target);
-        Debug.Log($"[SignalDirector] ENTER tapped for '{target.locationName}' (role={target.role})");
+        Debug.Log($"[SignalDirector] ENTER → LocationExchangeModal for '{target.locationName}' (type={target.transmissionType}, role={target.role})");
 
-        // Resolve the storyId bound to this signal so the frame can pin to it,
-        // surviving any pursuit chains that happen while the shot is generating.
-        string storyId = TransmissionManager.Instance != null
-            ? TransmissionManager.Instance.GetStoryIdForSignal(target.id)
-            : null;
+        var locationModal = LocationExchangeModal.Instance ?? FindFirstObjectByType<LocationExchangeModal>();
+        if (locationModal == null)
+        {
+            Debug.LogWarning("[SignalDirector] LocationExchangeModal missing; creating it now");
+            var go = new GameObject("LocationExchangeModal");
+            locationModal = go.AddComponent<LocationExchangeModal>();
+            locationModal.Initialize();
+        }
 
-        var frame = TransmissionFrame.Instance;
-        if (frame != null)
-            frame.ShowLoading(target.locationName, target.locationCategory, storyId);
-
-        OnLocationEnter?.Invoke(target);
+        if (locationModal != null)
+        {
+            locationModal.Show(target);
+        }
+        else
+        {
+            Debug.LogWarning("[SignalDirector] LocationExchangeModal still missing after create");
+        }
         TransitionTo(target, SignalState.Interpreting);
     }
 
@@ -715,17 +1229,74 @@ public class SignalDirectorV2 : MonoBehaviour
     // backend returns (character context, scene, etc.).
     private void EnsureLocationMetadata(Signal sig)
     {
+        if (sig == null || sig.transmissionType != TransmissionType.Location) return;
         if (!string.IsNullOrEmpty(sig.locationName)) return;
 
-        sig.locationName = string.IsNullOrEmpty(pursuitLabelOverride)
-            ? "INCOMING TRANSMISSION"
-            : pursuitLabelOverride.ToUpper();
-        sig.locationCategory = "transmission";
+        sig.locationName = "location";
+        sig.locationCategory = "location";
     }
 
-    // Nearest non-cooldown, non-resolved signal within ENTER_PROXIMITY_METERS of
-    // the player — any role. The whole point of the game is "see beam, walk close,
-    // ENTER", so every visible beam should be enterable.
+    private void ApplyTopHudVerticalLayout()
+    {
+        if (K1L0HudLayoutController.IsManaged(pursuitRow != null ? pursuitRow.transform as RectTransform : null) ||
+            K1L0HudLayoutController.IsManaged(artifactRow != null ? artifactRow.transform as RectTransform : null) ||
+            K1L0HudLayoutController.IsManaged(locRow != null ? locRow.transform as RectTransform : null))
+        {
+            return;
+        }
+
+        float teaserTop = GetStoriesBottomFromTop() + TeaserBelowStoriesGap;
+        SetTopTeaserRowPosition(pursuitRow, teaserTop);
+        SetTopTeaserRowPosition(artifactRow, teaserTop + TeaserRowHeight + TeaserRowGap);
+        SetTopTeaserRowPosition(locRow, teaserTop + (TeaserRowHeight + TeaserRowGap) * 2f);
+        PositionEnterButtonUnderTeasers(teaserTop + (TeaserRowHeight + TeaserRowGap) * 3f + 6f);
+    }
+
+    private float GetStoriesBottomFromTop()
+    {
+        if (storiesStripRect == null)
+        {
+            var strip = GameObject.Find("StoriesStripRoot");
+            storiesStripRect = strip != null ? strip.GetComponent<RectTransform>() : null;
+        }
+        var rect = storiesStripRect;
+        if (rect == null) return DefaultStoriesBottomFromTop;
+
+        float topOffset = Mathf.Abs(rect.anchoredPosition.y);
+        float height = rect.rect.height > 1f ? rect.rect.height : rect.sizeDelta.y;
+        if (height <= 1f) height = DefaultStoriesBottomFromTop;
+        return topOffset + height;
+    }
+
+    private void SetTopTeaserRowPosition(GameObject row, float yFromTop)
+    {
+        if (row == null) return;
+        var rect = row.GetComponent<RectTransform>();
+        if (rect == null) return;
+        rect.anchoredPosition = new Vector2(TeaserRowLeftInset, -yFromTop);
+        if (rect.sizeDelta.y <= 30f)
+            rect.sizeDelta = new Vector2(-24f, TeaserRowHeight);
+    }
+
+    private void PositionEnterButtonUnderTeasers(float yFromTop)
+    {
+        var rect = locEnterGO != null ? locEnterGO.transform as RectTransform : null;
+        if (rect == null) return;
+        if (K1L0HudLayoutController.IsManaged(rect))
+        {
+            K1L0HudLayoutController.Refresh();
+            return;
+        }
+        rect.anchorMin = new Vector2(0f, 1f);
+        rect.anchorMax = new Vector2(1f, 1f);
+        rect.pivot = new Vector2(0f, 1f);
+        rect.anchoredPosition = new Vector2(TeaserRowLeftInset, -yFromTop);
+        rect.sizeDelta = new Vector2(-24f, MainActionHeight + MainActionSubtextHeight + 3f);
+    }
+
+    // Nearest non-cooldown, non-resolved beam (Artifact/Transmitter) within the
+    // close-range enter radius. Location transmissions are handled separately
+    // because they can become enterable via building-footprint proximity.
     private Signal FindNearestEnterableSignal(Vector2d playerMerc)
     {
         Signal best = null;
@@ -733,10 +1304,11 @@ public class SignalDirectorV2 : MonoBehaviour
         for (int i = 0; i < signals.Count; i++)
         {
             var s = signals[i];
+            if (TypeOf(s) == TransmissionType.Location) continue;
             if (s.state == SignalState.CoolingDown) continue;
             if (s.state == SignalState.Interpreting || s.state == SignalState.Resolved) continue;
             float d = DistanceTo(s, playerMerc);
-            if (d <= ENTER_PROXIMITY_METERS && d < bestDist)
+            if (d <= ENTER_PROXIMITY_BEAM_METERS && d < bestDist)
             {
                 bestDist = d;
                 best = s;
@@ -763,9 +1335,9 @@ public class SignalDirectorV2 : MonoBehaviour
 
         float dist = loc != null ? DistanceTo(loc, playerMerc) : float.MaxValue;
         Vector3 playerWorld = playerObj != null ? playerObj.transform.position : Vector3.zero;
-        bool insideBuilding = loc != null && IsPlayerInsideLocationBuilding(loc, playerWorld);
+        bool nearBuilding = loc != null && IsPlayerNearLocationBuilding(loc, playerWorld, ENTER_PROXIMITY_BUILDING_EDGE_METERS);
         bool locProximity = loc != null
-                            && (insideBuilding || dist <= 10f)
+                            && (nearBuilding || dist <= ENTER_PROXIMITY_LOCATION_METERS)
                             && loc.state != SignalState.Interpreting
                             && loc.state != SignalState.Resolved;
         bool proximityMet = locProximity || nearestBeam != null;
@@ -785,6 +1357,7 @@ public class SignalDirectorV2 : MonoBehaviour
         bool withinStickyWindow = locEnterStickySignal != null
                                   && locEnterFirstShownTime >= 0f
                                   && (Time.time - locEnterFirstShownTime) < ENTER_MIN_VISIBLE_SECONDS
+                                  && IsStillWithinEnterHideDistance(locEnterStickySignal, playerMerc)
                                   && locEnterStickySignal.state != SignalState.Interpreting
                                   && locEnterStickySignal.state != SignalState.Resolved
                                   && locEnterStickySignal.state != SignalState.CoolingDown;
@@ -803,55 +1376,193 @@ public class SignalDirectorV2 : MonoBehaviour
         }
     }
 
-    private void UpdateLocationHUD()
+    private bool IsStillWithinEnterHideDistance(Signal sig, Vector2d playerMerc)
     {
-        if (locLabel == null || locRow == null) return;
+        if (sig == null) return false;
+        float dist = DistanceTo(sig, playerMerc);
+        if (sig.transmissionType != TransmissionType.Location)
+            return dist <= ENTER_HIDE_DISTANCE_METERS;
 
-        var playerMerc = GetPlayerMercator();
-        var loc = GetLocationTransmission();
+        // Location beams: treat building perimeter as enterable space.
+        Vector3 playerWorld = playerObj != null ? playerObj.transform.position : Vector3.zero;
+        bool nearBuilding = IsPlayerNearLocationBuilding(sig, playerWorld, ENTER_HIDE_DISTANCE_METERS);
+        return nearBuilding || dist <= ENTER_HIDE_DISTANCE_METERS;
+    }
 
-        bool hasTeaser = loc != null && loc.state != SignalState.CoolingDown;
-        if (!hasTeaser)
+    private void UpdateEnterOverlay()
+    {
+        if (locEnterGO == null || locEnterText == null) return;
+
+        bool shouldShow = showEnter && enterTarget != null && !hudSuppressed
+                          && enterTarget.state != SignalState.CoolingDown
+                          && enterTarget.state != SignalState.Interpreting
+                          && enterTarget.state != SignalState.Resolved;
+
+        if (locEnterGO.activeSelf != shouldShow)
         {
-            locRow.SetActive(false);
-            if (locEnterGO != null) locEnterGO.SetActive(false);
-            return;
+            locEnterGO.SetActive(shouldShow);
+            K1L0HudLayoutController.Refresh();
+        }
+        if (!shouldShow) return;
+        locEnterGO.transform.SetAsLastSibling();
+        PositionEnterButtonUnderTeasers(GetStoriesBottomFromTop() + TeaserBelowStoriesGap + (TeaserRowHeight + TeaserRowGap) * 3f + 6f);
+
+        string subtext;
+        switch (enterTargetType)
+        {
+            case TransmissionType.Location:
+                subtext = string.IsNullOrEmpty(enterTarget.locationName)
+                    ? "enter portal"
+                    : $"enter portal\nYou are at {enterTarget.locationName}";
+                break;
+            case TransmissionType.Artifact:
+                {
+                    string name = !string.IsNullOrEmpty(enterTarget.specialItem) ? enterTarget.specialItem : "artifact";
+                    subtext = $"enter portal\n{name}";
+                    break;
+                }
+            case TransmissionType.Transmitter:
+            default:
+                subtext = $"enter portal\n{FormatSignalGpsTitle(enterTarget)}";
+                break;
         }
 
-        locRow.SetActive(!hudSuppressed);
-
-        string teaser = loc != null ? (loc.teaser ?? "") : "";
-        float dist = loc != null ? DistanceTo(loc, playerMerc) : float.MaxValue;
-
-        // This row only morphs into ENTER when the active enter target is the
-        // LOCATION transmission. Beam-enter lives on the beam row instead.
-        bool showLocationEnter = showEnter && enterTargetType == TransmissionType.Location;
-
-        // Legacy centered ENTER overlay — disabled. Row transforms into the button instead.
-        if (locEnterGO != null && locEnterGO.activeSelf) locEnterGO.SetActive(false);
-
-        // Countdown + teaser sentence are only rendered in non-ENTER (teaser) mode,
-        // and that mode requires a LocationTransmission to exist.
-        string sentence = "";
-        if (loc != null)
+        locEnterText.text = "enter portal";
+        float blink = Mathf.PingPong(Time.time * 1.5f, 1f);
+        float a = 0.45f + blink * 0.55f;
+        locEnterText.color = new Color(TeaserRed.r, TeaserRed.g, TeaserRed.b, a);
+        if (locEnterSubtext != null)
         {
-            float locRemaining = Mathf.Max(0f, churnWindowSeconds - loc.Age);
-            string locCd = $"<color=#FFFFFFFF>{Mathf.FloorToInt(locRemaining / 60f)}:{Mathf.FloorToInt(locRemaining % 60f):D2}</color>";
-            sentence = string.IsNullOrEmpty(teaser)
-                ? $"WALK to {(loc.locationName ?? "UNKNOWN").ToUpper()} in {locCd} → claim your {loc.specialItem}"
-                : $"{teaser} · {locCd}";
+            locEnterSubtext.text = subtext;
+            locEnterSubtext.color = new Color(TeaserRed.r, TeaserRed.g, TeaserRed.b, 0.40f + blink * 0.50f);
         }
+        if (locEnterButtonBg != null)
+            locEnterButtonBg.color = new Color(0f, 0f, 0f, 0.46f + blink * 0.28f);
+        SetBorderFrameColor(locEnterBorder, new Color(TeaserRed.r, TeaserRed.g, TeaserRed.b, 0.55f + blink * 0.45f));
+    }
+
+    private void UpdateEnterOverlayFallbackTap()
+    {
+        if (locEnterGO == null || !locEnterGO.activeInHierarchy) return;
+
+        if (Input.touchCount > 0)
+        {
+            Touch touch = Input.GetTouch(0);
+            if (touch.phase == TouchPhase.Began)
+            {
+                enterOverlayPointerDown = IsEnterOverlayPoint(touch.position);
+            }
+            else if (touch.phase == TouchPhase.Canceled)
+            {
+                enterOverlayPointerDown = false;
+            }
+            else if (touch.phase == TouchPhase.Ended && enterOverlayPointerDown)
+            {
+                bool releasedInside = IsEnterOverlayPoint(touch.position);
+                enterOverlayPointerDown = false;
+                if (releasedInside) OnEnterOverlayTapped();
+            }
+        }
+        else
+        {
+            if (Input.GetMouseButtonDown(0))
+            {
+                enterOverlayPointerDown = IsEnterOverlayPoint(Input.mousePosition);
+            }
+            else if (Input.GetMouseButtonUp(0) && enterOverlayPointerDown)
+            {
+                bool releasedInside = IsEnterOverlayPoint(Input.mousePosition);
+                enterOverlayPointerDown = false;
+                if (releasedInside) OnEnterOverlayTapped();
+            }
+        }
+    }
+
+    private bool IsEnterOverlayPoint(Vector2 screenPoint)
+    {
+        var rect = locEnterGO != null ? locEnterGO.transform as RectTransform : null;
+        return rect != null && RectTransformUtility.RectangleContainsScreenPoint(rect, screenPoint, null);
+    }
+
+	    private void UpdateLocationHUD()
+	    {
+	        if (locLabel == null || locRow == null) return;
+
+	        var playerMerc = GetPlayerMercator();
+	        var loc = GetLocationTransmission();
+
+	        bool locAvailable = loc != null && loc.state != SignalState.CoolingDown;
+	        bool revealAllowed = mapInitializedTime > 0f && (Time.time - mapInitializedTime) >= LocationRevealDelaySeconds;
+
+	        // Always show the location row once HUD exists (it becomes a "scanning..." hint until we have a location).
+	        locRow.SetActive(MapTeaserRowsVisible);
+
+	        string teaser = loc != null ? (loc.teaser ?? "") : "";
+	        float dist = loc != null ? DistanceTo(loc, playerMerc) : float.MaxValue;
+
+	        // Location row enters when the player is actually near the location.
+	        Vector3 playerWorld = playerObj != null ? playerObj.transform.position : Vector3.zero;
+	        bool insideBuilding = loc != null && IsPlayerNearLocationBuilding(loc, playerWorld, ENTER_PROXIMITY_BUILDING_EDGE_METERS);
+	        bool showLocationEnter = loc != null
+	                                 && (insideBuilding || dist <= ENTER_PROXIMITY_LOCATION_METERS)
+	                                 && loc.state != SignalState.Interpreting
+	                                 && loc.state != SignalState.Resolved
+	                                 && loc.state != SignalState.CoolingDown;
+
+	        // ENTER overlay is handled by UpdateEnterOverlay().
+
+	        // Suspense: keep scanning copy visible for a few seconds after the map appears,
+	        // and whenever no location is currently available.
+	        if (!locAvailable || !revealAllowed)
+	        {
+	            // Force non-ENTER mode visuals while scanning.
+	            if (locCompassGO != null && locCompassGO.activeSelf) locCompassGO.SetActive(false);
+	            if (locRowBg != null) locRowBg.color = new Color(0f, 0f, 0f, 0f);
+	            if (locRowBorder != null && locRowBorder.activeSelf) locRowBorder.SetActive(false);
+	            if (locRowButton != null) locRowButton.interactable = false;
+	            var rowRt = locRow.GetComponent<RectTransform>();
+	            if (rowRt != null && rowRt.sizeDelta.y > 30f) rowRt.sizeDelta = new Vector2(rowRt.sizeDelta.x, 30f);
+
+	            var labelRt = locLabel.rectTransform;
+	            labelRt.offsetMin = new Vector2(0f, 0f);
+	            labelRt.offsetMax = Vector2.zero;
+	            locLabel.fontSize = locLabelNormalFontSize;
+	            locLabel.alignment = TextAlignmentOptions.MidlineLeft;
+		            locLabel.text = "scanning locations...";
+
+		            float scanBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
+		            float scanAlpha = 0.4f + scanBlink * 0.6f;
+		            locLabel.color = new Color(0.47f, 1f, 0.54f, scanAlpha);
+	            if (locDist != null) locDist.text = "";
+	            return;
+	        }
+
+	        // Countdown + teaser sentence are only rendered in non-ENTER (teaser) mode,
+	        // and that mode requires a LocationTransmission to exist.
+	        string sentence = "";
+		        if (loc != null)
+		        {
+		            string locName = string.IsNullOrEmpty(loc.locationName) ? "UNKNOWN" : loc.locationName;
+		            string distStr = FormatTeaserDistance(dist);
+		            sentence = $"{locName} {distStr}";
+		        }
 
         if (locDist != null) locDist.text = loc != null ? $"{dist:F0}m" : "";
 
         float tBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
         float textAlpha = 0.4f + tBlink * 0.6f;
+        Color activeColor = showEnter && enterTargetType == TransmissionType.Location ? TeaserRed : TeaserGreen;
 
-        if (showLocationEnter)
+        // The centered ENTER overlay is the single location enter control.
+        // Keep the row in teaser mode so we don't render duplicate "Enter <place>" labels.
+        bool useLocationRowEnterMode = false;
+        if (useLocationRowEnterMode && showLocationEnter)
         {
-            // Row becomes the ENTER button: big centered label, dark backing, tappable.
+            // Row becomes the ENTER button: big centered label, solid black backing,
+            // red border frame, tappable.
             if (locCompassGO != null && locCompassGO.activeSelf) locCompassGO.SetActive(false);
-            if (locRowBg != null) locRowBg.color = new Color(0f, 0f, 0f, 0.65f);
+            if (locRowBg != null) locRowBg.color = new Color(0f, 0f, 0f, 1f);
+            if (locRowBorder != null && !locRowBorder.activeSelf) locRowBorder.SetActive(true);
             if (locRowButton != null) locRowButton.interactable = !hudSuppressed;
 
             var labelRt = locLabel.rectTransform;
@@ -860,10 +1571,10 @@ public class SignalDirectorV2 : MonoBehaviour
             locLabel.fontSize = locLabelEnterFontSize;
             locLabel.alignment = TextAlignmentOptions.Center;
 
-            string targetName = enterTarget?.locationName;
-            locLabel.text = string.IsNullOrEmpty(targetName)
-                ? "> ENTER TRANSMISSION_"
-                : $"> ENTER {targetName.ToUpper()}_";
+	            string targetName = enterTarget?.locationName;
+	            locLabel.text = string.IsNullOrEmpty(targetName)
+	                ? "Enter"
+	                : $"Enter {targetName}";
 
             float blink = Mathf.PingPong(Time.time * 1.5f, 1f);
             float ea = 0.45f + blink * 0.55f;
@@ -875,9 +1586,10 @@ public class SignalDirectorV2 : MonoBehaviour
         }
         else
         {
-            // Normal teaser row: compass + sentence, no backing, not tappable.
+            // Normal teaser row: compass + sentence, no backing, no border, not tappable.
             if (locCompassGO != null && !locCompassGO.activeSelf) locCompassGO.SetActive(true);
             if (locRowBg != null) locRowBg.color = new Color(0f, 0f, 0f, 0f);
+            if (locRowBorder != null && locRowBorder.activeSelf) locRowBorder.SetActive(false);
             if (locRowButton != null) locRowButton.interactable = false;
 
             var labelRt = locLabel.rectTransform;
@@ -886,14 +1598,14 @@ public class SignalDirectorV2 : MonoBehaviour
             locLabel.fontSize = locLabelNormalFontSize;
             locLabel.alignment = TextAlignmentOptions.MidlineLeft;
             locLabel.text = sentence;
-            locLabel.color = new Color(0.47f, 1f, 0.54f, textAlpha);
+            locLabel.color = new Color(activeColor.r, activeColor.g, activeColor.b, textAlpha);
 
             var rRt = locRow.GetComponent<RectTransform>();
-            if (rRt != null && rRt.sizeDelta.y > 58f) rRt.sizeDelta = new Vector2(rRt.sizeDelta.x, 58f);
+            if (rRt != null && rRt.sizeDelta.y > 30f) rRt.sizeDelta = new Vector2(rRt.sizeDelta.x, 30f);
 
             // Compass ring — steady
             if (locCompassRing != null)
-                locCompassRing.color = new Color(0.47f, 1f, 0.54f, 0.6f);
+                locCompassRing.color = new Color(activeColor.r, activeColor.g, activeColor.b, 0.6f);
 
             // Rotate compass arrow
             if (locArrowRt != null && loc != null)
@@ -902,7 +1614,7 @@ public class SignalDirectorV2 : MonoBehaviour
                 locArrowRt.localRotation = Quaternion.Euler(0, 0, -relAngle);
                 var arrowImg = locArrowRt.GetComponent<Image>();
                 if (arrowImg != null)
-                    arrowImg.color = new Color(0.47f, 1f, 0.54f, textAlpha);
+                    arrowImg.color = new Color(activeColor.r, activeColor.g, activeColor.b, textAlpha);
             }
         }
     }
@@ -958,66 +1670,60 @@ public class SignalDirectorV2 : MonoBehaviour
     {
         if (pursuitLabel == null || pursuitRow == null) return;
 
-        var primary = GetPrimary();
-        if (primary == null)
+        var playerMerc = GetPlayerMercator();
+
+        // Closest transmitter (green) — not necessarily the "primary" signal.
+        Signal nearest = null;
+        float nearestDist = float.MaxValue;
+        for (int i = 0; i < signals.Count; i++)
         {
-            pursuitRow.SetActive(false);
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role == SignalRole.LocationTransmission) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+            if (s.transmissionType != TransmissionType.Transmitter) continue;
+            float d = DistanceTo(s, playerMerc);
+            if (d < nearestDist)
+            {
+                nearestDist = d;
+                nearest = s;
+            }
+        }
+
+        if (nearest == null)
+        {
+            pursuitRow.SetActive(MapTeaserRowsVisible);
+            if (pursuitCompassGO != null && pursuitCompassGO.activeSelf) pursuitCompassGO.SetActive(false);
+            if (pursuitRowBg != null) pursuitRowBg.color = new Color(0f, 0f, 0f, 0f);
+            if (pursuitRowBorder != null && pursuitRowBorder.activeSelf) pursuitRowBorder.SetActive(false);
+            if (pursuitRowButton != null) pursuitRowButton.interactable = false;
+            if (pursuitDist != null) pursuitDist.text = "";
+            var scanRowRt = pursuitRow.GetComponent<RectTransform>();
+            if (scanRowRt != null && scanRowRt.sizeDelta.y > 30f) scanRowRt.sizeDelta = new Vector2(scanRowRt.sizeDelta.x, 30f);
+            var scanRt = pursuitLabel.rectTransform;
+            scanRt.offsetMin = new Vector2(0f, 0f);
+            scanRt.offsetMax = Vector2.zero;
+            pursuitLabel.fontSize = pursuitLabelNormalFontSize;
+            pursuitLabel.alignment = TextAlignmentOptions.MidlineLeft;
+            float scanBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
+            pursuitLabel.text = "scanning ambient locations...";
+            pursuitLabel.color = new Color(0.47f, 1f, 0.54f, 0.4f + scanBlink * 0.6f);
             return;
         }
 
-        pursuitRow.SetActive(!hudSuppressed);
+        pursuitRow.SetActive(MapTeaserRowsVisible);
 
-        var playerMerc = GetPlayerMercator();
-        float dist = DistanceTo(primary, playerMerc);
-
-        // This row only morphs into ENTER when the active enter target is an
-        // Ambient transmission. Location-enter lives on the location row.
-        bool showAmbientEnter = showEnter && enterTargetType == TransmissionType.Ambient;
-
+        float dist = nearestDist;
         if (pursuitDist != null) pursuitDist.text = $"{dist:F0}m";
 
         float tBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
         float textAlpha = 0.4f + tBlink * 0.6f;
+        Color activeColor = showEnter && enterTargetType == TransmissionType.Transmitter ? TeaserRed : TeaserGreen;
 
-        if (showAmbientEnter)
-        {
-            // Row becomes the ENTER button for the ambient transmission.
-            if (pursuitCompassGO != null && pursuitCompassGO.activeSelf) pursuitCompassGO.SetActive(false);
-            if (pursuitRowBg != null) pursuitRowBg.color = new Color(0f, 0f, 0f, 0.65f);
-            if (pursuitRowButton != null) pursuitRowButton.interactable = !hudSuppressed;
-
-            var labelRt = pursuitLabel.rectTransform;
-            labelRt.offsetMin = Vector2.zero;
-            labelRt.offsetMax = Vector2.zero;
-            pursuitLabel.fontSize = pursuitLabelEnterFontSize;
-            pursuitLabel.alignment = TextAlignmentOptions.Center;
-
-            // Ambient transmissions don't have a POI name — look up the bound
-            // story's character via TransmissionManager.
-            string targetName = null;
-            var tm = TransmissionManager.Instance;
-            if (enterTarget != null && tm != null)
-            {
-                var sid = tm.GetStoryIdForSignal(enterTarget.id);
-                if (!string.IsNullOrEmpty(sid))
-                    targetName = tm.GetStoryShell(sid).character;
-            }
-            pursuitLabel.text = string.IsNullOrEmpty(targetName)
-                ? "> ENTER TRANSMISSION_"
-                : $"> ENTER {targetName.ToUpper()}_";
-
-            float blink = Mathf.PingPong(Time.time * 1.5f, 1f);
-            float ea = 0.45f + blink * 0.55f;
-            pursuitLabel.color = new Color(0.47f, 1f, 0.54f, ea);
-
-            var rRt = pursuitRow.GetComponent<RectTransform>();
-            if (rRt != null && rRt.sizeDelta.y < 110f) rRt.sizeDelta = new Vector2(rRt.sizeDelta.x, 110f);
-            return;
-        }
-
-        // Normal teaser row: compass + rotating sentence.
+        // Normal teaser row: compass + rotating sentence, no border.
         if (pursuitCompassGO != null && !pursuitCompassGO.activeSelf) pursuitCompassGO.SetActive(true);
         if (pursuitRowBg != null) pursuitRowBg.color = new Color(0f, 0f, 0f, 0f);
+        if (pursuitRowBorder != null && pursuitRowBorder.activeSelf) pursuitRowBorder.SetActive(false);
         if (pursuitRowButton != null) pursuitRowButton.interactable = false;
 
         var normalRt = pursuitLabel.rectTransform;
@@ -1027,55 +1733,117 @@ public class SignalDirectorV2 : MonoBehaviour
         pursuitLabel.alignment = TextAlignmentOptions.MidlineLeft;
 
         var rowRt = pursuitRow.GetComponent<RectTransform>();
-        if (rowRt != null && rowRt.sizeDelta.y > 58f) rowRt.sizeDelta = new Vector2(rowRt.sizeDelta.x, 58f);
+        if (rowRt != null && rowRt.sizeDelta.y > 30f) rowRt.sizeDelta = new Vector2(rowRt.sizeDelta.x, 30f);
 
-        // Countdown — time remaining before primary churns (rendered solid white)
-        float pursuitRemaining = Mathf.Max(0f, churnWindowSeconds - primary.Age);
-        string pursuitCd = $"<color=#FFFFFFFF>{Mathf.FloorToInt(pursuitRemaining / 60f)}:{Mathf.FloorToInt(pursuitRemaining % 60f):D2}</color>";
-
-        string teaser;
-        if (!string.IsNullOrEmpty(primary.teaser))
-        {
-            // Prefer LLM-authored teaser from the Signal (set via SetPursuitTeaser
-            // when a story shot lands). Append countdown to keep the churn visible.
-            teaser = $"{primary.teaser} {pursuitCd}";
-        }
-        else
-        {
-            // Fallback: rotate through the local template pool every 30s until the
-            // backend ships a teaser for this signal.
-            string charName = !string.IsNullOrEmpty(primary.character)
-                ? primary.character.ToLower()
-                : (string.IsNullOrEmpty(pursuitLabelOverride) ? "someone" : pursuitLabelOverride.ToLower());
-            string item = string.IsNullOrEmpty(primary.specialItem) ? "mystery drop" : primary.specialItem;
-
-            int seed = Mathf.Abs(primary.id?.GetHashCode() ?? 0);
-            int timeSlot = Mathf.FloorToInt(Time.time / 30f);
-            int idx = (seed + timeSlot) % pursuitTeasers.Length;
-            teaser = string.Format(pursuitTeasers[idx], charName, item, pursuitCd);
-        }
-
-        pursuitLabel.text = teaser;
-        pursuitLabel.color = new Color(0.47f, 1f, 0.54f, textAlpha);
+	        string distStr = FormatTeaserDistance(dist);
+		        pursuitLabel.text = $"{FormatSignalGpsTitle(nearest)} {distStr}";
+		        pursuitLabel.color = new Color(activeColor.r, activeColor.g, activeColor.b, textAlpha);
 
         // Rotate compass arrow to point toward signal relative to device heading
         if (pursuitArrowRt != null)
         {
-            float relAngle = RelativeAngleTo(primary, playerMerc);
+            float relAngle = RelativeAngleTo(nearest, playerMerc);
             pursuitArrowRt.localRotation = Quaternion.Euler(0, 0, -relAngle);
             var arrowImg = pursuitArrowRt.GetComponent<Image>();
             if (arrowImg != null)
-                arrowImg.color = new Color(0.47f, 1f, 0.54f, textAlpha);
+                arrowImg.color = new Color(activeColor.r, activeColor.g, activeColor.b, textAlpha);
         }
 
-        // Compass ring — steady, no blink
-        if (pursuitCompassRing != null)
-            pursuitCompassRing.color = new Color(0.47f, 1f, 0.54f, 0.6f);
-    }
+	        // Compass ring — steady, no blink
+	        if (pursuitCompassRing != null)
+	            pursuitCompassRing.color = new Color(activeColor.r, activeColor.g, activeColor.b, 0.6f);
+	    }
 
-    // ───────────────────────────────────────────────────────────
-    // Core tick
-    // ───────────────────────────────────────────────────────────
+	    private void UpdateArtifactHUD()
+	    {
+	        if (artifactLabel == null || artifactRow == null) return;
+
+	        var playerMerc = GetPlayerMercator();
+
+	        // Find nearest artifact signal (any role except LocationTransmission).
+	        Signal nearest = null;
+	        float nearestDist = float.MaxValue;
+	        for (int i = 0; i < signals.Count; i++)
+	        {
+	            var s = signals[i];
+	            if (s == null) continue;
+	            if (s.state == SignalState.CoolingDown) continue;
+	            if (s.role == SignalRole.LocationTransmission) continue;
+	            if (s.transmissionType != TransmissionType.Artifact) continue;
+
+	            float d = (float)DistanceTo(s, playerMerc);
+	            if (d < nearestDist)
+	            {
+	                nearestDist = d;
+	                nearest = s;
+	            }
+	        }
+
+	        if (nearest == null)
+	        {
+	            artifactRow.SetActive(MapTeaserRowsVisible);
+	            if (artifactCompassGO != null && artifactCompassGO.activeSelf) artifactCompassGO.SetActive(false);
+	            if (artifactRowBg != null) artifactRowBg.color = new Color(0f, 0f, 0f, 0f);
+	            if (artifactRowBorder != null && artifactRowBorder.activeSelf) artifactRowBorder.SetActive(false);
+	            if (artifactRowButton != null) artifactRowButton.interactable = false;
+	            if (artifactDist != null) artifactDist.text = "";
+	            var scanRowRt = artifactRow.GetComponent<RectTransform>();
+	            if (scanRowRt != null && scanRowRt.sizeDelta.y > 30f) scanRowRt.sizeDelta = new Vector2(scanRowRt.sizeDelta.x, 30f);
+	            var scanRt = artifactLabel.rectTransform;
+	            scanRt.offsetMin = new Vector2(0f, 0f);
+	            scanRt.offsetMax = Vector2.zero;
+	            artifactLabel.fontSize = artifactLabelNormalFontSize;
+	            artifactLabel.alignment = TextAlignmentOptions.MidlineLeft;
+	            float scanBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
+	            artifactLabel.text = "scanning ambient locations...";
+	            artifactLabel.color = new Color(0.47f, 1f, 0.54f, 0.4f + scanBlink * 0.6f);
+	            return;
+	        }
+
+	        artifactRow.SetActive(MapTeaserRowsVisible);
+
+	        float tBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
+	        float textAlpha = 0.4f + tBlink * 0.6f;
+	        Color activeColor = showEnter && enterTargetType == TransmissionType.Artifact ? TeaserRed : TeaserGreen;
+
+	        // Normal artifact row (always visible).
+	        if (artifactCompassGO != null && !artifactCompassGO.activeSelf) artifactCompassGO.SetActive(true);
+	        if (artifactRowBg != null) artifactRowBg.color = new Color(0f, 0f, 0f, 0f);
+	        if (artifactRowBorder != null && artifactRowBorder.activeSelf) artifactRowBorder.SetActive(false);
+	        if (artifactRowButton != null) artifactRowButton.interactable = false; // ENTER is handled by the shared enter overlay
+
+	        var normalRt = artifactLabel.rectTransform;
+	        normalRt.offsetMin = new Vector2(artifactLabelNormalOffset.x, artifactLabelNormalOffset.y);
+	        normalRt.offsetMax = Vector2.zero;
+	        artifactLabel.fontSize = artifactLabelNormalFontSize;
+	        artifactLabel.alignment = TextAlignmentOptions.MidlineLeft;
+
+	        var rowRt = artifactRow.GetComponent<RectTransform>();
+	        if (rowRt != null && rowRt.sizeDelta.y > 30f) rowRt.sizeDelta = new Vector2(rowRt.sizeDelta.x, 30f);
+
+	        float dMeters = nearestDist;
+	        string distStr = FormatTeaserDistance(dMeters);
+	        string name = !string.IsNullOrEmpty(nearest.specialItem) ? nearest.specialItem : "artifact";
+	        string senderFirst = GetSignalSenderName(nearest);
+	        artifactLabel.text = $"{name} from {senderFirst} {distStr}";
+	        artifactLabel.color = new Color(activeColor.r, activeColor.g, activeColor.b, textAlpha);
+
+	        if (artifactArrowRt != null)
+	        {
+	            float relAngle = RelativeAngleTo(nearest, playerMerc);
+	            artifactArrowRt.localRotation = Quaternion.Euler(0, 0, -relAngle);
+	            var arrowImg = artifactArrowRt.GetComponent<Image>();
+	            if (arrowImg != null)
+	                arrowImg.color = new Color(activeColor.r, activeColor.g, activeColor.b, textAlpha);
+	        }
+
+	        if (artifactCompassRing != null)
+	            artifactCompassRing.color = new Color(activeColor.r, activeColor.g, activeColor.b, 0.6f);
+	    }
+
+	    // ───────────────────────────────────────────────────────────
+	    // Core tick
+	    // ───────────────────────────────────────────────────────────
 
     private void Tick()
     {
@@ -1095,10 +1863,11 @@ public class SignalDirectorV2 : MonoBehaviour
             }
         }
 
-        // 3. Ensure we always have a primary
-        EnsurePrimary();
+        // 3. Sync nearby POI location beams (purple)
+        SyncLocationSignals(playerMerc);
 
-        // 4. Fill secondary / distant slots
+        // 4. Maintain ambient pool (artifact/transmitter) around the player
+        EnsurePrimary();
         FillSecondaries();
         FillDistant();
 
@@ -1122,6 +1891,145 @@ public class SignalDirectorV2 : MonoBehaviour
         }
     }
 
+    private static string NormalizeExternalKey(string s)
+    {
+        return string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToLowerInvariant();
+    }
+
+    private static string FirstNameOrNull(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        string trimmed = name.Trim();
+        int space = trimmed.IndexOf(' ');
+        return space > 0 ? trimmed.Substring(0, space) : trimmed;
+    }
+
+    // Stable (non-randomized) 32-bit hash for cross-session keys.
+    private static uint Fnv1a32(string s)
+    {
+        unchecked
+        {
+            const uint offset = 2166136261u;
+            const uint prime = 16777619u;
+            uint h = offset;
+            for (int i = 0; i < s.Length; i++)
+            {
+                h ^= s[i];
+                h *= prime;
+            }
+            return h;
+        }
+    }
+
+    private static string StableIdFromKey(string prefix, string key)
+    {
+        string k = $"{prefix}:{key}";
+        uint h = Fnv1a32(k);
+        return h.ToString("x8");
+    }
+
+    private void SyncLocationSignals(Vector2d playerMerc)
+    {
+        if (Time.time - lastLocationSyncTime < 1.0f) return;
+        lastLocationSyncTime = Time.time;
+
+        var scanner = TransmitterScanner.Instance;
+        if (scanner == null) return;
+
+        float maxMeters = locationBeamMaxMiles * 1609.34f;
+        float removeMeters = Mathf.Max(maxMeters, 1f) * 1.05f; // slight hysteresis
+
+        var nearest = scanner.GetNearestUnfiltered(Mathf.Max(1, maxLocationBeams));
+        if (nearest == null) return;
+
+        var want = new HashSet<string>();
+        var createdThisSync = new HashSet<string>();
+        for (int i = 0; i < nearest.Count; i++)
+        {
+            var t = nearest[i];
+            if (t == null) continue;
+            if (t.Distance > maxMeters) continue;
+            string key = NormalizeExternalKey(t.Name);
+            if (string.IsNullOrEmpty(key)) continue;
+            want.Add(key);
+            bool created;
+            EnsureLocationSignal(t, key, out created);
+            if (created) createdThisSync.Add(key);
+        }
+
+        // Prune location signals that dropped out of range / list
+        for (int i = signals.Count - 1; i >= 0; i--)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role != SignalRole.LocationTransmission) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+
+            string key = NormalizeExternalKey(s.externalKey) ?? NormalizeExternalKey(s.locationName);
+            float d = DistanceTo(s, playerMerc);
+            bool keep = !string.IsNullOrEmpty(key) && want.Contains(key) && d <= removeMeters;
+            // Avoid create-then-immediate-remove thrash: never prune signals created this sync.
+            if (!keep && !string.IsNullOrEmpty(key) && createdThisSync.Contains(key))
+                keep = true;
+            if (!keep)
+                RemoveSignal(s);
+        }
+    }
+
+    private void EnsureLocationSignal(TransmitterScanner.TransmitterData t, string normalizedKey, out bool created)
+    {
+        created = false;
+        // Find existing by external key
+        for (int i = 0; i < signals.Count; i++)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role != SignalRole.LocationTransmission) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+            if (!string.IsNullOrEmpty(s.externalKey) && string.Equals(s.externalKey, normalizedKey, StringComparison.Ordinal))
+            {
+                // Update metadata (best-effort)
+                s.locationName = t.Name;
+                s.locationCategory = t.MainCategoryGroup;
+                s.latitude = t.GeoLocation.x;
+                s.longitude = t.GeoLocation.y;
+                s.mercatorPosition = Conversions.LatitudeLongitudeToWebMercator(new LatitudeLongitude(s.latitude, s.longitude));
+                if (!string.IsNullOrWhiteSpace(t.ArtifactLabel)) s.specialItem = t.ArtifactLabel;
+                if (!string.IsNullOrWhiteSpace(t.ArtifactContainer)) s.artifactContainer = t.ArtifactContainer;
+                if (!string.IsNullOrWhiteSpace(t.ArtifactSenderName)) s.character = t.ArtifactSenderName;
+                if (s.state == SignalState.Hidden) TransitionTo(s, SignalState.Visible);
+                return;
+            }
+        }
+
+        // Create new
+        var sig = new Signal
+        {
+            id = StableIdFromKey("loc", normalizedKey),
+            role = SignalRole.LocationTransmission,
+            type = SignalType.Presence,
+            transmissionType = TransmissionType.Location,
+            state = SignalState.Visible,
+            mercatorPosition = Conversions.LatitudeLongitudeToWebMercator(new LatitudeLongitude(t.GeoLocation.x, t.GeoLocation.y)),
+            latitude = t.GeoLocation.x,
+            longitude = t.GeoLocation.y,
+            spawnTime = Time.time,
+            lastStateChange = Time.time,
+            locationName = t.Name,
+            locationCategory = t.MainCategoryGroup,
+            teaser = "",
+            specialItem = !string.IsNullOrWhiteSpace(t.ArtifactLabel) ? t.ArtifactLabel : "",
+            artifactContainer = !string.IsNullOrWhiteSpace(t.ArtifactContainer) ? t.ArtifactContainer : "",
+            character = !string.IsNullOrWhiteSpace(t.ArtifactSenderName) ? t.ArtifactSenderName : "",
+            externalKey = normalizedKey
+        };
+
+        signals.Add(sig);
+        OnSignalSpawned?.Invoke(sig);
+        OnSignalStateChanged?.Invoke(sig);
+        created = true;
+    }
+
     private void LogStatus(Vector2d playerMerc)
     {
         var sb = new System.Text.StringBuilder();
@@ -1133,6 +2041,8 @@ public class SignalDirectorV2 : MonoBehaviour
             sb.AppendLine($"  {s.role,-20} {s.state,-18} dist={dist,6:F1}m  age={s.Age:F0}s  id={s.id}");
         }
         Debug.Log(sb.ToString());
+
+        UpdateBeamAudit(playerMerc);
 
         // Update on-screen overlay
         if (debugText != null)
@@ -1147,8 +2057,108 @@ public class SignalDirectorV2 : MonoBehaviour
                              s.role == SignalRole.SecondaryNearby ? "SEC" : "FAR";
                 dsb.AppendLine($" {tag} {dist,5:F0}m {s.state}");
             }
+            if (!string.IsNullOrEmpty(lastBeamAuditLine))
+                dsb.AppendLine(lastBeamAuditLine);
             debugText.text = dsb.ToString();
         }
+    }
+
+    private void UpdateBeamAudit(Vector2d playerMerc)
+    {
+        if (Time.time < nextBeamAuditTime) return;
+        nextBeamAuditTime = Time.time + 10f;
+
+        // Ambient ring beams are SecondaryNearby with a valid ring index.
+        var ringDists = new List<(int ring, float dist)>();
+        var playerLL = Conversions.WebMercatorToLatitudeLongitude(playerMerc);
+        for (int i = 0; i < signals.Count; i++)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role != SignalRole.SecondaryNearby) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+            if (s.poolRingIndex < 1) continue;
+            float d = (float)GeoDistanceMeters(playerLL.Latitude, playerLL.Longitude, s.latitude, s.longitude);
+            ringDists.Add((s.poolRingIndex, d));
+        }
+
+        ringDists.Sort((a, b) => a.ring.CompareTo(b.ring));
+
+        float nearest = float.MaxValue;
+        for (int i = 0; i < ringDists.Count; i++)
+            if (ringDists[i].dist < nearest) nearest = ringDists[i].dist;
+
+        float step = Mathf.Max(1f, ambientRingStepMeters);
+        float threshold = step * 0.85f; // used for "two rings too close" heuristic
+
+        // Primary check: do any beams have a stored ring index that doesn't match their current distance ring?
+        bool problem = false;
+        string problemDetail = "";
+        for (int i = 0; i < ringDists.Count; i++)
+        {
+            int storedRing = ringDists[i].ring;
+            float dist = ringDists[i].dist;
+            int computedRing = ComputeAmbientRingIndex(dist, step, ambientRingMaxCount);
+            if (computedRing != storedRing)
+            {
+                problem = true;
+                problemDetail = $"ring mismatch stored={storedRing} computed={computedRing} dist={dist:F0}m";
+                break;
+            }
+        }
+
+        // Secondary check: if stored rings match, detect suspicious clustering (two rings closer than one step).
+        if (!problem)
+        {
+            for (int i = 0; i < ringDists.Count; i++)
+            {
+                for (int j = i + 1; j < ringDists.Count; j++)
+                {
+                    int ringA = ringDists[i].ring;
+                    int ringB = ringDists[j].ring;
+                    if (ringA == ringB) continue;
+                    float delta = Mathf.Abs(ringDists[i].dist - ringDists[j].dist);
+                    if (delta < threshold)
+                    {
+                        problem = true;
+                        problemDetail = $"rings {ringA}/{ringB} too close Δ={delta:F0}m (<{threshold:F0}m) ({ringDists[i].dist:F0}m vs {ringDists[j].dist:F0}m)";
+                        break;
+                    }
+                }
+                if (problem) break;
+            }
+        }
+
+        if (problem)
+        {
+            lastBeamAuditLine = $"PORTAL AUDIT (10s): PROBLEM — {problemDetail}";
+            Debug.LogWarning($"[BeamAudit] {lastBeamAuditLine}");
+        }
+        else
+        {
+            // Keep it short on-screen; the full list is noisy.
+            string missingNearby = (nearest > 75f || ringDists.Count == 0) ? "  missing nearby" : "";
+            lastBeamAuditLine = $"PORTAL AUDIT (10s): ok (rings={ringDists.Count}){missingNearby}";
+            Debug.Log($"[BeamAudit] {lastBeamAuditLine}");
+        }
+
+        if (beamAuditText != null)
+        {
+            bool warn = problem;
+            beamAuditText.color = warn ? new Color(1f, 0.35f, 0.25f, 0.98f) : new Color(0.47f, 1f, 0.54f, 0.95f);
+            beamAuditText.text = lastBeamAuditLine;
+        }
+
+        lastSettingsBeamDebugText =
+            $"RING DEBUG\n{lastBeamAuditLine}\n" +
+            $"signals={signals.Count} roads={roadPoints?.Count ?? 0} nearest={(nearest == float.MaxValue ? "none" : nearest.ToString("F0") + "m")}";
+    }
+
+    public string GetBeamDebugTextForSettings()
+    {
+        return string.IsNullOrWhiteSpace(lastSettingsBeamDebugText)
+            ? "RING DEBUG\nPORTAL AUDIT: waiting..."
+            : lastSettingsBeamDebugText;
     }
 
     /// <summary>
@@ -1164,12 +2174,30 @@ public class SignalDirectorV2 : MonoBehaviour
             switch (sig.role)
             {
                 case SignalRole.PrimaryPursuit:  minD = primaryMinDist;   maxD = primaryMaxDist;   break;
-                case SignalRole.SecondaryNearby:  minD = secondaryMinDist; maxD = secondaryMaxDist; break;
+                case SignalRole.SecondaryNearby:
+                    if (useConcentricAmbientPool && sig.poolRingIndex >= 1)
+                    {
+                        float step = Mathf.Max(5f, ambientRingStepMeters);
+                        float r = sig.poolRingIndex * step;
+                        minD = Mathf.Max(0f, r - step * 0.5f);
+                        maxD = r + step * 0.5f;
+                    }
+                    else
+                    {
+                        minD = secondaryMinDist;
+                        maxD = secondaryMaxDist;
+                    }
+                    break;
                 case SignalRole.DistantBackground:minD = distantMinDist;  maxD = distantMaxDist;   break;
                 default: continue;
             }
             var oldPos = sig.mercatorPosition;
-            sig.mercatorPosition = PickPosition(playerMerc, minD, maxD);
+            if (!TryPickRoadPointInRing(playerMerc, minD, maxD, out var snappedPos))
+            {
+                Debug.LogWarning($"[SignalDirector] Re-snap skipped {sig.role} {sig.id}: no road point in {minD:F0}-{maxD:F0}m ring");
+                continue;
+            }
+            sig.mercatorPosition = snappedPos;
             var newLatLon = Conversions.WebMercatorToLatitudeLongitude(sig.mercatorPosition);
             sig.latitude = newLatLon.Latitude;
             sig.longitude = newLatLon.Longitude;
@@ -1281,61 +2309,382 @@ public class SignalDirectorV2 : MonoBehaviour
         return c;
     }
 
-    private void EnsurePrimary()
-    {
-        if (GetPrimary() != null) return;
-        var playerMerc = GetPlayerMercator();
-        SpawnSignal(SignalRole.PrimaryPursuit, SignalType.Presence, playerMerc,
-                    primaryMinDist, primaryMaxDist, null);
-    }
+	    private void EnsurePrimary()
+	    {
+	        if (useConcentricAmbientPool) return; // no primary pursuit in pool mode
+	        if (GetPrimary() != null) return;
+	        var playerMerc = GetPlayerMercator();
+	        SpawnSignal(SignalRole.PrimaryPursuit, SignalType.Presence, playerMerc,
+	                    primaryMinDist, primaryMaxDist, null,
+	                    TransmissionType.Transmitter);
+	    }
 
-    private void FillSecondaries()
-    {
-        var playerMerc = GetPlayerMercator();
-        while (CountByRole(SignalRole.SecondaryNearby) < maxSecondary)
-        {
-            SpawnSignal(SignalRole.SecondaryNearby, SignalType.Presence, playerMerc,
-                        secondaryMinDist, secondaryMaxDist, null);
-        }
-    }
+	    private void FillSecondaries()
+	    {
+	        if (!useConcentricAmbientPool)
+	        {
+	            var playerMerc = GetPlayerMercator();
+	            while (CountByRole(SignalRole.SecondaryNearby) < maxSecondary)
+	            {
+	                SpawnSignal(SignalRole.SecondaryNearby, SignalType.Presence, playerMerc,
+	                            secondaryMinDist, secondaryMaxDist, null,
+	                            TransmissionType.Transmitter);
+	            }
+	            return;
+	        }
+
+	        var origin = GetPlayerMercator();
+	        if (useBackendConcentricBeams)
+	        {
+	            EnsureBackendConcentricBeams(origin);
+	            return;
+	        }
+
+	        float poolMaxMeters = Mathf.Max(0f, ambientPoolMaxMiles) * 1609.34f;
+	        float step = Mathf.Max(5f, ambientRingStepMeters);
+	        int ringCount = Mathf.FloorToInt(poolMaxMeters / step);
+	        ringCount = Mathf.Clamp(ringCount, 1, Mathf.Max(1, ambientRingMaxCount));
+	        if (ringCount <= 0) return;
+
+	        if (!loggedAmbientPoolConfig)
+	        {
+	            loggedAmbientPoolConfig = true;
+	            Debug.Log($"[SignalDirector] Ambient pool: maxMiles={ambientPoolMaxMiles:F2} step={ambientRingStepMeters:F0} ringCount={ringCount} cap={ambientRingMaxCount} alternate={ambientAlternateArtifactTransmitter}");
+	        }
+
+	        // Cleanup legacy ambient beams (from before ring indexing existed).
+	        // In pool mode we ONLY want one ambient beam per ring (poolRingIndex 1..N).
+	        for (int i = signals.Count - 1; i >= 0; i--)
+	        {
+	            var s = signals[i];
+	            if (s == null) continue;
+	            if (s.role != SignalRole.SecondaryNearby) continue;
+	            if (s.state == SignalState.CoolingDown) continue;
+	            if (s.poolRingIndex >= 1) continue;
+	            RemoveSignal(s);
+	        }
+
+	        // Remove ambient ring beams that drift too far away.
+	        for (int i = signals.Count - 1; i >= 0; i--)
+	        {
+	            var s = signals[i];
+	            if (s == null) continue;
+	            if (s.role != SignalRole.SecondaryNearby) continue;
+	            if (s.state == SignalState.CoolingDown) continue;
+	            float d = DistanceTo(s, origin);
+	            if (d > poolMaxMeters * 1.05f) RemoveSignal(s);
+	        }
+
+	        // Ensure one beam per ring at ~ringIndex*step.
+	        for (int ringIndex = 1; ringIndex <= ringCount; ringIndex++)
+	        {
+	            bool have = false;
+	            for (int i = 0; i < signals.Count; i++)
+	            {
+	                var s = signals[i];
+	                if (s == null) continue;
+	                if (s.role != SignalRole.SecondaryNearby) continue;
+	                if (s.state == SignalState.CoolingDown) continue;
+	                if (s.poolRingIndex == ringIndex) { have = true; break; }
+	            }
+	            if (have) continue;
+
+	            float r = ringIndex * step;
+	            float minD = Mathf.Max(0f, r - step * 0.5f);
+	            float maxD = r + step * 0.5f;
+	            TransmissionType t;
+	            if (ambientAlternateArtifactTransmitter)
+	                t = (ringIndex % 2 == 1) ? TransmissionType.Artifact : TransmissionType.Transmitter;
+	            else
+	                t = UnityEngine.Random.value < ambientArtifactChance ? TransmissionType.Artifact : TransmissionType.Transmitter;
+
+	            // Strict: if we can't find a road point within the band's ring, skip spawning this ring.
+	            if (!TryPickRoadPointInRing(origin, minD, maxD, out var pos)) continue;
+
+	            var sig = SpawnSignalAtPosition(SignalRole.SecondaryNearby, SignalType.Presence, pos, null, t);
+	            if (sig != null) sig.poolRingIndex = ringIndex;
+	        }
+	    }
 
     private void FillDistant()
     {
+        if (useConcentricAmbientPool) return; // pool replaces distant background beams
+
         var playerMerc = GetPlayerMercator();
         while (CountByRole(SignalRole.DistantBackground) < maxDistant)
-        {
             SpawnSignal(SignalRole.DistantBackground, SignalType.Presence, playerMerc,
-                        distantMinDist, distantMaxDist, null);
+                        distantMinDist, distantMaxDist, null,
+                        TransmissionType.Transmitter);
+    }
+
+    private void EnsureBackendConcentricBeams(Vector2d originMercator)
+    {
+        if (APIManager.Instance == null) return;
+        if (_backendBeamRequestInFlight) return;
+        if (Time.unscaledTime - _lastBackendBeamRefreshTime < Mathf.Max(0.25f, backendBeamRefreshSeconds)) return;
+
+        _lastBackendBeamRefreshTime = Time.unscaledTime;
+        var latLon = Conversions.WebMercatorToLatitudeLongitude(originMercator);
+
+        // Movement-gated rescan: only hit backend when we've moved ~50m (plus a slow failsafe timer).
+        float since = Time.unscaledTime - _lastBackendScanTime;
+        bool timeForFailsafe = since >= Mathf.Max(5f, backendBeamMaxIntervalSeconds);
+        bool havePrev = double.IsFinite(_lastBackendScanLat) && double.IsFinite(_lastBackendScanLng);
+        bool movedEnough = !havePrev || GeoDistanceMeters(_lastBackendScanLat, _lastBackendScanLng, latLon.Latitude, latLon.Longitude) >= Mathf.Max(5f, backendBeamRescanMeters);
+        if (!movedEnough && !timeForFailsafe) return;
+
+        _lastBackendScanLat = latLon.Latitude;
+        _lastBackendScanLng = latLon.Longitude;
+        _lastBackendScanTime = Time.unscaledTime;
+        StartCoroutine(FetchBackendConcentricBeams(latLon.Latitude, latLon.Longitude));
+    }
+
+    private IEnumerator FetchBackendConcentricBeams(double latitude, double longitude)
+    {
+        _backendBeamRequestInFlight = true;
+
+        string payload =
+            "{" +
+            $"\"latitude\":{latitude}," +
+            $"\"longitude\":{longitude}," +
+            $"\"maxMiles\":{ambientPoolMaxMiles}" +
+            "}";
+
+        bool done = false;
+        bool ok = false;
+        string resp = null;
+
+        yield return APIManager.Instance.Post("/k1l0/beams/nearby", payload, (success, text) =>
+        {
+            ok = success;
+            resp = text;
+            done = true;
+        });
+
+        while (!done) yield return null;
+
+        BackendNearbyBeamsResponse parsed = null;
+        if (ok && !string.IsNullOrEmpty(resp))
+        {
+            try { parsed = JsonUtility.FromJson<BackendNearbyBeamsResponse>(resp); }
+            catch (Exception e) { Debug.LogWarning($"[SignalDirector] Backend beam parse failed: {e.Message}"); }
+        }
+
+        if (parsed != null && parsed.ok && parsed.beams != null)
+            yield return SyncAndFillBackendRings(parsed, latitude, longitude);
+
+        _backendBeamRequestInFlight = false;
+    }
+
+    private IEnumerator SyncAndFillBackendRings(BackendNearbyBeamsResponse parsed, double latitude, double longitude)
+    {
+        if (parsed == null || parsed.beams == null) yield break;
+
+        float poolMaxMeters = Mathf.Max(0f, ambientPoolMaxMiles) * 1609.34f;
+        float step = Mathf.Max(5f, ambientRingStepMeters);
+        int ringCount = Mathf.FloorToInt(poolMaxMeters / step);
+        ringCount = Mathf.Clamp(ringCount, 1, Mathf.Max(1, ambientRingMaxCount));
+        if (ringCount <= 0) yield break;
+
+        var chosenByRing = new BackendBeamDoc[ringCount + 1];
+        Array.Sort(parsed.beams, (a, b) =>
+        {
+            double da = a != null ? a.distanceMeters : double.MaxValue;
+            double db = b != null ? b.distanceMeters : double.MaxValue;
+            return da.CompareTo(db);
+        });
+        int displaySlot = 1;
+        for (int i = 0; i < parsed.beams.Length; i++)
+        {
+            var b = parsed.beams[i];
+            if (b == null || string.IsNullOrEmpty(b.id)) continue;
+            // Artifact beams must have real content to be considered valid.
+            if (string.Equals(b.type, "artifact", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(b.material) && string.IsNullOrEmpty(b.label) && string.IsNullOrEmpty(b.lore))
+                continue;
+            if (displaySlot > ringCount) break;
+            chosenByRing[displaySlot] = b;
+            displaySlot++;
+        }
+
+        // The backend now owns shared placement and replenishment. The client only
+        // culls returned beams into display bands so multiple nearby users do not
+        // stamp independent ring sets into Firestore.
+
+        // Debug: log the chosen per-ring set so we can diagnose "all blue" (artifact) cases.
+        int chosenArtifact = 0, chosenTransmitter = 0;
+        for (int ringIndex = 1; ringIndex <= ringCount; ringIndex++)
+        {
+            var b = chosenByRing[ringIndex];
+            if (b == null) continue;
+            if (string.Equals(b.type, "transmitter", StringComparison.OrdinalIgnoreCase)) chosenTransmitter++;
+            else chosenArtifact++;
+        }
+        Debug.Log($"[SignalDirector] Backend rings chosen: rings={ringCount} selected={chosenArtifact + chosenTransmitter} artifact={chosenArtifact} transmitter={chosenTransmitter} step={step:F0}m");
+
+        SyncChosenRingBeams(chosenByRing, ringCount);
+    }
+
+    private void SyncChosenRingBeams(BackendBeamDoc[] chosenByRing, int ringCount)
+    {
+        var want = new HashSet<string>();
+        for (int ringIndex = 1; ringIndex <= ringCount; ringIndex++)
+        {
+            var b = chosenByRing[ringIndex];
+            if (b == null || string.IsNullOrEmpty(b.id)) continue;
+            want.Add(b.id);
+        }
+
+        // Remove any old backend beams not present in the latest selection.
+        for (int i = signals.Count - 1; i >= 0; i--)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role != SignalRole.SecondaryNearby) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+            // In backend pool mode we ONLY want the selected backend beams.
+            // Remove any legacy/local ambient beams (no externalKey) and any stale backend beams.
+            if (string.IsNullOrEmpty(s.externalKey) || !want.Contains(s.externalKey))
+                RemoveSignal(s);
+        }
+
+        for (int ringIndex = 1; ringIndex <= ringCount; ringIndex++)
+        {
+            var b = chosenByRing[ringIndex];
+            if (b == null || string.IsNullOrEmpty(b.id)) continue;
+
+            Signal existing = null;
+            for (int j = 0; j < signals.Count; j++)
+            {
+                var s = signals[j];
+                if (s == null) continue;
+                if (s.role != SignalRole.SecondaryNearby) continue;
+                if (s.state == SignalState.CoolingDown) continue;
+                if (string.Equals(s.externalKey, b.id, StringComparison.Ordinal)) { existing = s; break; }
+            }
+
+            var ll = new LatitudeLongitude(b.lat, b.lng);
+            var merc = Conversions.LatitudeLongitudeToWebMercator(ll);
+            TransmissionType t = string.Equals(b.type, "transmitter", StringComparison.OrdinalIgnoreCase)
+                ? TransmissionType.Transmitter
+                : TransmissionType.Artifact;
+
+            bool isArtifact = t == TransmissionType.Artifact;
+            string artifactName = isArtifact && !string.IsNullOrEmpty(b.material) ? b.material : (!string.IsNullOrEmpty(b.label) ? b.label : null);
+            string teaser = isArtifact && !string.IsNullOrEmpty(b.material) ? b.material : (!string.IsNullOrEmpty(b.label) ? b.label : (string.IsNullOrEmpty(b.lore) ? "" : b.lore));
+            string senderName = !string.IsNullOrEmpty(b.senderName) ? b.senderName : b.artifactSenderName;
+
+            if (existing == null)
+            {
+                var sig = SpawnSignalAtPositionWithMetadata(SignalRole.SecondaryNearby, SignalType.Presence, merc, null, t, b.id, ringIndex, teaser);
+                if (sig == null) continue;
+                if (t == TransmissionType.Artifact && !string.IsNullOrEmpty(artifactName))
+                    sig.specialItem = artifactName;
+                if (t == TransmissionType.Artifact && !string.IsNullOrEmpty(b.container))
+                    sig.artifactContainer = b.container;
+                if (t == TransmissionType.Artifact && !string.IsNullOrEmpty(senderName))
+                    sig.character = senderName;
+                Debug.Log($"[SignalDirector] RingBeam spawn ring={ringIndex} type={b.type} tx={t} dist={b.distanceMeters:F1}m id={b.id} label='{b.label}'");
+            }
+            else
+            {
+                existing.mercatorPosition = merc;
+                existing.latitude = b.lat;
+                existing.longitude = b.lng;
+                existing.transmissionType = t;
+                existing.poolRingIndex = ringIndex;
+                existing.teaser = teaser;
+                if (t == TransmissionType.Artifact && !string.IsNullOrEmpty(artifactName))
+                    existing.specialItem = artifactName;
+                if (t == TransmissionType.Artifact)
+                    existing.artifactContainer = b.container ?? "";
+                if (t == TransmissionType.Artifact && !string.IsNullOrEmpty(senderName))
+                    existing.character = senderName;
+            }
         }
     }
+
+    private (double lat, double lng) ComputeRingLatLng(double originLat, double originLng, int ringIndex, float stepMeters)
+    {
+        uint seed = Fnv1a32($"{originLat:F5},{originLng:F5}:r{ringIndex}");
+        float ang = ((seed % 1000000) / 1000000f) * Mathf.PI * 2f;
+        float r = ringIndex * stepMeters;
+        // IMPORTANT: WebMercator coordinates are not 1:1 meters away from the equator; using them as meters
+        // compresses rings at mid-latitudes and causes many beams to appear "too close".
+        // Use a geodesic offset to keep ring spacing in true meters.
+        const double EarthRadiusMeters = 6371000.0;
+        double brng = ang; // radians
+        double d = r;
+
+        double lat1 = originLat * Math.PI / 180.0;
+        double lon1 = originLng * Math.PI / 180.0;
+        double dr = d / EarthRadiusMeters;
+
+        double sinLat1 = Math.Sin(lat1);
+        double cosLat1 = Math.Cos(lat1);
+        double sinDr = Math.Sin(dr);
+        double cosDr = Math.Cos(dr);
+
+        double lat2 = Math.Asin(sinLat1 * cosDr + cosLat1 * sinDr * Math.Cos(brng));
+        double lon2 = lon1 + Math.Atan2(Math.Sin(brng) * sinDr * cosLat1, cosDr - sinLat1 * Math.Sin(lat2));
+
+        double outLat = lat2 * 180.0 / Math.PI;
+        double outLon = lon2 * 180.0 / Math.PI;
+        return (outLat, outLon);
+    }
+
+    private double GeoDistanceMeters(double lat1, double lng1, double lat2, double lng2)
+    {
+        double R = 6371000.0;
+        double dLat = (lat2 - lat1) * Math.PI / 180.0;
+        double dLng = (lng2 - lng1) * Math.PI / 180.0;
+        double a =
+            Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+            Math.Cos(lat1 * Math.PI / 180.0) * Math.Cos(lat2 * Math.PI / 180.0) *
+            Math.Sin(dLng / 2) * Math.Sin(dLng / 2);
+        double c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+        return R * c;
+    }
+
 
     // ───────────────────────────────────────────────────────────
     // Spawning
     // ───────────────────────────────────────────────────────────
 
-    private Signal SpawnSignal(SignalRole role, SignalType type,
-                               Vector2d origin, float minDist, float maxDist,
-                               string chainParentId)
-    {
-        Vector2d pos = PickPosition(origin, minDist, maxDist);
-        var latLon = Conversions.WebMercatorToLatitudeLongitude(pos);
+	    private Signal SpawnSignal(SignalRole role, SignalType type,
+	                               Vector2d origin, float minDist, float maxDist,
+	                               string chainParentId,
+	                               TransmissionType? forceTransmissionType = null,
+	                               Vector2d? avoidPos = null,
+	                               float avoidMinDistMeters = 0f)
+	    {
+	        Vector2d pos = PickPosition(origin, minDist, maxDist, avoidPos, avoidMinDistMeters);
+	        var latLon = Conversions.WebMercatorToLatitudeLongitude(pos);
 
-        var sig = new Signal
-        {
+	        // What used to be a single "Ambient" bucket now splits 50/50 into Artifact (object-centred)
+	        // and Transmitter (character-centred). The narrative engine reads this and picks framing.
+	        var ambientPick = forceTransmissionType ?? TransmissionType.Transmitter;
+
+	        var sig = new Signal
+	        {
             role = role,
             type = type,
-            transmissionType = TransmissionType.Ambient,
-            state = SignalState.Hidden,
+	            transmissionType = ambientPick,
+	            state = SignalState.Hidden,
             mercatorPosition = pos,
             latitude = latLon.Latitude,
             longitude = latLon.Longitude,
             spawnTime = Time.time,
             lastStateChange = Time.time,
-            chainParentId = chainParentId,
-            specialItem = PickSpecialItem()
-        };
+	            chainParentId = chainParentId
+	        };
 
-        signals.Add(sig);
+	        // Artifact beams must use backend-authored material names; no local noun fallback.
+	        if (sig.transmissionType == TransmissionType.Artifact && string.IsNullOrWhiteSpace(sig.specialItem))
+	        {
+	            sig.specialItem = "artifact";
+	        }
+
+	        signals.Add(sig);
         Debug.Log($"[SignalDirector] Spawned {role}/{type} @ dist={DistanceTo(sig, origin):F0}m  id={sig.id}");
         OnSignalSpawned?.Invoke(sig);
         return sig;
@@ -1346,7 +2695,7 @@ public class SignalDirectorV2 : MonoBehaviour
     /// Gathers all road points in that ring, picks one at random.
     /// Falls back to a random ring position if no roads are loaded yet.
     /// </summary>
-    private Vector2d PickPosition(Vector2d origin, float minDist, float maxDist)
+    private Vector2d PickPosition(Vector2d origin, float minDist, float maxDist, Vector2d? avoidPos = null, float avoidMinDistMeters = 0f)
     {
         RefreshRoadCache();
 
@@ -1360,7 +2709,16 @@ public class SignalDirectorV2 : MonoBehaviour
                 double dy = roadPoints[i].y - origin.y;
                 double d = Math.Sqrt(dx * dx + dy * dy);
                 if (d >= minDist && d <= maxDist)
+                {
+                    if (avoidPos.HasValue && avoidMinDistMeters > 0f)
+                    {
+                        double ax = roadPoints[i].x - avoidPos.Value.x;
+                        double ay = roadPoints[i].y - avoidPos.Value.y;
+                        double ad = Math.Sqrt(ax * ax + ay * ay);
+                        if (ad < avoidMinDistMeters) continue;
+                    }
                     candidates.Add(roadPoints[i]);
+                }
             }
 
             if (candidates.Count > 0)
@@ -1370,38 +2728,115 @@ public class SignalDirectorV2 : MonoBehaviour
                 return chosen;
             }
 
-            // Widen search: find the nearest road point within 2x the max range
-            Vector2d best = default;
-            double bestDist = double.MaxValue;
-            float widenMax = maxDist * 2f;
-            for (int i = 0; i < roadPoints.Count; i++)
-            {
-                double dx = roadPoints[i].x - origin.x;
-                double dy = roadPoints[i].y - origin.y;
-                double d = Math.Sqrt(dx * dx + dy * dy);
-                if (d >= minDist * 0.5f && d <= widenMax && d < bestDist)
-                {
-                    bestDist = d;
-                    best = roadPoints[i];
-                }
-            }
-            if (bestDist < double.MaxValue)
-            {
-                Debug.Log($"[SignalDirector] Widened snap: nearest road at {bestDist:F0}m (wanted {minDist}-{maxDist}m)");
-                return best;
-            }
-
-            Debug.LogWarning($"[SignalDirector] No road points found in {minDist}-{widenMax}m ring ({roadPoints.Count} total road points)");
+            Debug.LogWarning($"[SignalDirector] No road points found in {minDist}-{maxDist}m ring ({roadPoints.Count} total road points)");
         }
 
         // Fallback: random ring position (no roads loaded yet)
         float angle = UnityEngine.Random.Range(0f, 360f) * Mathf.Deg2Rad;
         float dist  = UnityEngine.Random.Range(minDist, maxDist);
         Debug.LogWarning("[SignalDirector] No road data — using random position");
-        return new Vector2d(
+        var fallback = new Vector2d(
             origin.x + dist * Math.Cos(angle),
             origin.y + dist * Math.Sin(angle)
         );
+        if (avoidPos.HasValue && avoidMinDistMeters > 0f)
+        {
+            double ax = fallback.x - avoidPos.Value.x;
+            double ay = fallback.y - avoidPos.Value.y;
+            double ad = Math.Sqrt(ax * ax + ay * ay);
+            if (ad < avoidMinDistMeters)
+                fallback = new Vector2d(origin.x - dist * Math.Cos(angle), origin.y - dist * Math.Sin(angle));
+        }
+        return fallback;
+    }
+
+    private bool TryPickRoadPointInRing(Vector2d origin, float minDist, float maxDist, out Vector2d picked)
+    {
+        picked = default;
+        RefreshRoadCache();
+        if (roadPoints == null || roadPoints.Count == 0) return false;
+
+        // Collect candidates strictly within the band.
+        var candidates = new List<Vector2d>();
+        for (int i = 0; i < roadPoints.Count; i++)
+        {
+            double dx = roadPoints[i].x - origin.x;
+            double dy = roadPoints[i].y - origin.y;
+            double d = Math.Sqrt(dx * dx + dy * dy);
+            if (d >= minDist && d <= maxDist) candidates.Add(roadPoints[i]);
+        }
+        if (candidates.Count == 0) return false;
+        picked = candidates[UnityEngine.Random.Range(0, candidates.Count)];
+        return true;
+    }
+
+    private Signal SpawnSignalAtPosition(SignalRole role, SignalType type, Vector2d pos, string chainParentId, TransmissionType transmissionType)
+    {
+        var latLon = Conversions.WebMercatorToLatitudeLongitude(pos);
+        var sig = new Signal
+        {
+            role = role,
+            type = type,
+            transmissionType = transmissionType,
+            state = SignalState.Visible,
+            mercatorPosition = pos,
+            latitude = latLon.Latitude,
+            longitude = latLon.Longitude,
+            spawnTime = Time.time,
+            lastStateChange = Time.time,
+            chainParentId = chainParentId
+        };
+
+        if (sig.transmissionType == TransmissionType.Artifact && string.IsNullOrWhiteSpace(sig.specialItem))
+        {
+            sig.specialItem = "artifact";
+        }
+
+        signals.Add(sig);
+        OnSignalSpawned?.Invoke(sig);
+        OnSignalStateChanged?.Invoke(sig);
+        return sig;
+    }
+
+    // Backend ring beams need metadata set BEFORE events fire so BeamBridge logs
+    // the correct ring + external id and visuals can key off teaser.
+    private Signal SpawnSignalAtPositionWithMetadata(
+        SignalRole role,
+        SignalType type,
+        Vector2d pos,
+        string chainParentId,
+        TransmissionType transmissionType,
+        string externalKey,
+        int poolRingIndex,
+        string teaser)
+    {
+        var latLon = Conversions.WebMercatorToLatitudeLongitude(pos);
+        var sig = new Signal
+        {
+            role = role,
+            type = type,
+            transmissionType = transmissionType,
+            state = SignalState.Visible,
+            mercatorPosition = pos,
+            latitude = latLon.Latitude,
+            longitude = latLon.Longitude,
+            spawnTime = Time.time,
+            lastStateChange = Time.time,
+            chainParentId = chainParentId,
+            externalKey = externalKey,
+            poolRingIndex = poolRingIndex,
+            teaser = teaser
+        };
+
+        if (sig.transmissionType == TransmissionType.Artifact && string.IsNullOrWhiteSpace(sig.specialItem))
+        {
+            sig.specialItem = "artifact";
+        }
+
+        signals.Add(sig);
+        OnSignalSpawned?.Invoke(sig);
+        OnSignalStateChanged?.Invoke(sig);
+        return sig;
     }
 
     // ───────────────────────────────────────────────────────────
@@ -1515,6 +2950,7 @@ public class SignalDirectorV2 : MonoBehaviour
     {
         // Never churn while the player is actively pursuing
         if (IsInPursuit()) return;
+        if (signals == null || signals.Count == 0) return;
 
         // Churn window: must have had no pursuit for churnWindowSeconds
         float timeSincePursuit = (lastPursuitTime < 0f)
@@ -1609,6 +3045,14 @@ public class SignalDirectorV2 : MonoBehaviour
 
     private float DistanceTo(Signal sig, Vector2d mercPos)
     {
+        // Using WebMercator deltas as "meters" overstates distance away from the equator.
+        // For any signal with valid lat/lng, prefer a true geodesic distance.
+        if (sig != null && double.IsFinite(sig.latitude) && double.IsFinite(sig.longitude) && map != null && map.MapInformation != null)
+        {
+            var playerLL = map.MapInformation.Position;
+            return (float)GeoDistanceMeters(playerLL.Latitude, playerLL.Longitude, sig.latitude, sig.longitude);
+        }
+
         double dx = sig.mercatorPosition.x - mercPos.x;
         double dy = sig.mercatorPosition.y - mercPos.y;
         return (float)Math.Sqrt(dx * dx + dy * dy);
@@ -1616,9 +3060,11 @@ public class SignalDirectorV2 : MonoBehaviour
 
     /// <summary>
     /// Find the nearest building to a location signal and cache its XZ bounds.
-    /// Returns true if the player's world position is inside the building footprint.
+    /// Returns true if the player is inside OR within <paramref name="maxEdgeDistanceMeters"/>
+    /// of the building footprint (XZ). This makes location beams enterable when the
+    /// location maps to a building but the signal point isn't on the exact doorway.
     /// </summary>
-    private bool IsPlayerInsideLocationBuilding(Signal loc, Vector3 playerWorldPos)
+    private bool IsPlayerNearLocationBuilding(Signal loc, Vector3 playerWorldPos, float maxEdgeDistanceMeters)
     {
         // Refresh building bounds every 5s (buildings shift with floating origin)
         if (loc.buildingBounds == null || Time.time - loc.buildingBoundsTime > 5f)
@@ -1630,9 +3076,21 @@ public class SignalDirectorV2 : MonoBehaviour
         if (loc.buildingBounds == null) return false;
 
         Bounds b = loc.buildingBounds.Value;
-        // Check XZ overlap (ignore Y height) — player is "inside" the building footprint
-        return playerWorldPos.x >= b.min.x && playerWorldPos.x <= b.max.x
-            && playerWorldPos.z >= b.min.z && playerWorldPos.z <= b.max.z;
+        float d = DistanceXZPointToBounds(playerWorldPos, b);
+        return d <= Mathf.Max(0f, maxEdgeDistanceMeters);
+    }
+
+    private static float DistanceXZPointToBounds(Vector3 point, Bounds bounds)
+    {
+        float dx = 0f;
+        if (point.x < bounds.min.x) dx = bounds.min.x - point.x;
+        else if (point.x > bounds.max.x) dx = point.x - bounds.max.x;
+
+        float dz = 0f;
+        if (point.z < bounds.min.z) dz = bounds.min.z - point.z;
+        else if (point.z > bounds.max.z) dz = point.z - bounds.max.z;
+
+        return Mathf.Sqrt(dx * dx + dz * dz);
     }
 
     private Bounds? FindBuildingBoundsNear(Signal loc)
@@ -1686,22 +3144,6 @@ public class SignalDirectorV2 : MonoBehaviour
         return (angle + 360f) % 360f;
     }
 
-    /// <summary>Relative compass direction from device heading to signal (ASCII-safe).</summary>
-    private string CompassTo(Signal sig, Vector2d playerMerc)
-    {
-        float absBearing = BearingTo(sig, playerMerc);
-        float heading = Input.compass.enabled ? Input.compass.trueHeading : 0f;
-        float rel = (absBearing - heading + 360f) % 360f;
-        if (rel <= 22.5f || rel > 337.5f) return "N ^";
-        if (rel <= 67.5f)  return "NE />";
-        if (rel <= 112.5f) return "E >>";
-        if (rel <= 157.5f) return "SE \\>";
-        if (rel <= 202.5f) return "S v";
-        if (rel <= 247.5f) return "SW <\\";
-        if (rel <= 292.5f) return "W <<";
-        return "NW </";
-    }
-
     /// <summary>Relative angle from device heading to signal (0=ahead, clockwise). Used for arrow rotation.</summary>
     private float RelativeAngleTo(Signal sig, Vector2d playerMerc)
     {
@@ -1721,6 +3163,70 @@ public class SignalDirectorV2 : MonoBehaviour
         mat.SetFloat(ShaderUtilities.ID_UnderlayDilate, 1f);
         mat.SetFloat(ShaderUtilities.ID_UnderlayOffsetX, 0f);
         mat.SetFloat(ShaderUtilities.ID_UnderlayOffsetY, 0f);
+    }
+
+    // Creates a 4-strip border frame that hugs the parent rect's edges. Returns
+    // the container GameObject so callers can SetActive(true/false) to flash it.
+    private GameObject CreateBorderFrame(Transform parent, Color color, float thickness)
+    {
+        var holder = new GameObject("EnterBorder");
+        holder.transform.SetParent(parent, false);
+        var hRt = holder.AddComponent<RectTransform>();
+        hRt.anchorMin = Vector2.zero;
+        hRt.anchorMax = Vector2.one;
+        hRt.offsetMin = Vector2.zero;
+        hRt.offsetMax = Vector2.zero;
+
+        // top, bottom, left, right
+        for (int i = 0; i < 4; i++)
+        {
+            var go = new GameObject($"Edge{i}");
+            go.transform.SetParent(holder.transform, false);
+            var img = go.AddComponent<Image>();
+            img.color = color;
+            img.raycastTarget = false;
+            var rt = go.GetComponent<RectTransform>();
+            switch (i)
+            {
+                case 0: // top
+                    rt.anchorMin = new Vector2(0, 1); rt.anchorMax = new Vector2(1, 1);
+                    rt.pivot = new Vector2(0.5f, 1f);
+                    rt.sizeDelta = new Vector2(0, thickness);
+                    rt.anchoredPosition = Vector2.zero;
+                    break;
+                case 1: // bottom
+                    rt.anchorMin = new Vector2(0, 0); rt.anchorMax = new Vector2(1, 0);
+                    rt.pivot = new Vector2(0.5f, 0f);
+                    rt.sizeDelta = new Vector2(0, thickness);
+                    rt.anchoredPosition = Vector2.zero;
+                    break;
+                case 2: // left
+                    rt.anchorMin = new Vector2(0, 0); rt.anchorMax = new Vector2(0, 1);
+                    rt.pivot = new Vector2(0f, 0.5f);
+                    rt.sizeDelta = new Vector2(thickness, 0);
+                    rt.anchoredPosition = Vector2.zero;
+                    break;
+                case 3: // right
+                    rt.anchorMin = new Vector2(1, 0); rt.anchorMax = new Vector2(1, 1);
+                    rt.pivot = new Vector2(1f, 0.5f);
+                    rt.sizeDelta = new Vector2(thickness, 0);
+                    rt.anchoredPosition = Vector2.zero;
+                    break;
+            }
+        }
+        holder.SetActive(false);
+        return holder;
+    }
+
+    private void SetBorderFrameColor(GameObject holder, Color color)
+    {
+        if (holder == null) return;
+        if (!holder.activeSelf) holder.SetActive(true);
+        var edges = holder.GetComponentsInChildren<Image>(true);
+        for (int i = 0; i < edges.Length; i++)
+        {
+            if (edges[i] != null) edges[i].color = color;
+        }
     }
 
     private TextMeshProUGUI CreateHUDTextLayer(Transform parent, string name, TMP_FontAsset font, float fontSize, Vector2 leftOffset)
@@ -1748,7 +3254,7 @@ public class SignalDirectorV2 : MonoBehaviour
 
     private GameObject CreateCompassWidget(Transform parent, string name, out Image ringImg, out RectTransform arrowRt, out TextMeshProUGUI distanceTmp)
     {
-        float compassSize = 42f;
+        float compassSize = 28f;
 
         // Container
         var container = new GameObject(name);
@@ -1800,20 +3306,20 @@ public class SignalDirectorV2 : MonoBehaviour
         arrowImg.raycastTarget = false;
         CreateArrowSprite(arrowImg);
 
-        // Distance label — sits directly under the compass circle
         var distGO = new GameObject("Distance");
         distGO.transform.SetParent(container.transform, false);
+        distGO.SetActive(false);
         var distRt = distGO.AddComponent<RectTransform>();
         distRt.anchorMin = new Vector2(0.5f, 0f);
         distRt.anchorMax = new Vector2(0.5f, 0f);
         distRt.pivot = new Vector2(0.5f, 1f);
-        distRt.anchoredPosition = new Vector2(0f, -2f);
-        distRt.sizeDelta = new Vector2(104f, 18f);
+        distRt.anchoredPosition = new Vector2(0f, -1f);
+        distRt.sizeDelta = new Vector2(86f, 14f);
         var distFont = Resources.Load<TMP_FontAsset>("Fonts/IBMPlexMono-Regular SDF");
         if (distFont == null) distFont = TMP_Settings.defaultFontAsset;
         distanceTmp = distGO.AddComponent<TextMeshProUGUI>();
         distanceTmp.font = distFont;
-        distanceTmp.fontSize = 13;
+        distanceTmp.fontSize = 10;
         distanceTmp.text = "";
         distanceTmp.alignment = TextAlignmentOptions.Top;
         distanceTmp.color = Color.white;
@@ -1958,27 +3464,46 @@ public class SignalDirectorV2 : MonoBehaviour
 
     /// <summary>
     /// Spawn a LocationTransmission signal at a known GPS position.
-    /// Returns the signal, or null if one already exists.
+    /// Returns the signal. If a signal for the same location already exists, updates and returns it.
     /// </summary>
     public Signal SpawnLocationTransmission(double latitude, double longitude,
                                             string name, string category, string teaser,
-                                            string specialItem = null)
+                                            string specialItem = "")
     {
-        // Only one location transmission at a time
-        for (int i = 0; i < signals.Count; i++)
-            if (signals[i].role == SignalRole.LocationTransmission &&
-                signals[i].state != SignalState.CoolingDown)
-                return null;
+        string key = NormalizeExternalKey(name);
+        if (!string.IsNullOrEmpty(key))
+        {
+            for (int i = 0; i < signals.Count; i++)
+            {
+                var s = signals[i];
+                if (s == null) continue;
+                if (s.role != SignalRole.LocationTransmission) continue;
+                if (s.state == SignalState.CoolingDown) continue;
+                if (!string.IsNullOrEmpty(s.externalKey) && string.Equals(s.externalKey, key, StringComparison.Ordinal))
+                {
+                    s.latitude = latitude;
+                    s.longitude = longitude;
+                    s.mercatorPosition = Conversions.LatitudeLongitudeToWebMercator(new LatitudeLongitude(latitude, longitude));
+                    s.locationName = name;
+                    s.locationCategory = category;
+                    s.teaser = teaser;
+                    s.specialItem = specialItem ?? "";
+                    if (s.state == SignalState.Hidden) TransitionTo(s, SignalState.Visible);
+                    return s;
+                }
+            }
+        }
 
         var merc = Conversions.LatitudeLongitudeToWebMercator(
             new LatitudeLongitude(latitude, longitude));
 
         var sig = new Signal
         {
+            id = !string.IsNullOrEmpty(key) ? StableIdFromKey("loc", key) : Guid.NewGuid().ToString("N").Substring(0, 8),
             role = SignalRole.LocationTransmission,
             type = SignalType.Presence,
             transmissionType = TransmissionType.Location,
-            state = SignalState.Hidden,
+            state = SignalState.Visible,
             mercatorPosition = merc,
             latitude = latitude,
             longitude = longitude,
@@ -1987,23 +3512,42 @@ public class SignalDirectorV2 : MonoBehaviour
             locationName = name,
             locationCategory = category,
             teaser = teaser,
-            specialItem = specialItem ?? PickSpecialItem()
+            specialItem = specialItem ?? "",
+            externalKey = key
         };
 
         signals.Add(sig);
         Debug.Log($"[SignalDirector] Spawned LocationTransmission '{name}' id={sig.id}");
         OnSignalSpawned?.Invoke(sig);
+        OnSignalStateChanged?.Invoke(sig);
         return sig;
     }
 
-    /// <summary>Get the current location transmission signal, or null.</summary>
+    /// <summary>Get the nearest location transmission signal, or null.</summary>
     public Signal GetLocationTransmission()
     {
+        return GetNearestLocationTransmission();
+    }
+
+    public Signal GetNearestLocationTransmission()
+    {
+        var playerMerc = GetPlayerMercator();
+        Signal best = null;
+        float bestDist = float.MaxValue;
         for (int i = 0; i < signals.Count; i++)
-            if (signals[i].role == SignalRole.LocationTransmission &&
-                signals[i].state != SignalState.CoolingDown)
-                return signals[i];
-        return null;
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role != SignalRole.LocationTransmission) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+            float d = DistanceTo(s, playerMerc);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                best = s;
+            }
+        }
+        return best;
     }
 
     /// <summary>Remove the current location transmission signal.</summary>
@@ -2017,5 +3561,11 @@ public class SignalDirectorV2 : MonoBehaviour
     public float DistanceToSignal(Signal sig)
     {
         return DistanceTo(sig, GetPlayerMercator());
+    }
+
+    private static string FormatSignalGpsTitle(Signal signal)
+    {
+        if (signal == null) return "gps --, --";
+        return $"gps {signal.latitude:F5}, {signal.longitude:F5}";
     }
 }

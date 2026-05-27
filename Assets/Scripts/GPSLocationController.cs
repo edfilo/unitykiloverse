@@ -25,6 +25,19 @@ public class GPSLocationController : MonoBehaviour
     // Public flag for other systems to check if GPS is ready
     public static bool GPSReady { get; private set; } = false;
 
+    // Testing toggle: when true, real GPS readings stop overwriting playerGPS / map center,
+    // so touch (or keyboard) can freely walk the player. UI lives in MobileInputManager.
+    public static bool GPSDisabled = false;
+    private static bool gpsDefaultApplied = false;
+
+    void Awake()
+    {
+        if (gpsDefaultApplied) return;
+        GPSDisabled = !Application.isMobilePlatform;
+        gpsDefaultApplied = true;
+        Debug.Log($"[GPS] Default GPSDisabled={GPSDisabled} platform={Application.platform}");
+    }
+
     IEnumerator Start()
     {
         while (!BootState.AllowGPS)
@@ -60,6 +73,11 @@ public class GPSLocationController : MonoBehaviour
         {
             Debug.Log($"[GPS] targetToRotate already set: {targetToRotate.name}");
         }
+
+        // Always ensure core services (UserPresenceManager + UI services) are present,
+        // even if GPS is disabled/denied. Otherwise the app can get stuck "scanning"
+        // with no weather/stories because /ping never runs.
+        EnsureServices();
 
         // In Editor: follow player without GPS by tracking movement
         // On Mobile: use actual GPS
@@ -275,6 +293,9 @@ public class GPSLocationController : MonoBehaviour
 
     void UpdateMap(LocationInfo loc)
     {
+        // Testing: skip GPS-driven re-centering so the player can drive with touch/keys.
+        if (GPSDisabled) return;
+
         if (map != null && followUser)
         {
             var latLon = new LatitudeLongitude(loc.latitude, loc.longitude);

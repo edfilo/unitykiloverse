@@ -7,6 +7,7 @@ using UnityEngine.EventSystems;
 using UnityEngine.Profiling;
 using UnityEngine.UI;
 using KiloWorld.Rendering;
+using KiloWorld.UI.Stories;
 
 public class K1L0ProfileMode : MonoBehaviour
 {
@@ -35,6 +36,8 @@ public class K1L0ProfileMode : MonoBehaviour
     private RectTransform scrollContent;
     private ScrollRect panelScrollRect;
     private Coroutine perfRoutine;
+    private bool initialized;
+    private TextMeshProUGUI beamDebugText;
 
     public void Initialize(RectTransform parent, TMP_FontAsset font)
     {
@@ -68,7 +71,7 @@ public class K1L0ProfileMode : MonoBehaviour
         var screenshotBtn = CreateCommandButton(rt, "ScreenshotBtn", new Vector2(0.52f, 0f), new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(0f, btnBase + 38f), new Vector2(0f, 32f), "SEND SCREENSHOT");
         screenshotBtn.btn.onClick.AddListener(OnScreenshotClick);
 
-        LoadProfile();
+        initialized = true;
         UpdateAuthButton();
         UpdateProdApiToggle();
     }
@@ -100,6 +103,8 @@ public class K1L0ProfileMode : MonoBehaviour
         tmp.enableWordWrapping = true;
         tmp.overflowMode = TextOverflowModes.Overflow;
         tmp.richText = true;
+        bgGO.SetActive(false);
+        go.SetActive(false);
         return tmp;
     }
 
@@ -114,7 +119,7 @@ public class K1L0ProfileMode : MonoBehaviour
         scrollGO.transform.SetParent(parent, false);
         var scrollRT = scrollGO.GetComponent<RectTransform>();
         scrollRT.anchorMin = new Vector2(0f, 0.14f);
-        scrollRT.anchorMax = new Vector2(1f, 0.83f);
+        scrollRT.anchorMax = new Vector2(1f, 1f);
         scrollRT.offsetMin = Vector2.zero;
         scrollRT.offsetMax = new Vector2(-2f, 0f);
 
@@ -153,6 +158,12 @@ public class K1L0ProfileMode : MonoBehaviour
 
         // Perf stats
         y = AddPerfLabel(scrollContent, y);
+        y = AddBeamDebugLabel(scrollContent, y);
+
+        y = AddHeader(scrollContent, y, "DEBUG");
+        y = AddToggle(scrollContent, y, "PORTAL DIST", "showBeamDistanceLabels", SignalBeamBridge.ShowDistanceLabels, SignalBeamBridge.SetDistanceLabelsVisible);
+        y = AddToggle(scrollContent, y, "STORIES", "showStoryStrip", StoriesStripVisibility.ShowStoryStrip, StoriesStripVisibility.SetStoryStripVisible);
+        y = AddSlider(scrollContent, y, "MAP BRIGHT", "panelMapBrightness", 0f, 1f, K1L0HUD.PanelMapBrightness, K1L0HUD.SetPanelMapBrightness);
 
         // ── COLOR GRADING ──
         y = AddHeader(scrollContent, y, "COLOR GRADING");
@@ -208,10 +219,10 @@ public class K1L0ProfileMode : MonoBehaviour
         if (cam != null)
         {
             y = AddHeader(scrollContent, y, "CAMERA / GOD VIEW");
-            y = AddSlider(scrollContent, y, "HEIGHT", "godPositionY", 10, 500, cam.godPositionY, v => cam.godPositionY = v);
-            y = AddSlider(scrollContent, y, "DISTANCE", "godPositionZ", 10, 500, cam.godPositionZ, v => cam.godPositionZ = v);
-            y = AddSlider(scrollContent, y, "PITCH", "godRotationX", 0, 90, cam.godRotationX, v => cam.godRotationX = v);
-            y = AddSlider(scrollContent, y, "FAR CLIP", "farClipPlane", 100, 5000, cam.farClipPlane, v => cam.farClipPlane = v);
+            y = AddSlider(scrollContent, y, "HEIGHT", "godPositionY", 10, 500, cam.godPositionY, v => { cam.godPositionY = v; ApplyCameraLiveUpdate(); });
+            y = AddSlider(scrollContent, y, "DISTANCE", "godPositionZ", 10, 500, cam.godPositionZ, v => { cam.godPositionZ = v; ApplyCameraLiveUpdate(); });
+            y = AddSlider(scrollContent, y, "PITCH", "godRotationX", 0, 90, cam.godRotationX, v => { cam.godRotationX = v; ApplyCameraLiveUpdate(); });
+            y = AddSlider(scrollContent, y, "FAR CLIP", "farClipPlane", 100, 5000, cam.farClipPlane, v => { cam.farClipPlane = v; ApplyCameraLiveUpdate(); });
         }
 
         y -= 10f; // bottom padding
@@ -238,6 +249,29 @@ public class K1L0ProfileMode : MonoBehaviour
         perfText.enableWordWrapping = true;
         perfText.richText = true;
         perfText.text = "> loading stats...";
+        return y - h - SectionGap;
+    }
+
+    private float AddBeamDebugLabel(RectTransform content, float y)
+    {
+        float h = 58f;
+        var go = new GameObject("RingDebug", typeof(RectTransform));
+        go.transform.SetParent(content, false);
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0, 1);
+        rt.anchorMax = new Vector2(1, 1);
+        rt.pivot = new Vector2(0.5f, 1);
+        rt.anchoredPosition = new Vector2(0, y);
+        rt.sizeDelta = new Vector2(0, h);
+
+        beamDebugText = go.AddComponent<TextMeshProUGUI>();
+        beamDebugText.font = monoFont;
+        beamDebugText.fontSize = 10f;
+        beamDebugText.color = new Color(0.5f, 1f, 0.55f, 0.76f);
+        beamDebugText.alignment = TextAlignmentOptions.TopLeft;
+        beamDebugText.enableWordWrapping = true;
+        beamDebugText.richText = true;
+        beamDebugText.text = "RING DEBUG\nPORTAL AUDIT: waiting...";
         return y - h - SectionGap;
     }
 
@@ -273,6 +307,7 @@ public class K1L0ProfileMode : MonoBehaviour
         rowRT.pivot = new Vector2(0.5f, 1);
         rowRT.anchoredPosition = new Vector2(0, y);
         rowRT.sizeDelta = new Vector2(0, RowH);
+        AddScrollHitArea(rowGO);
 
         // Label
         var labTmp = AddText(rowGO.transform, "Lab", new Vector2(0, 0), new Vector2(0.32f, 1), label, 9.5f, TerminalDim, TextAlignmentOptions.Left);
@@ -304,6 +339,7 @@ public class K1L0ProfileMode : MonoBehaviour
         rowRT.pivot = new Vector2(0.5f, 1);
         rowRT.anchoredPosition = new Vector2(0, y);
         rowRT.sizeDelta = new Vector2(0, RowH);
+        AddScrollHitArea(rowGO);
 
         // Label
         AddText(rowGO.transform, "Lab", new Vector2(0, 0), new Vector2(0.32f, 1), label, 9.5f, TerminalDim, TextAlignmentOptions.Left);
@@ -345,6 +381,13 @@ public class K1L0ProfileMode : MonoBehaviour
         tmp.text = text;
         tmp.raycastTarget = false;
         return tmp;
+    }
+
+    private void AddScrollHitArea(GameObject rowGO)
+    {
+        var image = rowGO.AddComponent<Image>();
+        image.color = new Color(0f, 0f, 0f, 0.01f);
+        image.raycastTarget = true;
     }
 
     private Slider CreateSliderVisual(Transform parent, Vector2 anchorMin, Vector2 anchorMax,
@@ -420,6 +463,12 @@ public class K1L0ProfileMode : MonoBehaviour
         return $"{v:F2}";
     }
 
+    private void ApplyCameraLiveUpdate()
+    {
+        var controller = Object.FindFirstObjectByType<KiloFirstPersonController>();
+        if (controller != null) controller.ApplyCameraProfileNow();
+    }
+
     // ────────────────────────────────────────────
     //  Command buttons
     // ────────────────────────────────────────────
@@ -482,7 +531,9 @@ public class K1L0ProfileMode : MonoBehaviour
 
     private void OnEnable()
     {
-        LoadProfile();
+        if (!initialized)
+            return;
+
         UpdateAuthButton();
         UpdateProdApiToggle();
         if (perfRoutine != null) StopCoroutine(perfRoutine);
@@ -513,6 +564,13 @@ public class K1L0ProfileMode : MonoBehaviour
                     $"> FPS <color=#BCFFC5>{fps:F0}</color>  MEM <color=#BCFFC5>{allocMB}MB</color>  BAT <color=#BCFFC5>{batStr}</color>\n" +
                     $"> GPU <color=#BCFFC5>{SystemInfo.graphicsDeviceName}</color>  {Screen.width}x{Screen.height}";
             }
+            if (beamDebugText != null)
+            {
+                var director = SignalDirectorV2.Instance;
+                beamDebugText.text = director != null
+                    ? director.GetBeamDebugTextForSettings()
+                    : "RING DEBUG\nSignalDirector missing";
+            }
             yield return new WaitForSecondsRealtime(1f);
         }
     }
@@ -523,6 +581,9 @@ public class K1L0ProfileMode : MonoBehaviour
 
     private void LoadProfile()
     {
+        if (!initialized || bodyText == null || lineBgContainer == null)
+            return;
+
         string callSign = "---";
         string channel = "---";
         string signal = FirebaseAuthManager.Instance != null && FirebaseAuthManager.Instance.isAuthenticated ? "AUTHENTICATED" : "ANON";
@@ -706,20 +767,47 @@ public class K1L0ProfileMode : MonoBehaviour
     }
 }
 
-public class SliderScrollBlocker : MonoBehaviour, IPointerDownHandler, IPointerUpHandler
+public class SliderScrollBlocker : MonoBehaviour, IPointerDownHandler, IPointerUpHandler, IBeginDragHandler, IDragHandler, IEndDragHandler
 {
     public ScrollRect scrollRect;
     public Slider slider;
+    private Vector2 pointerDownPosition;
+    private bool forwardingToScroll;
 
     public void OnPointerDown(PointerEventData eventData)
     {
+        pointerDownPosition = eventData.position;
+        forwardingToScroll = false;
         K1L0ProfileMode.SetActiveSlider(slider);
-        if (scrollRect != null) scrollRect.enabled = false;
     }
 
     public void OnPointerUp(PointerEventData eventData)
     {
         K1L0ProfileMode.SetActiveSlider(null);
-        if (scrollRect != null) scrollRect.enabled = true;
+        forwardingToScroll = false;
+    }
+
+    public void OnBeginDrag(PointerEventData eventData)
+    {
+        Vector2 delta = eventData.position - pointerDownPosition;
+        forwardingToScroll = Mathf.Abs(delta.y) > Mathf.Abs(delta.x) && Mathf.Abs(delta.y) > 6f;
+        if (forwardingToScroll)
+        {
+            K1L0ProfileMode.SetActiveSlider(null);
+            scrollRect?.OnBeginDrag(eventData);
+        }
+    }
+
+    public void OnDrag(PointerEventData eventData)
+    {
+        if (forwardingToScroll)
+            scrollRect?.OnDrag(eventData);
+    }
+
+    public void OnEndDrag(PointerEventData eventData)
+    {
+        if (forwardingToScroll)
+            scrollRect?.OnEndDrag(eventData);
+        forwardingToScroll = false;
     }
 }

@@ -6,18 +6,49 @@ using UnityEngine.EventSystems;
 
 namespace KiloWorld.UI.Stories
 {
+    public static class StoriesStripVisibility
+    {
+        public const string PrefKey = "k1lo_showStoryStrip";
+
+        public static bool ShowStoryStrip => PlayerPrefs.GetFloat(PrefKey, 0f) >= 0.5f;
+
+        public static void SetStoryStripVisible(bool visible)
+        {
+            PlayerPrefs.SetFloat(PrefKey, visible ? 1f : 0f);
+            PlayerPrefs.Save();
+            Apply();
+        }
+
+        public static void Apply()
+        {
+            var strips = Object.FindObjectsByType<StoriesStrip>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            for (int i = 0; i < strips.Length; i++)
+            {
+                if (strips[i] != null)
+                {
+                    strips[i].gameObject.SetActive(ShowStoryStrip);
+                }
+            }
+        }
+    }
+
     public class StoriesUIBootstrapper : MonoBehaviour
     {
         [Header("Layout")]
-        [SerializeField] private float stripHeight = 300f;
-        [SerializeField] private float topPadding = 60f;
-        [SerializeField] private float itemDiameter = 180f;
-        [SerializeField] private float ringThickness = 10f;
-        [SerializeField] private float itemSpacing = 26f;
-        [SerializeField] private float titleFontSize = 28f;
-        [SerializeField] private float titleHeight = 40f;
-        [SerializeField] private float ringTopPadding = 12f;
-        [SerializeField] private float titleSpacing = 8f;
+        // Fixed compact strip — Instagram-ish dimensions. Stacked vertically:
+        // weather (top, ~28h) → stories strip → pursuit teaser → location teaser.
+        // Sized large enough to remain readable when the canvas matches by
+        // width on small windows. topPadding = 36 puts the strip 8px under
+        // the weather text in the 390-wide reference.
+        [SerializeField] private float stripHeight = 82f;
+        [SerializeField] private float topPadding = 36f;
+        [SerializeField] private float itemDiameter = 54f;
+        [SerializeField] private float ringThickness = 3f;
+        [SerializeField] private float itemSpacing = 8f;
+        [SerializeField] private float titleFontSize = 9f;
+        [SerializeField] private float titleHeight = 12f;
+        [SerializeField] private float ringTopPadding = 4f;
+        [SerializeField] private float titleSpacing = 2f;
 
         [Header("Colors")]
         [SerializeField] private Color stripBackground = new Color(0.05f, 0.08f, 0.14f, 0.3f);
@@ -50,14 +81,17 @@ namespace KiloWorld.UI.Stories
             Build();
         }
 
-        public void Build()
-        {
-            if (built) return;
+	        public void Build()
+	        {
+	            if (built) return;
+
+	            float minStrip = ringTopPadding + itemDiameter + titleSpacing + titleHeight + 12f;
+	            if (stripHeight < minStrip) stripHeight = minStrip;
 
             targetCanvas = FindOrCreateCanvas();
-            if (targetCanvas == null)
-            {
-                Debug.LogWarning("[StoriesUIBootstrapper] No canvas available.");
+	            if (targetCanvas == null)
+	            {
+	                Debug.LogWarning("[StoriesUIBootstrapper] No canvas available.");
                 return;
             }
 
@@ -65,15 +99,17 @@ namespace KiloWorld.UI.Stories
             circleSprite = CreateCircleSprite(128);
             solidSprite = CreateSolidSprite();
 
-            RectTransform stripRoot = CreateStripRoot(targetCanvas.transform);
+            RectTransform stripRoot = CreateStripRoot(K1L0HudLayoutController.TopStack);
             RectTransform contentRoot = CreateStripScrollRect(stripRoot);
             itemTemplate = CreateStoryItemTemplate(stripRoot, contentRoot);
+            K1L0HudLayoutController.RegisterTopElement(stripRoot, "StoriesStripRoot", 10, stripHeight, stripHeight);
 
             storiesStrip = GetOrAddComponent<StoriesStrip>(stripRoot.gameObject);
             storiesStrip.Initialize(contentRoot, itemTemplate, null, mediaLoader);
             storiesStrip.ConfigureStyle(itemDiameter, ringThickness, unplayedRingColor, playedRingColor);
+            stripRoot.gameObject.SetActive(StoriesStripVisibility.ShowStoryStrip);
 
-            storyViewer = CreateStoryViewer(targetCanvas.transform);
+            storyViewer = CreateStoryViewer(K1L0CanvasRoot.Modal);
             storyViewer.Hide(); // Start hidden — only shown when user taps a story circle
             storiesStrip.Initialize(contentRoot, itemTemplate, storyViewer, mediaLoader);
 
@@ -88,25 +124,7 @@ namespace KiloWorld.UI.Stories
 
         private Canvas FindOrCreateCanvas()
         {
-            // Always create a dedicated ScreenSpaceOverlay canvas for stories
-            // (PedometerCanvas may be WorldSpace/ScreenSpaceCamera and not visible)
-            var storiesGO = GameObject.Find("StoriesCanvas");
-            if (storiesGO != null)
-            {
-                var c = storiesGO.GetComponent<Canvas>();
-                if (c != null && c.renderMode == RenderMode.ScreenSpaceOverlay) return c;
-            }
-
-            var canvasGO = new GameObject("StoriesCanvas");
-            var canvas = canvasGO.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            canvas.sortingOrder = 9000;
-            var scaler = canvasGO.AddComponent<CanvasScaler>();
-            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1080, 1920);
-            scaler.matchWidthOrHeight = 0.5f;
-            canvasGO.AddComponent<GraphicRaycaster>();
-            return canvas;
+            return K1L0CanvasRoot.HUDCanvas;
         }
 
         private RectTransform CreateStripRoot(Transform parent)
@@ -119,9 +137,7 @@ namespace KiloWorld.UI.Stories
             rect.anchorMax = new Vector2(1f, 1f);
             rect.pivot = new Vector2(0.5f, 1f);
             rect.sizeDelta = new Vector2(0f, stripHeight);
-
-            float safeInset = GetSafeAreaTopInset(parent.GetComponent<Canvas>());
-            rect.anchoredPosition = new Vector2(0f, -(safeInset + topPadding));
+            rect.anchoredPosition = Vector2.zero;
 
             return rect;
         }
@@ -167,10 +183,13 @@ namespace KiloWorld.UI.Stories
             var layout = contentObj.AddComponent<HorizontalLayoutGroup>();
             layout.spacing = itemSpacing;
             layout.childAlignment = TextAnchor.MiddleLeft;
-            layout.childControlWidth = true;
-            layout.childControlHeight = true;
+            // childControlWidth=false so each item uses its own RectTransform
+            // sizeDelta, not whatever the layout group decides — prevents thumbs
+            // from shrinking when the parent canvas changes width.
+            layout.childControlWidth = false;
+            layout.childControlHeight = false;
             layout.childForceExpandWidth = false;
-            layout.childForceExpandHeight = true;
+            layout.childForceExpandHeight = false;
 
             var fitter = contentObj.AddComponent<ContentSizeFitter>();
             fitter.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
@@ -192,8 +211,14 @@ namespace KiloWorld.UI.Stories
             itemRect.sizeDelta = new Vector2(itemDiameter + 16f, stripHeight);
 
             var layout = templateObj.AddComponent<LayoutElement>();
+            // minWidth pinned to preferred so the layout group can never collapse
+            // an item below this size, even if the canvas is narrow.
+            layout.minWidth = itemDiameter + 16f;
             layout.preferredWidth = itemDiameter + 16f;
+            layout.minHeight = stripHeight;
             layout.preferredHeight = stripHeight;
+            layout.flexibleWidth = 0f;
+            layout.flexibleHeight = 0f;
 
             var buttonImage = templateObj.AddComponent<Image>();
             buttonImage.color = new Color(0f, 0f, 0f, 0f);
@@ -309,6 +334,7 @@ namespace KiloWorld.UI.Stories
             var videoPlayer = viewerObj.AddComponent<VideoPlayer>();
             videoPlayer.playOnAwake = false;
             videoPlayer.renderMode = VideoRenderMode.APIOnly;
+            videoPlayer.audioOutputMode = VideoAudioOutputMode.None;
 
             var progressRoot = new GameObject("ProgressBar", typeof(RectTransform));
             progressRoot.transform.SetParent(viewerObj.transform, false);
