@@ -58,7 +58,6 @@ namespace KiloWorld.Rendering.Systems
             LoadPref("hueShift", ref pfx.hueShift);
             LoadPref("temperature", ref pfx.temperature);
             LoadPref("tint", ref pfx.tint);
-            LoadPref("exposure", ref pfx.exposureFixedValue);
             LoadPref("bloomIntensity", ref pfx.bloomIntensity);
             LoadPref("bloomThreshold", ref pfx.bloomThreshold);
             LoadPref("bloomScatter", ref pfx.bloomScatter);
@@ -85,6 +84,15 @@ namespace KiloWorld.Rendering.Systems
             LoadPref("godPositionZ", ref cam.godPositionZ);
             LoadPref("godRotationX", ref cam.godRotationX);
             LoadPref("farClipPlane", ref cam.farClipPlane);
+
+            var sky = profile.sky;
+            LoadPrefBool("auroraEnabled", ref sky.auroraEnabled);
+            LoadPref("auroraIntensity", ref sky.auroraIntensity);
+            LoadPref("auroraHeight", ref sky.auroraHeight);
+            LoadPref("auroraDistance", ref sky.auroraDistance);
+            LoadPref("auroraWidth", ref sky.auroraWidth);
+            LoadPref("auroraVerticalSize", ref sky.auroraVerticalSize);
+            LoadPref("auroraDriftSpeed", ref sky.auroraDriftSpeed);
         }
 
         private static void LoadPref(string key, ref float field)
@@ -525,6 +533,15 @@ namespace KiloWorld.Rendering.Systems
         private float _lastSkyboxRotation = -1f;
         private float _lastSkyboxExposure = -1f;
         private Color _lastSkyboxTint = Color.clear;
+        private GameObject _auroraRoot;
+        private Material _auroraMaterial;
+        private Texture2D _auroraTexture;
+
+        // Live state the aurora sky reflects. Set by the HUD surveillance toggle and the
+        // presence/weather feed. SurveillanceActive: world (map) camera on → vivid green
+        // aurora; off → dim red "offline" sky. WeatherTempF biases the hue warm/cool.
+        public static bool SurveillanceActive = true;
+        public static float WeatherTempF = float.NaN;
 
         private void ApplySky()
         {
@@ -577,6 +594,178 @@ namespace KiloWorld.Rendering.Systems
                 mainCam.backgroundColor = Color.black;
                 RenderSettings.skybox = null;
             }
+
+            ApplyAurora(mainCam);
+        }
+
+        private void ApplyAurora(Camera mainCam)
+        {
+            if (profile == null || profile.sky == null || !profile.sky.auroraEnabled || profile.sky.auroraIntensity <= 0.001f)
+            {
+                if (_auroraRoot != null) _auroraRoot.SetActive(false);
+                return;
+            }
+
+            EnsureAurora();
+            if (_auroraRoot == null || _auroraMaterial == null) return;
+
+            var sky = profile.sky;
+            _auroraRoot.SetActive(true);
+
+            Vector3 planarForward = mainCam.transform.forward;
+            planarForward.y = 0f;
+            if (planarForward.sqrMagnitude < 0.0001f)
+                planarForward = mainCam.transform.rotation * Vector3.forward;
+            planarForward.Normalize();
+
+            // The band is a unit-radius arc centred on the camera. Keep its radius INSIDE
+            // the far clip plane — the old code parked the quad at auroraDistance (420m)
+            // beyond a 250m far plane, so it was clipped away and never drew regardless of
+            // how high intensity was cranked.
+            float radius = Mathf.Clamp(sky.auroraDistance, 60f, mainCam.farClipPlane * 0.82f);
+            _auroraRoot.transform.position = mainCam.transform.position;
+            _auroraRoot.transform.rotation = Quaternion.LookRotation(planarForward, Vector3.up);
+            _auroraRoot.transform.localScale = Vector3.one * radius;
+
+            // Hue reflects live state: surveillance on → green/teal (warm-biased by weather),
+            // off → dim red. Intensity drives brightness; a slow pulse keeps it alive.
+            float intensity = Mathf.Clamp(sky.auroraIntensity, 0f, 2f);
+            float warm = float.IsNaN(WeatherTempF) ? 0.5f : Mathf.Clamp01((WeatherTempF - 35f) / 55f);
+            Color onHue = Color.Lerp(new Color(0.30f, 0.95f, 0.88f), new Color(0.58f, 1f, 0.55f), warm);
+            Color hue = SurveillanceActive ? onHue : new Color(1f, 0.34f, 0.30f);
+            float stateMul = SurveillanceActive ? 1f : 0.45f;
+            float pulse = 0.85f + 0.15f * Mathf.Sin(Time.time * 0.7f);
+
+            Color baseCol = hue * ((0.55f + 0.45f * intensity) * stateMul);
+            baseCol.a = 1f;
+            _auroraMaterial.SetColor("_BaseColor", baseCol);
+            _auroraMaterial.SetColor("_Color", baseCol);
+            _auroraMaterial.SetColor("_EmissionColor",
+                hue * (Mathf.Lerp(0.8f, 3.2f, Mathf.Clamp01(intensity * 0.5f)) * pulse * stateMul));
+
+            // Two layers drift at slightly different rates for a shimmering curtain.
+            float t = Time.time * sky.auroraDriftSpeed;
+            Vector2 offset = new Vector2(t * 0.03f, Mathf.Sin(t * 0.05f) * 0.015f);
+            _auroraMaterial.mainTextureOffset = offset;
+            _auroraMaterial.SetTextureOffset("_BaseMap", offset);
+        }
+
+        private void EnsureAurora()
+        {
+            if (_auroraRoot != null) return;
+
+            _auroraRoot = new GameObject("K1L0_AuroraSky");
+            _auroraRoot.hideFlags = HideFlags.DontSave;
+
+            var meshFilter = _auroraRoot.AddComponent<MeshFilter>();
+            meshFilter.sharedMesh = CreateAuroraMesh();
+
+            var meshRenderer = _auroraRoot.AddComponent<MeshRenderer>();
+            Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
+            if (shader == null) shader = Shader.Find("Unlit/Transparent");
+            if (shader == null) shader = Shader.Find("Sprites/Default");
+            _auroraMaterial = new Material(shader);
+            _auroraMaterial.name = "K1L0_AuroraSky_Runtime";
+            _auroraTexture = CreateAuroraTexture();
+            _auroraMaterial.mainTexture = _auroraTexture;
+            _auroraMaterial.SetTexture("_BaseMap", _auroraTexture);
+            ConfigureTransparentMaterial(_auroraMaterial);
+            meshRenderer.material = _auroraMaterial;
+            meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            meshRenderer.receiveShadows = false;
+        }
+
+        // A curved ribbon spanning a wide arc of the upper sky (unit radius — the runtime
+        // scales it to fit inside the far clip). Reads as a sky feature you can pan across,
+        // not a flat billboard parked in front of the camera.
+        private static Mesh CreateAuroraMesh()
+        {
+            const int seg = 32;             // horizontal segments
+            const float spanDeg = 130f;     // total horizontal sweep
+            const float elLowDeg = 9f;      // bottom edge elevation
+            const float elHighDeg = 54f;    // top edge elevation
+            float elLow = elLowDeg * Mathf.Deg2Rad;
+            float elHigh = elHighDeg * Mathf.Deg2Rad;
+
+            var verts = new Vector3[(seg + 1) * 2];
+            var uvs = new Vector2[(seg + 1) * 2];
+            var tris = new int[seg * 6];
+
+            for (int i = 0; i <= seg; i++)
+            {
+                float tu = i / (float)seg;
+                float az = Mathf.Deg2Rad * Mathf.Lerp(-spanDeg * 0.5f, spanDeg * 0.5f, tu);
+                Vector3 hdir = new Vector3(Mathf.Sin(az), 0f, Mathf.Cos(az));
+                Vector3 bottom = Mathf.Cos(elLow) * hdir + Mathf.Sin(elLow) * Vector3.up;
+                Vector3 top = Mathf.Cos(elHigh) * hdir + Mathf.Sin(elHigh) * Vector3.up;
+                verts[i * 2 + 0] = bottom.normalized;
+                verts[i * 2 + 1] = top.normalized;
+                uvs[i * 2 + 0] = new Vector2(tu * 3f, 0f); // repeat curtains horizontally
+                uvs[i * 2 + 1] = new Vector2(tu * 3f, 1f);
+            }
+            for (int i = 0; i < seg; i++)
+            {
+                int b = i * 2;
+                int t = i * 6;
+                tris[t + 0] = b; tris[t + 1] = b + 1; tris[t + 2] = b + 2;
+                tris[t + 3] = b + 1; tris[t + 4] = b + 3; tris[t + 5] = b + 2;
+            }
+
+            Mesh mesh = new Mesh { name = "K1L0_AuroraSkyMesh" };
+            mesh.vertices = verts;
+            mesh.uv = uvs;
+            mesh.triangles = tris;
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        private static Texture2D CreateAuroraTexture()
+        {
+            const int w = 512;
+            const int h = 256;
+            Texture2D tex = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+            tex.wrapMode = TextureWrapMode.Repeat;
+            tex.filterMode = FilterMode.Bilinear;
+            for (int y = 0; y < h; y++)
+            {
+                float v = y / (float)(h - 1);
+                // Soft vertical envelope: fades in from the bottom, tapers out near the top.
+                float vertical = Mathf.SmoothStep(0f, 0.35f, v) * (1f - Mathf.SmoothStep(0.6f, 1f, v));
+                // Gentle green→teal→violet gradient up the curtain.
+                Color low = new Color(0.45f, 1f, 0.62f);
+                Color mid = new Color(0.40f, 0.95f, 0.95f);
+                Color high = new Color(0.62f, 0.45f, 1f);
+                Color grad = v < 0.5f ? Color.Lerp(low, mid, v * 2f) : Color.Lerp(mid, high, (v - 0.5f) * 2f);
+                for (int x = 0; x < w; x++)
+                {
+                    float u = x / (float)(w - 1);
+                    // Multi-octave vertical curtains for a filamented look.
+                    float c1 = Mathf.Sin(u * 26f + Mathf.Sin(u * 6f) * 2.0f);
+                    float c2 = Mathf.Sin(u * 61f + Mathf.Sin(u * 13f) * 1.3f);
+                    float curtain = Mathf.Pow(Mathf.Clamp01(c1 * 0.5f + 0.5f), 2.4f);
+                    curtain *= 0.7f + 0.3f * Mathf.Clamp01(c2 * 0.5f + 0.5f);
+                    float a = curtain * vertical;
+                    tex.SetPixel(x, y, new Color(grad.r, grad.g, grad.b, a));
+                }
+            }
+            tex.Apply(false, true);
+            return tex;
+        }
+
+        private static void ConfigureTransparentMaterial(Material mat)
+        {
+            if (mat == null) return;
+            mat.SetFloat("_Surface", 1f);
+            mat.SetFloat("_Blend", 0f);
+            mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);
+            mat.SetInt("_ZWrite", 0);
+            mat.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            mat.EnableKeyword("_ALPHAPREMULTIPLY_ON");
+            mat.EnableKeyword("_EMISSION");
+            mat.renderQueue = 3000;
         }
 
         private void ApplyPostFX()
@@ -596,18 +785,20 @@ namespace KiloWorld.Rendering.Systems
             }
 
             if (globalVolume == null || globalVolume.profile == null) return;
+            EnsurePostFXVolume();
+            EnsureCameraPostProcessing();
 
             // --- Bloom ---
             if (_bloom == null) globalVolume.profile.TryGet(out _bloom);
             if (_bloom == null) _bloom = globalVolume.profile.Add<Bloom>(true);
 
-            _bloom.active = true;
+            _bloom.active = profile.postFX.bloomEnabled;
             _bloom.intensity.overrideState = true;
-            _bloom.intensity.value = profile.postFX.bloomEnabled ? profile.postFX.bloomIntensity : 0f;
+            _bloom.intensity.value = Mathf.Max(0f, profile.postFX.bloomIntensity);
             _bloom.threshold.overrideState = true;
-            _bloom.threshold.value = profile.postFX.bloomThreshold;
+            _bloom.threshold.value = Mathf.Max(0f, profile.postFX.bloomThreshold);
             _bloom.scatter.overrideState = true;
-            _bloom.scatter.value = profile.postFX.bloomScatter;
+            _bloom.scatter.value = Mathf.Clamp01(profile.postFX.bloomScatter);
             _bloom.tint.overrideState = true;
             _bloom.tint.value = profile.postFX.bloomTint;
 
@@ -669,17 +860,17 @@ namespace KiloWorld.Rendering.Systems
             _lensDistortion.yMultiplier.overrideState = true; _lensDistortion.yMultiplier.value = profile.postFX.lensDistortionYMultiplier;
             _lensDistortion.scale.overrideState = true; _lensDistortion.scale.value = profile.postFX.lensDistortionScale;
 
-            // --- Exposure & Color Grading (ColorAdjustments) ---
+            // --- Color Grading (ColorAdjustments) ---
             if (_colorAdjustments == null) globalVolume.profile.TryGet(out _colorAdjustments);
             if (_colorAdjustments == null) _colorAdjustments = globalVolume.profile.Add<ColorAdjustments>(true);
 
-            _colorAdjustments.active = profile.postFX.exposureEnabled || profile.postFX.colorGradingEnabled;
-
-            if (profile.postFX.exposureEnabled)
-            {
-                _colorAdjustments.postExposure.overrideState = true;
-                _colorAdjustments.postExposure.value = profile.postFX.exposureFixedValue;
-            }
+            bool colorGradingActive = profile.postFX.colorGradingEnabled ||
+                                      Mathf.Abs(profile.postFX.hueShift) > 0.001f ||
+                                      Mathf.Abs(profile.postFX.saturation) > 0.001f ||
+                                      Mathf.Abs(profile.postFX.contrast) > 0.001f;
+            _colorAdjustments.active = colorGradingActive;
+            _colorAdjustments.postExposure.overrideState = true;
+            _colorAdjustments.postExposure.value = 0f;
 
             // --- Depth of Field ---
             if (_depthOfField == null) globalVolume.profile.TryGet(out _depthOfField);
@@ -713,19 +904,9 @@ namespace KiloWorld.Rendering.Systems
             _whiteBalance.tint.overrideState = profile.postFX.tintOverride;
             _whiteBalance.tint.value = profile.postFX.tint;
             
-            if (profile.postFX.colorGradingEnabled)
-            {
-                if (!profile.postFX.exposureEnabled)
-                {
-                    _colorAdjustments.postExposure.overrideState = true;
-                    _colorAdjustments.postExposure.value = 0f;
-                }
-
-                _colorAdjustments.hueShift.overrideState = true; _colorAdjustments.hueShift.value = profile.postFX.hueShift;
-                _colorAdjustments.saturation.overrideState = true;
-                _colorAdjustments.saturation.value = profile.postFX.saturation;
-                _colorAdjustments.contrast.overrideState = true; _colorAdjustments.contrast.value = profile.postFX.contrast;
-            }
+            _colorAdjustments.hueShift.overrideState = true; _colorAdjustments.hueShift.value = profile.postFX.hueShift;
+            _colorAdjustments.saturation.overrideState = true; _colorAdjustments.saturation.value = profile.postFX.saturation;
+            _colorAdjustments.contrast.overrideState = true; _colorAdjustments.contrast.value = profile.postFX.contrast;
             
             // --- Color Grading (Shadows/Midtones/Highlights) ---
             if (_splitToning == null) globalVolume.profile.TryGet(out _splitToning);
@@ -757,6 +938,31 @@ namespace KiloWorld.Rendering.Systems
             _filmGrain.type.overrideState = true; _filmGrain.type.value = profile.postFX.filmGrainType;
             _filmGrain.intensity.overrideState = true; _filmGrain.intensity.value = profile.postFX.filmGrainIntensity;
             _filmGrain.response.overrideState = true; _filmGrain.response.value = profile.postFX.filmGrainResponse;
+        }
+
+        private void EnsurePostFXVolume()
+        {
+            if (globalVolume == null) return;
+
+            globalVolume.enabled = true;
+            globalVolume.isGlobal = true;
+            globalVolume.weight = 1f;
+            if (globalVolume.priority < 1000f)
+                globalVolume.priority = 1000f;
+        }
+
+        private void EnsureCameraPostProcessing()
+        {
+            Camera mainCamera = Camera.main;
+            if (mainCamera == null) return;
+            mainCamera.allowHDR = true;
+
+            UniversalAdditionalCameraData cameraData = mainCamera.GetUniversalAdditionalCameraData();
+            if (cameraData == null) return;
+
+            cameraData.renderPostProcessing = true;
+            if (globalVolume != null)
+                cameraData.volumeLayerMask |= 1 << globalVolume.gameObject.layer;
         }
 
         private void ApplyVolumetricFog()

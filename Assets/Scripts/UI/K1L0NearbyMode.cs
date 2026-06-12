@@ -10,12 +10,18 @@ public class K1L0NearbyMode : MonoBehaviour
     private static readonly Color TerminalDim = new Color(0.56f, 1f, 0.62f, 1f);
     private static readonly Color ArrowGreen = new Color(0.74f, 1f, 0.77f, 1f);
     private static readonly Color LineBgColor = new Color(0.01f, 0.02f, 0.01f, 0.82f);
+    private static readonly Color FilterIdleFill = new Color(0f, 0f, 0f, 0.92f);
+    private static readonly Color FilterActiveFill = new Color(0.05f, 0.42f, 0.08f, 0.95f);
+    private static readonly Color FilterIdleBorder = new Color(0.28f, 0.96f, 0.38f, 0.14f);
+    private static readonly Color FilterActiveBorder = new Color(0.56f, 1f, 0.62f, 0.68f);
+    private const string NearbyHeaderText = "nearby places to walk to find rare earth elements.";
     private const int MaxLocations = 20;
     private const float RefreshInterval = 0.25f;
     private const float LineBgPadH = 4f;
     private const float LineBgPadV = 1f;
 
     private TMP_FontAsset font;
+    private TextMeshProUGUI locationHeaderText;
     private TextMeshProUGUI teaserText;
     private TextMeshProUGUI bodyText;
     private RectTransform teaserRowsContainer;
@@ -29,12 +35,13 @@ public class K1L0NearbyMode : MonoBehaviour
     private readonly List<TransmitterScanner.TransmitterData> currentVisible = new List<TransmitterScanner.TransmitterData>(MaxLocations);
     private readonly Dictionary<string, K1L0GlassChrome> filterChromes = new Dictionary<string, K1L0GlassChrome>();
     private readonly Dictionary<string, Button> filterButtons = new Dictionary<string, Button>();
+    private readonly Dictionary<string, TextMeshProUGUI> filterLabels = new Dictionary<string, TextMeshProUGUI>();
     private float lastRefresh;
     private string currentFilter = "all";
     private KiloFirstPersonController cachedPlayer;
     private bool initialized;
     private static Sprite arrowSprite;
-    private readonly List<TeaserRow> teaserRows = new List<TeaserRow>(3);
+    private readonly List<TeaserRow> teaserRows = new List<TeaserRow>(1);
 
     private sealed class TeaserRow
     {
@@ -55,11 +62,35 @@ public class K1L0NearbyMode : MonoBehaviour
         rt.offsetMin = new Vector2(8f, 8f);
         rt.offsetMax = new Vector2(-8f, -8f);
 
+        locationHeaderText = CreateLocationHeader(rt);
         CreateTeaserRows(rt);
         CreateCommandBar(rt);
         bodyText = CreateBodyText(rt);
         initialized = true;
-        Refresh();
+        SetFilter("all");
+    }
+
+    private TextMeshProUGUI CreateLocationHeader(RectTransform parent)
+    {
+        GameObject go = new GameObject("LocationHeader", typeof(RectTransform));
+        go.transform.SetParent(parent, false);
+        RectTransform rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0f, 1f);
+        rt.anchorMax = new Vector2(1f, 1f);
+        rt.pivot = new Vector2(0.5f, 1f);
+        rt.anchoredPosition = Vector2.zero;
+        rt.sizeDelta = new Vector2(0f, 38f);
+
+        TextMeshProUGUI tmp = go.AddComponent<TextMeshProUGUI>();
+        tmp.font = font;
+        tmp.fontSize = 13f;
+        tmp.color = TerminalGreen;
+        tmp.alignment = TextAlignmentOptions.TopLeft;
+        tmp.enableWordWrapping = true;
+        tmp.overflowMode = TextOverflowModes.Ellipsis;
+        tmp.text = NearbyHeaderText;
+        tmp.raycastTarget = false;
+        return tmp;
     }
 
     private void CreateTeaserRows(RectTransform parent)
@@ -70,10 +101,10 @@ public class K1L0NearbyMode : MonoBehaviour
         teaserRowsContainer.anchorMin = new Vector2(0f, 1f);
         teaserRowsContainer.anchorMax = new Vector2(1f, 1f);
         teaserRowsContainer.pivot = new Vector2(0.5f, 1f);
-        teaserRowsContainer.anchoredPosition = Vector2.zero;
-        teaserRowsContainer.sizeDelta = new Vector2(0f, 66f);
+        teaserRowsContainer.anchoredPosition = new Vector2(0f, -42f);
+        teaserRowsContainer.sizeDelta = new Vector2(0f, 22f);
 
-        for (int i = 0; i < 3; i++)
+        for (int i = 0; i < 1; i++)
             teaserRows.Add(CreateTeaserRow(teaserRowsContainer, i));
     }
 
@@ -176,7 +207,7 @@ public class K1L0NearbyMode : MonoBehaviour
         lineBgContainer.anchorMin = new Vector2(0f, 0f);
         lineBgContainer.anchorMax = new Vector2(1f, 1f);
         lineBgContainer.offsetMin = new Vector2(0f, 0f);
-        lineBgContainer.offsetMax = new Vector2(-6f, -106f);
+        lineBgContainer.offsetMax = new Vector2(-6f, -112f);
 
         GameObject go = new GameObject("NearbyBody", typeof(RectTransform));
         go.transform.SetParent(parent, false);
@@ -184,7 +215,7 @@ public class K1L0NearbyMode : MonoBehaviour
         rt.anchorMin = new Vector2(0f, 0f);
         rt.anchorMax = new Vector2(1f, 1f);
         rt.offsetMin = new Vector2(0f, 0f);
-        rt.offsetMax = new Vector2(-6f, -106f);
+        rt.offsetMax = new Vector2(-6f, -112f);
 
         TextMeshProUGUI tmp = go.AddComponent<TextMeshProUGUI>();
         tmp.font = font;
@@ -206,7 +237,7 @@ public class K1L0NearbyMode : MonoBehaviour
         barRT.anchorMin = new Vector2(0f, 1f);
         barRT.anchorMax = new Vector2(1f, 1f);
         barRT.pivot = new Vector2(0.5f, 1f);
-        barRT.anchoredPosition = new Vector2(0f, -68f);
+        barRT.anchoredPosition = new Vector2(0f, -72f);
         barRT.sizeDelta = new Vector2(0f, 34f);
 
         HorizontalLayoutGroup layout = barGO.AddComponent<HorizontalLayoutGroup>();
@@ -239,10 +270,12 @@ public class K1L0NearbyMode : MonoBehaviour
 
         K1L0GlassChrome chrome = K1L0GlassFactory.AttachChrome(go.transform, $"Cmd_{category}", K1L0GlassFactory.ControlStyle);
         chrome.blurFill.material = null;
-        chrome.blurFill.color = new Color(0.02f, 0.07f, 0.02f, 0.95f);
+        chrome.blurFill.color = FilterIdleFill;
         chrome.overlay.color = new Color(0.01f, 0.04f, 0.01f, 0.90f);
-        chrome.border.color = new Color(0.28f, 0.96f, 0.38f, 0.24f);
-        chrome.accent.color = new Color(0.22f, 1f, 0.32f, 0.08f);
+        chrome.border.color = FilterIdleBorder;
+        chrome.baseBorder = FilterIdleBorder;
+        chrome.baseAccent = new Color(0.22f, 1f, 0.32f, 0.42f);
+        chrome.accent.color = new Color(0.22f, 1f, 0.32f, 0f);
         chrome.sheen.color = new Color(0f, 0f, 0f, 0f);
         chrome.blurFill.raycastTarget = true;
         filterChromes[category] = chrome;
@@ -270,6 +303,7 @@ public class K1L0NearbyMode : MonoBehaviour
         tmp.overflowMode = TextOverflowModes.Overflow;
         tmp.text = label;
         tmp.raycastTarget = false;
+        filterLabels[category] = tmp;
     }
 
     private void SetFilter(string category)
@@ -284,11 +318,18 @@ public class K1L0NearbyMode : MonoBehaviour
         foreach (var entry in filterChromes)
         {
             bool active = entry.Key == category;
-            entry.Value.border.color = active
-                ? new Color(0.44f, 1f, 0.54f, 0.44f)
-                : new Color(0.28f, 0.96f, 0.38f, 0.20f);
-            entry.Value.SetAccent(active ? 1f : 0f);
+            entry.Value.blurFill.color = active ? FilterActiveFill : FilterIdleFill;
+            entry.Value.overlay.color = active
+                ? new Color(0.02f, 0.20f, 0.04f, 0.68f)
+                : new Color(0.01f, 0.04f, 0.01f, 0.90f);
+            entry.Value.border.color = active ? FilterActiveBorder : FilterIdleBorder;
+            entry.Value.accent.color = active
+                ? new Color(0.22f, 1f, 0.32f, 0.30f)
+                : new Color(0.22f, 1f, 0.32f, 0f);
         }
+
+        foreach (var entry in filterLabels)
+            entry.Value.color = entry.Key == category ? Color.white : TerminalGreen;
 
         Refresh();
     }
@@ -318,6 +359,7 @@ public class K1L0NearbyMode : MonoBehaviour
         currentVisible.Clear();
         lineArrowAngles.Clear();
         teaserArrowAngles.Clear();
+        UpdateLocationHeader();
 
         List<TransmitterScanner.TransmitterData> nearest = null;
         if (TransmitterScanner.Instance != null)
@@ -350,8 +392,6 @@ public class K1L0NearbyMode : MonoBehaviour
 
         if (currentVisible.Count == 0)
         {
-            sb.AppendLine("<color=#A8FFB3>> scanning nearby carriers...</color>");
-            sb.AppendLine();
             sb.AppendLine("<color=#7DFF8D>> no returns in current filter</color>");
         }
         else
@@ -390,6 +430,14 @@ public class K1L0NearbyMode : MonoBehaviour
         UpdateLineBackgrounds();
     }
 
+    private void UpdateLocationHeader()
+    {
+        if (locationHeaderText == null)
+            return;
+
+        locationHeaderText.text = NearbyHeaderText;
+    }
+
     private void UpdateTeaserRows()
     {
         if (teaserRows.Count == 0)
@@ -409,6 +457,7 @@ public class K1L0NearbyMode : MonoBehaviour
 
             if (hasInfo && info.hasSignal)
             {
+                row.root.SetActive(true);
                 row.arrow.gameObject.SetActive(true);
                 row.arrow.color = ArrowGreen;
                 row.arrow.rectTransform.localRotation = Quaternion.Euler(0f, 0f, -info.relativeAngle);
@@ -419,9 +468,10 @@ public class K1L0NearbyMode : MonoBehaviour
             }
             else
             {
+                row.root.SetActive(false);
                 row.arrow.gameObject.SetActive(false);
                 row.distance.text = "";
-                row.title.text = hasInfo ? info.scanningText : "scanning...";
+                row.title.text = "";
                 row.title.color = new Color(0.49f, 1f, 0.55f, 0.74f);
             }
         }

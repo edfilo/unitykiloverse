@@ -150,8 +150,11 @@ public class MobileInputManager : MonoBehaviour
         handler.OnStateChange = (dragging) => { isTouching = dragging; };
         handler.OnTap = () =>
         {
-            // Camera toggle tap is handled in KiloFirstPersonController (so it works
-            // consistently across desktop + mobile without double-toggling).
+            if (playerController == null) return;
+            if (Time.unscaledTime - lastCameraToggleTime < 0.35f) return;
+            lastCameraToggleTime = Time.unscaledTime;
+            Debug.Log("[MobileInput] TAP → ToggleCameraView");
+            playerController.ToggleCameraView();
         };
 
         // GPS toggle button (testing only) — small, bottom-right — inside safe area.

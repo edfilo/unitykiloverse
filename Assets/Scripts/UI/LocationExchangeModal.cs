@@ -417,7 +417,7 @@ public class LocationExchangeModal : MonoBehaviour
     private string ResolveSignalItem(Signal sig, TransmissionManager tm)
     {
         if (sig != null && !string.IsNullOrWhiteSpace(sig.specialItem)) return sig.specialItem.Trim();
-        return tm != null ? tm.GetLocationExchangeObject(sig) : "mineral";
+        return tm != null ? tm.GetLocationExchangeObject(sig) : "element";
     }
 
     private int GetQuantityGrams()
@@ -510,7 +510,7 @@ public class LocationExchangeModal : MonoBehaviour
         if (recordButton != null) recordButton.gameObject.SetActive(true);
         if (cancelButton != null) cancelButton.gameObject.SetActive(false);
         if (nextButton != null) nextButton.gameObject.SetActive(true);
-        if (nextButtonLabel != null) nextButtonLabel.text = "SEND";
+        if (nextButtonLabel != null) nextButtonLabel.text = "[send]";
         if (statusLabel != null) statusLabel.text = "";
     }
 
@@ -524,8 +524,9 @@ public class LocationExchangeModal : MonoBehaviour
 
         if (step == Step.Offer)
         {
-            TransmissionManager.Instance?.AcceptItem(claimedItem, null, 0);
-            ApplySendAskStep($"Accepted {claimedItem}.");
+            TransmissionManager.Instance?.AcceptItem(claimedItem, null, 0, GetQuantityGrams());
+            SignalDirectorV2.Instance?.MarkAmbientPortalVisited(activeSignal);
+            Hide();
             return;
         }
 
@@ -572,7 +573,8 @@ public class LocationExchangeModal : MonoBehaviour
     {
         if (step == Step.Offer)
         {
-            ApplySendAskStep($"Declined {claimedItem}.");
+            SignalDirectorV2.Instance?.MarkAmbientPortalVisited(activeSignal);
+            Hide();
             return;
         }
         if (step == Step.SendAsk)
@@ -586,8 +588,8 @@ public class LocationExchangeModal : MonoBehaviour
     private void PlaceButtonsBelowQuestion()
     {
         if (buttonsRt == null) return;
-        buttonsRt.anchorMin = new Vector2(0f, 0.48f);
-        buttonsRt.anchorMax = new Vector2(1f, 0.56f);
+        buttonsRt.anchorMin = new Vector2(0f, 0.62f);
+        buttonsRt.anchorMax = new Vector2(1f, 0.70f);
         buttonsRt.offsetMin = new Vector2(20f, 0f);
         buttonsRt.offsetMax = new Vector2(-20f, 0f);
         if (nextButton != null) nextButton.transform.SetSiblingIndex(0);
@@ -648,14 +650,14 @@ public class LocationExchangeModal : MonoBehaviour
             KiloSpeechRecognizer.Start();
             recordingStartTime = Time.unscaledTime;
             isRecording = true;
-            if (recordButtonLabel != null) recordButtonLabel.text = "STOP";
+            if (recordButtonLabel != null) recordButtonLabel.text = "[stop]";
             if (statusLabel != null) statusLabel.text = "Recording…";
         }
         catch (System.Exception e)
         {
             if (statusLabel != null) statusLabel.text = $"Mic error: {e.Message}";
             isRecording = false;
-            if (recordButtonLabel != null) recordButtonLabel.text = "RECORD";
+            if (recordButtonLabel != null) recordButtonLabel.text = "[record]";
         }
     }
 
@@ -663,12 +665,12 @@ public class LocationExchangeModal : MonoBehaviour
     {
         if (!isRecording)
         {
-            if (recordButtonLabel != null) recordButtonLabel.text = "RECORD";
+            if (recordButtonLabel != null) recordButtonLabel.text = "[record]";
             return;
         }
 
         try { KiloSpeechRecognizer.Stop(); } catch { }
         isRecording = false;
-        if (recordButtonLabel != null) recordButtonLabel.text = "RECORD";
+        if (recordButtonLabel != null) recordButtonLabel.text = "[record]";
     }
 }

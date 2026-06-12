@@ -204,7 +204,7 @@ public class POILabelBridge : MonoBehaviour
 
     private void UpdateScreenPositions()
     {
-        if (_hudSuppressed)
+        if (_hudSuppressed || !K1L0HUD.IsSurveillanceCameraOn)
         {
             foreach (var entry in _entries)
             {

@@ -198,6 +198,15 @@ namespace KiloWorld.Rendering
             [Range(0, 8)] public float skyboxExposure = 1.0f; // Brightness multiplier
             [Range(0, 360)] public float skyboxRotation = 0f; // Y-axis rotation in degrees
             public Color skyboxTint = Color.white; // Color tint for skybox
+
+            [Header("Aurora")]
+            public bool auroraEnabled = true;
+            [Range(0f, 2f)] public float auroraIntensity = 0.75f;
+            [Range(20f, 300f)] public float auroraHeight = 115f;
+            [Range(80f, 900f)] public float auroraDistance = 420f;
+            [Range(80f, 900f)] public float auroraWidth = 520f;
+            [Range(20f, 320f)] public float auroraVerticalSize = 140f;
+            [Range(0f, 2f)] public float auroraDriftSpeed = 0.28f;
         }
 
         [System.Serializable]

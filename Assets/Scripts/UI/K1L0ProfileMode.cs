@@ -165,6 +165,33 @@ public class K1L0ProfileMode : MonoBehaviour
         y = AddToggle(scrollContent, y, "STORIES", "showStoryStrip", StoriesStripVisibility.ShowStoryStrip, StoriesStripVisibility.SetStoryStripVisible);
         y = AddSlider(scrollContent, y, "MAP BRIGHT", "panelMapBrightness", 0f, 1f, K1L0HUD.PanelMapBrightness, K1L0HUD.SetPanelMapBrightness);
 
+        var director = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+        float minSteps = director != null ? director.ambientMinStepsToSpawn : PlayerPrefs.GetFloat("k1lo_ambientMinStepsToSpawn", 200f);
+        float graceMinutes = director != null ? director.momentumSessionGraceMinutes : PlayerPrefs.GetFloat("k1lo_momentumSessionGraceMinutes", 1.5f);
+        y = AddHeader(scrollContent, y, "PORTAL SPAWN");
+        y = AddSlider(scrollContent, y, "MIN STEPS", "ambientMinStepsToSpawn", 0f, 1000f, minSteps, v =>
+        {
+            var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+            if (d != null) d.ambientMinStepsToSpawn = Mathf.RoundToInt(v);
+        }, true);
+        y = AddSlider(scrollContent, y, "RESET GRACE", "momentumSessionGraceMinutes", 1f, 30f, graceMinutes, v =>
+        {
+            var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+            if (d != null) d.momentumSessionGraceMinutes = Mathf.Clamp(v, 1f, 30f);
+        });
+
+        var sky = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.sky;
+        if (sky != null)
+        {
+            y = AddHeader(scrollContent, y, "AURORA");
+            y = AddToggle(scrollContent, y, "ENABLED", "auroraEnabled", sky.auroraEnabled, v => sky.auroraEnabled = v);
+            y = AddSlider(scrollContent, y, "INTENSITY", "auroraIntensity", 0f, 2f, sky.auroraIntensity, v => sky.auroraIntensity = v);
+            y = AddSlider(scrollContent, y, "HEIGHT", "auroraHeight", 20f, 300f, sky.auroraHeight, v => sky.auroraHeight = v);
+            y = AddSlider(scrollContent, y, "DISTANCE", "auroraDistance", 80f, 900f, sky.auroraDistance, v => sky.auroraDistance = v);
+            y = AddSlider(scrollContent, y, "WIDTH", "auroraWidth", 80f, 900f, sky.auroraWidth, v => sky.auroraWidth = v);
+            y = AddSlider(scrollContent, y, "DRIFT", "auroraDriftSpeed", 0f, 2f, sky.auroraDriftSpeed, v => sky.auroraDriftSpeed = v);
+        }
+
         // ── COLOR GRADING ──
         y = AddHeader(scrollContent, y, "COLOR GRADING");
         y = AddSlider(scrollContent, y, "SATURATION", "saturation", -100, 100, pfx.saturation, v => pfx.saturation = v, true);
@@ -172,8 +199,6 @@ public class K1L0ProfileMode : MonoBehaviour
         y = AddSlider(scrollContent, y, "HUE SHIFT", "hueShift", -100, 100, pfx.hueShift, v => pfx.hueShift = v, true);
         y = AddSlider(scrollContent, y, "TEMPERATURE", "temperature", -100, 100, pfx.temperature, v => pfx.temperature = v, true);
         y = AddSlider(scrollContent, y, "TINT", "tint", -100, 100, pfx.tint, v => pfx.tint = v, true);
-        y = AddSlider(scrollContent, y, "EXPOSURE", "exposure", -5, 5, pfx.exposureFixedValue, v => pfx.exposureFixedValue = v);
-
         // ── BLOOM ──
         y = AddHeader(scrollContent, y, "BLOOM");
         y = AddToggle(scrollContent, y, "ENABLED", "bloomEnabled", pfx.bloomEnabled, v => pfx.bloomEnabled = v);

@@ -13,6 +13,7 @@ public class K1L0HUD : MonoBehaviour
     private TextMeshProUGUI memText;
     private Image terminalToggleBg;
     private TextMeshProUGUI terminalToggleGlyph;
+    private Button transmitButton;
     private bool hudUserVisible = true;
 
     public static K1L0HUD Instance { get; private set; }
@@ -37,13 +38,16 @@ public class K1L0HUD : MonoBehaviour
 
     // Each mode has its own panel
     private K1L0GlassPanel nearbyPanel;
-    private K1L0GlassPanel statusPanel;
+    private K1L0GlassPanel codexPanel;
     private K1L0GlassPanel profilePanel;
+    private K1L0GlassPanel transmitterPanel;
     private K1L0NearbyMode nearbyMode;
+    private K1L0CodexMode codexMode;
     private K1L0StatusMode statusMode;
     private K1L0ProfileMode profileMode;
+    private TransmitterEnterModal transmitterMode;
     private K1L0GlassPanel[] panels;
-    private bool[] panelOpen = new bool[3];
+    private bool[] panelOpen = new bool[4];
 
     private TMP_FontAsset monoFont;
     private TMP_FontAsset monoFontLight;
@@ -56,6 +60,7 @@ public class K1L0HUD : MonoBehaviour
 
     public static Sprite RoundedRectSprite { get; private set; }
     public static float PanelMapBrightness => Mathf.Clamp01(PlayerPrefs.GetFloat(PanelMapBrightnessPref, 0.01f));
+    public static bool IsSurveillanceCameraOn => Instance != null && Instance._mapVisible;
 
     public static void SetPanelMapBrightness(float value)
     {
@@ -168,6 +173,7 @@ public class K1L0HUD : MonoBehaviour
         CreateWeatherBar();
         CreateDock();
         CreateTerminalHudToggle();
+        CreateSurveillanceCamBadge();
         CreatePanels();
 
         EnsureStoriesUI();
@@ -175,13 +181,12 @@ public class K1L0HUD : MonoBehaviour
         // Disabled: legacy POI location beams (K1L0LocationBeams).
         // Locations are now represented as SignalDirectorV2 LocationTransmission signals instead.
         EnsureTransmissionFrame();
-        EnsureTransmitterEnterModal();
         HideOldUI();
         Debug.Log("[K1L0HUD] Initialized successfully");
 
+        TogglePanel(1, true);
+        Debug.Log("[K1L0HUD] Auto-opened codex panel");
 #if UNITY_EDITOR
-        TogglePanel(0, true);
-        Debug.Log("[K1L0HUD] Auto-opened nearby panel");
         demoTimer = Time.realtimeSinceStartup + 0.01f;
 #endif
     }
@@ -303,6 +308,158 @@ public class K1L0HUD : MonoBehaviour
         dock.OnButtonTapped = OnDockButtonTapped;
     }
 
+    // Top-right circular badge holding the surveillance-camera glyph — a small
+    // "you are being watched" motif for the K1L0 HUD.
+    void CreateSurveillanceCamBadge()
+    {
+        const float diameter = 100f;   // circle size
+        const float camSize = 80f;     // camera glyph size inside
+
+        var go = new GameObject("SurveillanceCamBadge", typeof(RectTransform), typeof(Image), typeof(Button));
+        go.transform.SetParent(safeArea != null ? safeArea : K1L0CanvasRoot.HUD, false);
+        go.transform.SetAsLastSibling();
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(1f, 1f);
+        rt.anchorMax = new Vector2(1f, 1f);
+        rt.pivot = new Vector2(1f, 1f);
+        rt.anchoredPosition = new Vector2(-16f, -16f);   // inset from top-right safe-area corner
+        rt.sizeDelta = new Vector2(diameter, diameter);
+
+        var circle = go.GetComponent<Image>();
+        circle.sprite = MakeCircleSprite(128);
+        circle.type = Image.Type.Simple;
+        circle.color = new Color(0f, 0f, 0f, 0.55f);     // translucent dark disc
+        circle.raycastTarget = true;                     // tappable toggle
+
+        // Tap toggles the map (surveillance mode). Map is OFF by default.
+        var btn = go.GetComponent<Button>();
+        btn.targetGraphic = circle;
+        btn.onClick.AddListener(ToggleMap);
+
+        // Thin green ring on the rim.
+        var ringGO = new GameObject("Ring", typeof(RectTransform), typeof(Image));
+        ringGO.transform.SetParent(go.transform, false);
+        var ringRt = ringGO.GetComponent<RectTransform>();
+        ringRt.anchorMin = Vector2.zero; ringRt.anchorMax = Vector2.one;
+        ringRt.offsetMin = Vector2.zero; ringRt.offsetMax = Vector2.zero;
+        var ring = ringGO.GetComponent<Image>();
+        ring.sprite = MakeRingSprite(128, 8);
+        ring.color = new Color(0.47f, 1f, 0.54f, 0.7f);
+        ring.raycastTarget = false;
+        _camRingImage = ring;
+
+        // Camera glyph.
+        var camGO = new GameObject("CamGlyph", typeof(RectTransform), typeof(Image));
+        camGO.transform.SetParent(go.transform, false);
+        var camRt = camGO.GetComponent<RectTransform>();
+        camRt.anchorMin = new Vector2(0.5f, 0.5f);
+        camRt.anchorMax = new Vector2(0.5f, 0.5f);
+        camRt.pivot = new Vector2(0.5f, 0.5f);
+        camRt.anchoredPosition = Vector2.zero;
+        camRt.sizeDelta = new Vector2(camSize, camSize);
+        var cam = camGO.GetComponent<Image>();
+        cam.sprite = Resources.Load<Sprite>("Icons/SurveillanceCam");
+        cam.preserveAspect = true;
+        cam.raycastTarget = false;
+        if (cam.sprite == null) Debug.LogWarning("[K1L0HUD] SurveillanceCam sprite not found at Resources/Icons/SurveillanceCam");
+
+        // Map off by default → black screen until the camera is tapped.
+        SetMapVisible(false);
+    }
+
+    private bool _mapVisible = true;
+    private Image _camRingImage;
+    private Camera _worldCam;
+    private CameraClearFlags _savedClearFlags;
+    private Color _savedBgColor;
+    private int _savedCullingMask;
+    private bool _camStateSaved;
+    private float _lastMapToggleTime = -999f;
+
+    private Camera WorldCam()
+    {
+        if (_worldCam == null) _worldCam = Camera.main;
+        return _worldCam;
+    }
+
+    void ToggleMap()
+    {
+        if (Time.unscaledTime - _lastMapToggleTime < 0.35f)
+        {
+            Debug.Log("[K1L0HUD] Suppressed duplicate surveillance camera toggle");
+            return;
+        }
+        _lastMapToggleTime = Time.unscaledTime;
+        SetMapVisible(!_mapVisible);
+    }
+
+    // "Map off" = black the whole world (buildings, roads, sky, etc.) by culling
+    // everything on the main camera and clearing to solid black. The HUD canvas
+    // is screen-space overlay, so it still renders on top of the black.
+    void SetMapVisible(bool visible)
+    {
+        _mapVisible = visible;
+        KiloWorld.Rendering.Systems.RenderManager.SurveillanceActive = visible;   // aurora sky reflects camera on/off
+        var cam = WorldCam();
+        if (cam != null)
+        {
+            if (!_camStateSaved)
+            {
+                _savedClearFlags = cam.clearFlags;
+                _savedBgColor = cam.backgroundColor;
+                _savedCullingMask = cam.cullingMask;
+                _camStateSaved = true;
+            }
+            if (visible)
+            {
+                cam.clearFlags = _savedClearFlags;
+                cam.backgroundColor = _savedBgColor;
+                cam.cullingMask = _savedCullingMask;
+            }
+            else
+            {
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = Color.black;
+                cam.cullingMask = 0;   // render nothing 3D → black
+            }
+        }
+        // Ring glows green when the map is ON, dim red when surveillance/off.
+        if (_camRingImage != null)
+            _camRingImage.color = visible
+                ? new Color(0.47f, 1f, 0.54f, 0.7f)
+                : new Color(1f, 0.35f, 0.35f, 0.7f);
+    }
+
+    static Sprite MakeCircleSprite(int size)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false) { filterMode = FilterMode.Bilinear };
+        float r = size * 0.5f, cx = r, cy = r;
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float d = Mathf.Sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
+                float a = Mathf.Clamp01(r - d);   // 1px AA edge
+                tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
+            }
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100f);
+    }
+
+    static Sprite MakeRingSprite(int size, int thickness)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false) { filterMode = FilterMode.Bilinear };
+        float r = size * 0.5f, cx = r, cy = r, inner = r - thickness;
+        for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float d = Mathf.Sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy));
+                float a = Mathf.Clamp01(r - d) * Mathf.Clamp01(d - inner);
+                tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
+            }
+        tex.Apply();
+        return Sprite.Create(tex, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100f);
+    }
+
     void CreateTerminalHudToggle()
     {
         return;
@@ -357,6 +514,55 @@ public class K1L0HUD : MonoBehaviour
         btn.onClick.AddListener(ToggleHudVisible);
 
         RefreshTerminalToggle();
+    }
+
+    void CreateTransmitButton()
+    {
+        if (transmitButton != null) return;
+
+        GameObject go = new GameObject("TransmitButton", typeof(RectTransform), typeof(Image), typeof(Button));
+        go.transform.SetParent(safeArea, false);
+        var rt = go.GetComponent<RectTransform>();
+        rt.anchorMin = new Vector2(0.5f, 0f);
+        rt.anchorMax = new Vector2(0.5f, 0f);
+        rt.pivot = new Vector2(0.5f, 0f);
+        rt.sizeDelta = new Vector2(190f, 54f);
+        rt.anchoredPosition = new Vector2(0f, 86f);
+
+        var img = go.GetComponent<Image>();
+        img.sprite = K1L0GlassFactory.ControlRectSprite;
+        img.type = Image.Type.Sliced;
+        img.color = new Color(0f, 0f, 0f, 0.96f);
+        img.raycastTarget = true;
+
+        transmitButton = go.GetComponent<Button>();
+        transmitButton.transition = Selectable.Transition.None;
+        transmitButton.targetGraphic = img;
+        transmitButton.onClick.AddListener(OpenTransmitModal);
+
+        var labelGO = new GameObject("Label", typeof(RectTransform));
+        labelGO.transform.SetParent(go.transform, false);
+        var labelRt = labelGO.GetComponent<RectTransform>();
+        labelRt.anchorMin = Vector2.zero;
+        labelRt.anchorMax = Vector2.one;
+        labelRt.offsetMin = Vector2.zero;
+        labelRt.offsetMax = Vector2.zero;
+
+        var label = labelGO.AddComponent<TextMeshProUGUI>();
+        label.font = monoFont;
+        label.fontSize = 20f;
+        label.color = Color.white;
+        label.alignment = TextAlignmentOptions.Center;
+        label.text = "[TRANSMIT]";
+        label.raycastTarget = false;
+    }
+
+    void OpenTransmitModal()
+    {
+        EnsureTransmitterEnterModal();
+        var modal = TransmitterEnterModal.Instance;
+        if (modal != null)
+            modal.Show(null);
     }
 
     void ToggleHudVisible()
@@ -429,12 +635,13 @@ public class K1L0HUD : MonoBehaviour
         nearbyMode.Initialize(nearbyPanel.contentArea, monoFont);
         nearbyPanel.gameObject.SetActive(false);
 
-        statusPanel = CreateOnePanel("StatusPanel", centeredPos, new Vector2(0f, 356f), new Vector4(18f, 24f, 18f, 96f));
-        statusPanel.OnCloseClicked = () => TogglePanel(1, false);
+        codexPanel = CreateOnePanel("StatusPanel", centeredPos, new Vector2(0f, 520f), new Vector4(18f, 24f, 18f, 96f));
+        codexPanel.draggable = false;
+        codexPanel.OnCloseClicked = () => TogglePanel(1, false);
         GameObject statusGO = new GameObject("StatusMode");
         statusMode = statusGO.AddComponent<K1L0StatusMode>();
-        statusMode.Initialize(statusPanel.contentArea, monoFont);
-        statusPanel.gameObject.SetActive(false);
+        statusMode.Initialize(codexPanel.contentArea, monoFont);
+        codexPanel.gameObject.SetActive(false);
 
         profilePanel = CreateOnePanel("ProfilePanel", centeredPos, new Vector2(0f, 620f), new Vector4(18f, 24f, 18f, 96f));
         profilePanel.draggable = false;
@@ -444,7 +651,15 @@ public class K1L0HUD : MonoBehaviour
         profileMode.Initialize(profilePanel.contentArea, monoFont);
         profilePanel.gameObject.SetActive(false);
 
-        panels = new K1L0GlassPanel[] { nearbyPanel, statusPanel, profilePanel };
+        transmitterPanel = CreateOnePanel("TransmitterPanel", centeredPos, new Vector2(0f, 620f), new Vector4(18f, 24f, 18f, 96f));
+        transmitterPanel.draggable = false;
+        transmitterPanel.OnCloseClicked = () => TogglePanel(3, false);
+        GameObject transmitterGO = new GameObject("TransmitterMode");
+        transmitterMode = transmitterGO.AddComponent<TransmitterEnterModal>();
+        transmitterMode.InitializeEmbedded(transmitterPanel.contentArea);
+        transmitterPanel.gameObject.SetActive(false);
+
+        panels = new K1L0GlassPanel[] { nearbyPanel, codexPanel, profilePanel, transmitterPanel };
     }
 
     void HandleDockTouchFallback()
@@ -762,11 +977,13 @@ public class K1L0HUD : MonoBehaviour
                 }
             }
             panelOpen[index] = true;
+            if (index == 3 && transmitterMode != null) transmitterMode.Show(null);
             panels[index].Show();
         }
         else
         {
             panelOpen[index] = false;
+            if (index == 3 && transmitterMode != null) transmitterMode.Hide();
             if (panels[index] != null) panels[index].Hide();
         }
         if (dock != null) dock.SetActiveButton(index, show);

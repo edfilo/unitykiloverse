@@ -23,6 +23,8 @@ public class IOSPostBuild
         // Location Permission
         SetPlistKey(rootDict, "NSLocationWhenInUseUsageDescription", "We need your location to show you on the map and find nearby beams.");
         SetPlistKey(rootDict, "NSLocationAlwaysAndWhenInUseUsageDescription", "We need your location to show you on the map and find nearby beams.");
+        SetPlistKey(rootDict, "NSPhotoLibraryUsageDescription", "K1L0 lets you choose a photo to use in a transmission.");
+        SetPlistKey(rootDict, "NSCameraUsageDescription", "K1L0 lets you take a photo to use in a transmission.");
 
         // Write to file
         File.WriteAllText(plistPath, plist.WriteToString());

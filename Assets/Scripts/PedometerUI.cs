@@ -428,7 +428,7 @@ void Start()
         GameObject closeTxtObj = new GameObject("Text");
         closeTxtObj.transform.SetParent(closeBtnObj.transform, false);
         Text ct = closeTxtObj.AddComponent<Text>();
-        ct.text = "✕";
+        ct.text = "";
         ct.font = GetFont();
         ct.fontSize = 60;
         ct.color = Color.gray;

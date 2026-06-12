@@ -9,6 +9,9 @@ using System.Linq;
 /// </summary>
 public class StepsView : MonoBehaviour
 {
+    private const int HourlyHistoryHours = 72;
+    private const int HourlyHistoryDisplayRows = 40;
+
     [Header("UI Settings")]
     public Font customFont;
     public Color backgroundColor = new Color(0, 0, 0, 0.4f);
@@ -169,9 +172,9 @@ public class StepsView : MonoBehaviour
         Image dailyBg = dailyObj.AddComponent<Image>();
         dailyBg.color = new Color(1, 1, 1, 0.05f);
 
-        // --- Hourly Chart (24 Hours) ---
+        // --- Hourly Chart (72 Hours, capped to 40 rows) ---
         y = -800;
-        hourlyTitleText = CreateText(panel.transform, "HourlyTitle", "Last 24 Hours", 48, new Vector2(0, y), TextAnchor.MiddleCenter, false).GetComponentInChildren<Text>();
+        hourlyTitleText = CreateText(panel.transform, "HourlyTitle", "Last 72 Hours", 48, new Vector2(0, y), TextAnchor.MiddleCenter, false).GetComponentInChildren<Text>();
         
         GameObject hourlyObj = new GameObject("HourlyChart");
         hourlyObj.transform.SetParent(panel.transform, false);
@@ -198,7 +201,7 @@ public class StepsView : MonoBehaviour
         
         Button b = closeBtn.AddComponent<Button>();
         b.onClick.AddListener(CloseModal);
-        CreateText(closeBtn.transform, "X", "✕", 60, Vector2.zero, TextAnchor.MiddleCenter, false);
+        CreateText(closeBtn.transform, "X", "", 60, Vector2.zero, TextAnchor.MiddleCenter, false);
 
         modalOverlay.SetActive(false);
     }
@@ -306,11 +309,16 @@ public class StepsView : MonoBehaviour
             BuildChart(dailyChartContainer, history.Select(x => x.steps).ToList(), history.Select(x => x.date.ToString("ddd")).ToList());
         });
 
-        pedometerService.GetLast24HoursBreakdown((history) => {
-            // Reverse to show Oldest -> Newest (Chronological)
+        pedometerService.GetLastHoursBreakdown(HourlyHistoryHours, (history) => {
+            history = history
+                .OrderByDescending(x => x.time)
+                .Take(HourlyHistoryDisplayRows)
+                .ToList();
+
+            // Reverse displayed rows to show Oldest -> Newest (Chronological)
             history.Reverse();
-            int total24h = history.Sum(x => x.steps);
-            if (hourlyTitleText) hourlyTitleText.text = $"Last 24 Hours: {total24h:N0}";
+            int visibleTotal = history.Sum(x => x.steps);
+            if (hourlyTitleText) hourlyTitleText.text = $"Last 72 Hours: {visibleTotal:N0} ({history.Count} rows)";
             BuildChart(hourlyChartContainer, history.Select(x => x.steps).ToList(), history.Select(x => x.time.Hour.ToString() + "h").ToList());
         });
     }

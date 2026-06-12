@@ -476,6 +476,8 @@ public class UserPresenceManager : MonoBehaviour
             var data = JsonUtility.FromJson<PingResponse>(json);
             if (data != null && data.weather != null)
             {
+                if (!string.IsNullOrEmpty(data.weather.icon))
+                    KiloWorld.Rendering.Systems.RenderManager.WeatherTempF = data.weather.temperatureF;   // biases aurora hue warm/cool
                 var weatherView = FindObjectOfType<WeatherView>();
                 if (weatherView != null)
                 {

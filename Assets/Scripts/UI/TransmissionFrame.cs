@@ -314,7 +314,7 @@ public class TransmissionFrame : MonoBehaviour
         acceptBtnLabel = acceptLabelGO.AddComponent<TextMeshProUGUI>();
         acceptBtnLabel.font = font;
         acceptBtnLabel.fontSize = 34;
-        acceptBtnLabel.text = "ACCEPT";
+        acceptBtnLabel.text = "[ACCEPT]";
         acceptBtnLabel.color = TerminalGreen;
         acceptBtnLabel.alignment = TextAlignmentOptions.Center;
         acceptBtnLabel.fontStyle = FontStyles.Bold;
@@ -535,7 +535,7 @@ public class TransmissionFrame : MonoBehaviour
         currentVideoUrl = null;
 
         if (acceptBtnGO != null) acceptBtnGO.SetActive(true);
-        if (acceptBtnLabel != null) acceptBtnLabel.text = "ACCEPT";
+        if (acceptBtnLabel != null) acceptBtnLabel.text = "[ACCEPT]";
         if (closeBtn != null) closeBtn.gameObject.SetActive(true);
 
         StartCoroutine(FadeIn());
@@ -669,7 +669,7 @@ public class TransmissionFrame : MonoBehaviour
             acceptArtifact = null;
             acceptStoryId = null;
             if (acceptBtnGO != null) acceptBtnGO.SetActive(true);
-            if (acceptBtnLabel != null) acceptBtnLabel.text = "TRANSMIT";
+            if (acceptBtnLabel != null) acceptBtnLabel.text = "[TRANSMIT]";
             if (closeBtn != null) closeBtn.gameObject.SetActive(true);
         }
         else
@@ -682,7 +682,7 @@ public class TransmissionFrame : MonoBehaviour
                 acceptArtifact = null;
                 acceptStoryId = null;
                 if (acceptBtnGO != null) acceptBtnGO.SetActive(true);
-                if (acceptBtnLabel != null) acceptBtnLabel.text = "DONE";
+                if (acceptBtnLabel != null) acceptBtnLabel.text = "[DONE]";
                 if (closeBtn != null) closeBtn.gameObject.SetActive(true);
                 statusText.text = "";
             }
@@ -698,7 +698,7 @@ public class TransmissionFrame : MonoBehaviour
             if (acceptBtnLabel != null)
             {
                 string a = string.IsNullOrWhiteSpace(acceptArtifact) ? "ARTIFACT" : acceptArtifact.Trim();
-                acceptBtnLabel.text = $"ACCEPT {a.ToUpper()}";
+                acceptBtnLabel.text = $"[ACCEPT {a.ToUpper()}]";
             }
             if (closeBtn != null) closeBtn.gameObject.SetActive(true);
             statusText.text = "";

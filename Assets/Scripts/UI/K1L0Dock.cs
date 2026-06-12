@@ -5,18 +5,23 @@ using System.Collections;
 
 public class K1L0Dock : MonoBehaviour
 {
+    public const int TransmitAction = -100;
+
     public System.Action<int> OnButtonTapped;
 
-    private Image[] iconImages;
+    private Graphic[] iconImages;
     private Image[] bgImages;
     private RectTransform[] buttonRects;
-    private bool[] activeStates = new bool[3];
+    private bool[] activeStates = new bool[4];
     private readonly Vector3[] cornerBuffer = new Vector3[4];
+    private RectTransform dockRect;
+    private float lastLayoutWidth = -1f;
     private float lastTapTime = -999f;
     private int lastTapPanel = -1;
 
-    // Maps visual button index → panel index (skipping removed status panel)
-    private static readonly int[] panelMap = { 0, 2 };
+    // Maps visual button index to panel/action index.
+    private static readonly int[] panelMap = { 0, 3, 1, 2 };
+    private static readonly string[] labels = { "[LOCATION]", "[TRANSMIT]", "[+]", "[SETTINGS]" };
 
     public static void ClearCachedMaterials()
     {
@@ -26,12 +31,12 @@ public class K1L0Dock : MonoBehaviour
     public void Initialize(RectTransform parent, TMP_FontAsset monoFont)
     {
         ClearCachedMaterials();
-        RectTransform rt = gameObject.AddComponent<RectTransform>();
-        rt.SetParent(parent, false);
-        rt.anchorMin = Vector2.zero;
-        rt.anchorMax = Vector2.one;
-        rt.offsetMin = Vector2.zero;
-        rt.offsetMax = Vector2.zero;
+        dockRect = gameObject.AddComponent<RectTransform>();
+        dockRect.SetParent(parent, false);
+        dockRect.anchorMin = Vector2.zero;
+        dockRect.anchorMax = Vector2.one;
+        dockRect.offsetMin = Vector2.zero;
+        dockRect.offsetMax = Vector2.zero;
 
         // Add a Canvas override so dock renders in front of teasers
         var overrideCanvas = gameObject.AddComponent<Canvas>();
@@ -39,47 +44,27 @@ public class K1L0Dock : MonoBehaviour
         overrideCanvas.sortingOrder = 1100; // Above HUD (1000)
         gameObject.AddComponent<GraphicRaycaster>();
 
-        Sprite[] icons = {
-            CreateLocationPinSprite(64),
-            CreatePersonSprite(64)
-        };
+        Sprite rectSpr = K1L0GlassFactory.ControlRectSprite;
 
-        Sprite circleSpr = CreateCircleSprite(128);
+        iconImages = new Graphic[labels.Length];
+        bgImages = new Image[labels.Length];
+        buttonRects = new RectTransform[labels.Length];
 
-        iconImages = new Image[2];
-        bgImages = new Image[2];
-        buttonRects = new RectTransform[2];
-
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < labels.Length; i++)
         {
             int idx = i;
 
-            GameObject btnGO = new GameObject($"CornerBtn{i}");
-            btnGO.transform.SetParent(rt, false);
+            GameObject btnGO = new GameObject($"DockBtn_{labels[i]}");
+            btnGO.transform.SetParent(dockRect, false);
             RectTransform btnRT = btnGO.AddComponent<RectTransform>();
-            btnRT.sizeDelta = new Vector2(72, 72);
+            btnRT.anchorMin = new Vector2(0.5f, 0f);
+            btnRT.anchorMax = new Vector2(0.5f, 0f);
+            btnRT.pivot = new Vector2(0.5f, 0f);
             buttonRects[i] = btnRT;
 
-            // Position: left corner or right corner
-            if (i == 0)
-            {
-                btnRT.anchorMin = new Vector2(0, 0);
-                btnRT.anchorMax = new Vector2(0, 0);
-                btnRT.pivot = new Vector2(0, 0);
-                btnRT.anchoredPosition = new Vector2(20, 0);
-            }
-            else
-            {
-                btnRT.anchorMin = new Vector2(1, 0);
-                btnRT.anchorMax = new Vector2(1, 0);
-                btnRT.pivot = new Vector2(1, 0);
-                btnRT.anchoredPosition = new Vector2(-20, 0);
-            }
-
-            // Round background — opaque black
             Image bg = btnGO.AddComponent<Image>();
-            bg.sprite = circleSpr;
-            bg.type = Image.Type.Simple;
+            bg.sprite = rectSpr;
+            bg.type = Image.Type.Sliced;
             bg.color = new Color(0f, 0f, 0f, 1f);
             bg.raycastTarget = true;
             bgImages[i] = bg;
@@ -87,19 +72,64 @@ public class K1L0Dock : MonoBehaviour
             Button btn = btnGO.AddComponent<Button>();
             btn.targetGraphic = bg;
             btn.transition = Selectable.Transition.None;
+            btn.onClick.AddListener(() => OnTap(panelMap[idx]));
 
-            // Icon
-            GameObject iconGO = new GameObject("Icon");
-            iconGO.transform.SetParent(btnGO.transform, false);
-            RectTransform iconRT = iconGO.AddComponent<RectTransform>();
-            iconRT.anchorMin = new Vector2(0.5f, 0.5f);
-            iconRT.anchorMax = new Vector2(0.5f, 0.5f);
-            iconRT.sizeDelta = new Vector2(34, 34);
-            Image iconImg = iconGO.AddComponent<Image>();
-            iconImg.sprite = icons[i];
-            iconImg.color = new Color(0.84f, 0.90f, 0.97f, 1f);
-            iconImg.raycastTarget = false;
-            iconImages[i] = iconImg;
+            GameObject labelGO = new GameObject("Label");
+            labelGO.transform.SetParent(btnGO.transform, false);
+            RectTransform labelRT = labelGO.AddComponent<RectTransform>();
+            labelRT.anchorMin = Vector2.zero;
+            labelRT.anchorMax = Vector2.one;
+            labelRT.offsetMin = Vector2.zero;
+            labelRT.offsetMax = Vector2.zero;
+            TextMeshProUGUI label = labelGO.AddComponent<TextMeshProUGUI>();
+            label.font = monoFont;
+            label.fontSize = i == 1 ? 14f : 11f;
+            label.text = labels[i];
+            label.alignment = TextAlignmentOptions.Center;
+            label.color = new Color(0.84f, 0.90f, 0.97f, 1f);
+            label.enableWordWrapping = false;
+            label.overflowMode = TextOverflowModes.Ellipsis;
+            label.raycastTarget = false;
+            iconImages[i] = label;
+        }
+
+        LayoutButtons();
+    }
+
+    void LateUpdate()
+    {
+        LayoutButtons();
+    }
+
+    void LayoutButtons()
+    {
+        if (dockRect == null || buttonRects == null) return;
+
+        float safeWidth = dockRect.rect.width > 1f ? dockRect.rect.width : Screen.safeArea.width;
+        if (Mathf.Abs(safeWidth - lastLayoutWidth) < 0.5f) return;
+        lastLayoutWidth = safeWidth;
+
+        float[] baseWidths = { 86f, 112f, 64f, 86f };
+        float baseGap = 8f;
+        float baseTotal = 0f;
+        for (int i = 0; i < baseWidths.Length; i++) baseTotal += baseWidths[i];
+        baseTotal += baseGap * (baseWidths.Length - 1);
+
+        float available = Mathf.Max(280f, safeWidth - 24f);
+        float scale = Mathf.Clamp(available / baseTotal, 0.78f, 1f);
+        float gap = baseGap * scale;
+        float total = 0f;
+        for (int i = 0; i < baseWidths.Length; i++) total += baseWidths[i] * scale;
+        total += gap * (baseWidths.Length - 1);
+
+        float x = -total * 0.5f;
+        for (int i = 0; i < buttonRects.Length; i++)
+        {
+            if (buttonRects[i] == null) continue;
+            float width = baseWidths[i] * scale;
+            buttonRects[i].sizeDelta = new Vector2(width, 48f);
+            buttonRects[i].anchoredPosition = new Vector2(x + width * 0.5f, 10f);
+            x += width + gap;
         }
     }
 
@@ -210,7 +240,15 @@ public class K1L0Dock : MonoBehaviour
 
     void OnTap(int panelIndex)
     {
-        Debug.Log($"[K1L0Dock] Tap panel={panelIndex}");
+        if (panelIndex == lastTapPanel && Time.unscaledTime - lastTapTime < 0.25f)
+        {
+            Debug.Log($"[K1L0Dock] Suppressed duplicate tap target={panelIndex}");
+            return;
+        }
+
+        lastTapPanel = panelIndex;
+        lastTapTime = Time.unscaledTime;
+        Debug.Log($"[K1L0Dock] Tap target={panelIndex}");
         OnButtonTapped?.Invoke(panelIndex);
     }
 
@@ -221,14 +259,6 @@ public class K1L0Dock : MonoBehaviour
             return false;
 
         int panelIndex = panelMap[hitIndex];
-        if (panelIndex == lastTapPanel && Time.unscaledTime - lastTapTime < 0.25f)
-        {
-            Debug.Log($"[K1L0Dock] Suppressed duplicate tap panel={panelIndex}");
-            return true;
-        }
-
-        lastTapPanel = panelIndex;
-        lastTapTime = Time.unscaledTime;
         OnTap(panelIndex);
         return true;
     }
@@ -281,8 +311,11 @@ public class K1L0Dock : MonoBehaviour
     {
         for (int i = 0; i < iconImages.Length; i++)
         {
-            bool active = activeStates[panelMap[i]];
-            bgImages[i].color = new Color(0f, 0f, 0f, 1f); // Always opaque black
+            int panelIndex = panelMap[i];
+            bool active = panelIndex >= 0 && panelIndex < activeStates.Length && activeStates[panelIndex];
+            bgImages[i].color = active
+                ? new Color(0.05f, 0.42f, 0.08f, 0.96f)
+                : new Color(0f, 0f, 0f, 1f);
             if (active)
             {
                 iconImages[i].color = new Color(0.47f, 1f, 0.54f, 1f); // Green when active

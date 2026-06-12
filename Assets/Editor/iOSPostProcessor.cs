@@ -34,6 +34,18 @@ public class iOSPostProcessor
                 rootDict.SetString(locationKey, "This app uses your location to place you on the map.");
             }
 
+            string photoKey = "NSPhotoLibraryUsageDescription";
+            if (rootDict[photoKey] == null)
+            {
+                rootDict.SetString(photoKey, "K1L0 lets you choose a photo to use in a transmission.");
+            }
+
+            string cameraKey = "NSCameraUsageDescription";
+            if (rootDict[cameraKey] == null)
+            {
+                rootDict.SetString(cameraKey, "K1L0 lets you take a photo to use in a transmission.");
+            }
+
             // Add App Transport Security Exception (Allow HTTP)
             // Required for connecting to local dev servers (localhost/tethered)
             PlistElementDict atsDict = rootDict.CreateDict("NSAppTransportSecurity");

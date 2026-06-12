@@ -424,7 +424,7 @@ public class LocationsPanel : MonoBehaviour
         
         Text closeTxt = new GameObject("Txt").AddComponent<Text>();
         closeTxt.transform.SetParent(closeObj.transform, false);
-        closeTxt.text = "X";
+        closeTxt.text = "";
         closeTxt.font = customFont ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
         closeTxt.fontSize = 40; // Reduced from 50
         closeTxt.alignment = TextAnchor.MiddleCenter;

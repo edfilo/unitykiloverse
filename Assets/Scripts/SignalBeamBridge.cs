@@ -256,7 +256,7 @@ public class SignalBeamBridge : MonoBehaviour
                 break;
         }
 
-        // TEMP: per-type colors (requested)
+        // Visible portal colors: location vs ambient. Transmitter is legacy/user-initiated only.
         Color c;
         switch (sig.transmissionType)
         {
@@ -264,11 +264,9 @@ public class SignalBeamBridge : MonoBehaviour
                 c = new Color(0.65f, 0.25f, 1.0f, 1.0f); // purple
                 break;
             case TransmissionType.Artifact:
-                c = new Color(0.25f, 0.6f, 1.0f, 1.0f); // blue
-                break;
             case TransmissionType.Transmitter:
             default:
-                c = new Color(0.2f, 1.0f, 0.35f, 1.0f); // green
+                c = new Color(0.25f, 0.6f, 1.0f, 1.0f); // ambient blue
                 break;
         }
 

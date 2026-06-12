@@ -24,6 +24,8 @@ public class KiloFirstPersonController : MonoBehaviour
     public GameObject motorcycleHelmetPrefab;
     public Vector3 helmetScale = Vector3.one;
     public Vector3 helmetPositionOffset = Vector3.zero;
+    public bool forceHelmetWhite = true;
+    public Color helmetOverrideColor = Color.white;
 
     [Header("Movement Settings")]
     public float moveSpeed = 50f;
@@ -228,6 +230,7 @@ public class KiloFirstPersonController : MonoBehaviour
             // Instantiate helmet
             GameObject newHelmet = Instantiate(motorcycleHelmetPrefab);
             newHelmet.name = "MotorcycleHelmet_Instance";
+            ApplyHelmetColor(newHelmet);
             
             // Apply user defined scale
             newHelmet.transform.localScale = helmetScale;
@@ -252,6 +255,29 @@ public class KiloFirstPersonController : MonoBehaviour
         else
         {
             Debug.LogError("[KiloFirstPersonController] Could not find bones for helmet replacement.");
+        }
+    }
+
+    private void ApplyHelmetColor(GameObject helmet)
+    {
+        if (!forceHelmetWhite || helmet == null) return;
+
+        var renderers = helmet.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            var renderer = renderers[i];
+            if (renderer == null) continue;
+            var mats = renderer.materials;
+            for (int j = 0; j < mats.Length; j++)
+            {
+                var mat = mats[j];
+                if (mat == null) continue;
+                if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", helmetOverrideColor);
+                if (mat.HasProperty("_Color")) mat.SetColor("_Color", helmetOverrideColor);
+                if (mat.HasProperty("_EmissionColor")) mat.SetColor("_EmissionColor", helmetOverrideColor * 0.12f);
+                if (mat.HasProperty("_Metallic")) mat.SetFloat("_Metallic", Mathf.Min(mat.GetFloat("_Metallic"), 0.15f));
+                if (mat.HasProperty("_Smoothness")) mat.SetFloat("_Smoothness", Mathf.Max(mat.GetFloat("_Smoothness"), 0.45f));
+            }
         }
     }
 

@@ -34,7 +34,7 @@ public enum SignalRole
 // ──────────────────────────────────────────────────────────────────
 // Everything the user sees as a "transmission" in the HUD is a Signal.
 // Every Signal carries `transmissionType` as first-class metadata.
-// There are THREE user-facing types of transmission:
+// Visible portal taxonomy is now two user-facing types:
 //
 //   TransmissionType.Location
 //     — Bound to a real POI on the map (SignalRole.LocationTransmission)
@@ -42,19 +42,10 @@ public enum SignalRole
 //     — Survives in the world until the 20-min refresh or ENTER/cooldown
 //
 //   TransmissionType.Artifact
-//     — Virtual pursuit signal centered on an OBJECT (the LLM artifact).
-//     — Shown on the pursuit row alongside Transmitter signals.
+//     — Runtime representation for ambient portals.
 //
-//   TransmissionType.Transmitter
-//     — Virtual pursuit signal centered on a CHARACTER who is broadcasting.
-//     — Shown on the pursuit row alongside Artifact signals.
-//
-// Artifact + Transmitter together replace the legacy "Ambient" bucket.
-// When a non-Location signal spawns, it gets a 50/50 random Artifact /
-// Transmitter assignment so the world surfaces a healthy mix of both.
-// HUD branches that need "any non-location" should compare against
-// TransmissionType.Location directly (or use IsAmbientTransmission, which
-// is kept as sugar = anything that is not a Location transmission).
+// Transmitter is retained for legacy/API compatibility only. Transmitting is
+// user-initiated from the transmitter UI, not a visible spawned beam category.
 public enum TransmissionType { Location, Artifact, Transmitter }
 
 public enum SignalType
@@ -181,8 +172,8 @@ public class SignalDirectorV2 : MonoBehaviour
     public float ambientRingStepMeters = 75f;
     [Tooltip("Remove and stop spawning ambient beams beyond this many miles.")]
     public float ambientPoolMaxMiles = 1.1f;
-    [Tooltip("Hard cap on the number of ambient ring beams (prevents excessive spawns in dense road meshes).")]
-    public int ambientRingMaxCount = 256;
+    [Tooltip("Hard cap on the number of ambient ring beams shown at once. 1 = only the single nearest disturbance.")]
+    public int ambientRingMaxCount = 1;
     [Range(0f, 1f)]
     [Tooltip("Chance each ambient beam is an Artifact (else Transmitter). Ignored when alternating rings is enabled.")]
     public float ambientArtifactChance = 0.5f;
@@ -204,11 +195,29 @@ public class SignalDirectorV2 : MonoBehaviour
     public float backendBeamRescanMeters = 50f;
     [Tooltip("Failsafe: rescan at least this often even if movement threshold isn't crossed.")]
     public float backendBeamMaxIntervalSeconds = 120f;
+    [Tooltip("Do not show or request ambient portals until kilosync is active.")]
+    public bool requireKilosyncForAmbientPortals = true;
+    [Tooltip("Minimum active walking-session steps required before a new disturbance spawns.")]
+    public int ambientMinStepsToSpawn = 50;
+    [Tooltip("Minutes before a recent walking session expires after momentum drops.")]
+    [Range(1f, 30f)] public float momentumSessionGraceMinutes = 1.5f;
+    [Tooltip("Optional clip played when new ambient portals appear.")]
+    public AudioClip ambientPortalSpawnClip;
+    [Range(0f, 1f)]
+    public float ambientPortalSpawnVolume = 0.8f;
+    public float ambientPortalSpawnSoundCooldown = 0.35f;
     private float _lastBackendBeamRefreshTime = -999f;
     private bool _backendBeamRequestInFlight = false;
     private double _lastBackendScanLat = double.NaN;
     private double _lastBackendScanLng = double.NaN;
     private float _lastBackendScanTime = -999f;
+    private Vector2d _lastMovementBearingMercator;
+    private bool _hasMovementBearingSample = false;
+    private bool _hasMovementBearing = false;
+    private float _lastMovementBearingDegrees = 0f;
+    private float _lastAmbientPortalSpawnSoundTime = -999f;
+    private bool _ambientPortalsWereAllowed = false;
+    private readonly HashSet<string> visitedAmbientBeamIds = new HashSet<string>();
 
     [Serializable]
     private class BackendBeamDoc
@@ -233,6 +242,7 @@ public class SignalDirectorV2 : MonoBehaviour
         public bool ok;
         public float maxMiles;
         public BackendBeamDoc[] beams;
+        public bool fillPending;
     }
 
     private int ComputeAmbientRingIndex(float distanceMeters, float stepMeters, int ringCount)
@@ -317,6 +327,8 @@ public class SignalDirectorV2 : MonoBehaviour
     private const float TeaserRowLeftInset = 12f;
     private const float TeaserRowHeight = 24f;
     private const float TeaserRowGap = 2f;
+    private const float DisturbanceCompassInset = 16f;
+    private const float DisturbanceLabelInset = 100f;
     private const float MainActionHeight = 46f;
     private const float MainActionSubtextHeight = 34f;
     private static readonly Color TeaserGreen = new Color(0.47f, 1f, 0.54f, 1f);
@@ -363,6 +375,7 @@ public class SignalDirectorV2 : MonoBehaviour
 	    private RectTransform artifactArrowRt;
 	    private Image artifactCompassRing;
 	    private GameObject artifactCompassGO;
+    private bool showLegacyArtifactHud = false;
 	    private GameObject artifactRow;
 	    private Image artifactRowBg;
 	    private GameObject artifactRowBorder;
@@ -395,8 +408,38 @@ public class SignalDirectorV2 : MonoBehaviour
     private TextMeshProUGUI dailyStepsLabel;
     private TextMeshProUGUI weeklyStepsLabel;
     private PedometerService pedometerService;
+    private struct MomentumSample
+    {
+        public float time;
+        public int steps;
+        public Vector2d mercator;
+        public float pedometerDistanceMeters;
+    }
+    private readonly List<MomentumSample> momentumSamples = new List<MomentumSample>();
+    private float nextMomentumSampleTime;
+    private float walkingMomentum;
+    private bool walkingMomentumReady;
+    private bool isWalkingWithMomentum;
+    private float lastMetersPerStep;
+    private float lastStepsPerMinute;
+    // Sub-scores from the last momentum calc, kept for the readable "why low" panel.
+    private float lastCadenceScore;
+    private float lastStrideScore;
+    private float lastDisplacementScore;
+    private float lastMetersMoved;
+    private float lastWindowMinutes;
+    private int motionResetBaseSteps = -1;
+    private int activeMomentumSteps = 0;
+    private bool wasWalkingWithMomentumForStreak = false;
+    private float lastWalkingMomentumTime = -999f;
+    private const float MomentumSampleIntervalSeconds = 5f;
+    private const float MomentumWindowSeconds = 180f;
+    private const float MomentumWalkingThreshold = 0.35f;
+    private float MomentumSessionGraceSeconds => Mathf.Clamp(momentumSessionGraceMinutes, 1f, 30f) * 60f;
     private float nextInsideBuildingCheckTime;
     private bool cachedInsideBuilding;
+    private bool loggedAmbientBlockedByKilosync;
+    private float nextAmbientBlockedLogTime;
     private bool enterOverlayPointerDown;
     private int lastEnterOverlayFrame = -1;
     private float locEnterFirstShownTime = -1f;   // when ENTER first became eligible
@@ -442,7 +485,7 @@ public class SignalDirectorV2 : MonoBehaviour
     {
         hudSuppressed = suppress;
         if (pursuitRow != null) pursuitRow.SetActive(MapTeaserRowsVisible);
-        if (artifactRow != null) artifactRow.SetActive(MapTeaserRowsVisible);
+        if (artifactRow != null) artifactRow.SetActive(!suppress);
         if (locRow != null) locRow.SetActive(MapTeaserRowsVisible);
         if (locEnterGO != null) locEnterGO.SetActive(!suppress);
         if (dailyStepsLabel != null) dailyStepsLabel.gameObject.SetActive(!suppress);
@@ -452,14 +495,7 @@ public class SignalDirectorV2 : MonoBehaviour
 
     public string GetNearbyTeaserText()
     {
-        var playerMerc = GetPlayerMercator();
-        Signal artifact = GetNearestSignalByType(TransmissionType.Artifact, playerMerc);
-        Signal transmitter = GetNearestSignalByType(TransmissionType.Transmitter, playerMerc);
-        Signal location = GetNearestLocationTransmission();
-
-        return $"> {TeaserLineOrDefault(artifactLabel, "scanning ambient locations...")}\n" +
-               $"> {TeaserLineOrDefault(pursuitLabel, "scanning ambient locations...")}\n" +
-               $"> {TeaserLineOrDefault(locLabel, "scanning locations...")}";
+        return $"> {TeaserLineOrDefault(artifactLabel, "scanning ambient locations...")}";
     }
 
     public struct NearbyTeaserInfo
@@ -474,15 +510,11 @@ public class SignalDirectorV2 : MonoBehaviour
     public NearbyTeaserInfo[] GetNearbyTeaserInfos()
     {
         var playerMerc = GetPlayerMercator();
-        Signal artifact = GetNearestSignalByType(TransmissionType.Artifact, playerMerc);
-        Signal transmitter = GetNearestSignalByType(TransmissionType.Transmitter, playerMerc);
-        Signal location = GetNearestLocationTransmission();
+        Signal ambient = GetNearestAmbientSignal(playerMerc);
 
         return new[]
         {
-            BuildNearbyTeaserInfo(artifact, "scanning ambient locations...", TransmissionType.Artifact, playerMerc),
-            BuildNearbyTeaserInfo(transmitter, "scanning ambient locations...", TransmissionType.Transmitter, playerMerc),
-            BuildNearbyTeaserInfo(location, "scanning locations...", TransmissionType.Location, playerMerc),
+            BuildNearbyTeaserInfo(ambient, "scanning ambient locations...", TransmissionType.Artifact, playerMerc),
         };
     }
 
@@ -503,9 +535,8 @@ public class SignalDirectorV2 : MonoBehaviour
         string title;
         if (type == TransmissionType.Artifact || type == TransmissionType.Transmitter)
         {
-            string name = !string.IsNullOrEmpty(signal.specialItem) ? signal.specialItem : "artifact";
-            string senderFirst = GetSignalSenderName(signal);
-            title = $"{name} from {senderFirst}";
+            // Don't reveal the material/sender atop locations — just signal a disturbance.
+            title = "NEARBY DISTURBANCE";
         }
         else
         {
@@ -562,6 +593,29 @@ public class SignalDirectorV2 : MonoBehaviour
             if (s.role == SignalRole.LocationTransmission) continue;
             if (s.state == SignalState.CoolingDown) continue;
             if (s.transmissionType != transmissionType) continue;
+
+            float d = DistanceTo(s, playerMerc);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                best = s;
+            }
+        }
+        return best;
+    }
+
+    private Signal GetNearestAmbientSignal(Vector2d playerMerc)
+    {
+        Signal best = null;
+        float bestDist = float.MaxValue;
+        for (int i = 0; i < signals.Count; i++)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role == SignalRole.LocationTransmission) continue;
+            if (s.transmissionType == TransmissionType.Location) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+            if (s.state == SignalState.Interpreting || s.state == SignalState.Resolved) continue;
 
             float d = DistanceTo(s, playerMerc);
             if (d < bestDist)
@@ -638,9 +692,24 @@ public class SignalDirectorV2 : MonoBehaviour
         // Game rule: concentric pool uses 75m spacing.
         // Serialized scene values can drift; enforce at runtime to avoid showing too many rings at once.
         ambientRingStepMeters = 75f;
+        LoadMomentumGatePrefs();
 
         Input.compass.enabled = true;
         Input.location.Start();
+    }
+
+    private void LoadMomentumGatePrefs()
+    {
+        if (PlayerPrefs.HasKey("k1lo_ambientMinStepsToSpawn"))
+            ambientMinStepsToSpawn = Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_ambientMinStepsToSpawn"));
+        if (PlayerPrefs.HasKey("k1lo_momentumSessionGraceMinutes"))
+            momentumSessionGraceMinutes = PlayerPrefs.GetFloat("k1lo_momentumSessionGraceMinutes");
+        ambientMinStepsToSpawn = Mathf.Clamp(ambientMinStepsToSpawn, 0, 2000);
+        momentumSessionGraceMinutes = Mathf.Clamp(momentumSessionGraceMinutes, 1f, 30f);
+        // Show only the single nearest ambient disturbance (not a field of ~20 in
+        // the distance). Forced here so it wins over any value serialized on the
+        // component in the scene.
+        ambientRingMaxCount = 1;
     }
 
     void Update()
@@ -662,6 +731,7 @@ public class SignalDirectorV2 : MonoBehaviour
         UpdateEnterOverlayFallbackTap();
 
         // HUD updates every frame for smooth distance
+        UpdateMovementBearingSample();
         ApplyTopHudVerticalLayout();
         UpdatePursuitHUD();
         UpdateArtifactHUD();
@@ -793,7 +863,7 @@ public class SignalDirectorV2 : MonoBehaviour
     {
         var font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
         if (font == null) font = TMP_Settings.defaultFontAsset;
-        dailyStepsLabel = CreateStepRow("StepsBlock", 19, BuildStepsHeroText(-1, -1, -1, "Start walking... Take 200 steps to establish kilosync."), font);
+        dailyStepsLabel = CreateStepRow("StepsBlock", 19, BuildStepsHeroText(-1, -1, -1, "NO ACTIVITY DETECTED", true), font);
         weeklyStepsLabel = null;
     }
 
@@ -828,25 +898,282 @@ public class SignalDirectorV2 : MonoBehaviour
     {
         if (dailyStepsLabel == null) return;
         if (pedometerService == null) pedometerService = FindFirstObjectByType<PedometerService>();
-        int main = pedometerService != null ? pedometerService.kilosyncSteps : -1;
+        int rawMain = pedometerService != null ? pedometerService.kilosyncSteps : -1;
         int daily = pedometerService != null ? pedometerService.stepsLast24Hours : -1;
         int weekly = pedometerService != null ? pedometerService.stepsLast7Days : -1;
-        bool inert = pedometerService == null || !pedometerService.kilosyncReady || pedometerService.isKilosyncInert;
-        dailyStepsLabel.text = BuildStepsHeroText(main, daily, weekly, BuildActivityPrompt(inert));
+        if (pedometerService != null)
+            pedometerService.RefreshWalkingBucketsIfDue(false, Mathf.RoundToInt(momentumSessionGraceMinutes), Mathf.Max(0, ambientMinStepsToSpawn));
+        bool active = pedometerService != null && pedometerService.walkBucketReady && !pedometerService.walkCurrentBucketInactive;
+        bool showWalk = !active;
+        int liveWalkSteps = pedometerService != null && pedometerService.walkBucketReady
+            ? Mathf.Max(0, pedometerService.walkWindowSteps)
+            : Mathf.Max(0, rawMain);
+        string statusLine = BuildStepStatusLine(active);
+        dailyStepsLabel.text = BuildStepsHeroText(liveWalkSteps, daily, weekly, statusLine, showWalk);
+    }
+
+    private void UpdateActiveMomentumSteps(int rawSteps)
+    {
+        if (rawSteps < 0)
+        {
+            activeMomentumSteps = -1;
+            return;
+        }
+
+        if (motionResetBaseSteps < 0 || rawSteps < motionResetBaseSteps)
+            motionResetBaseSteps = rawSteps;
+
+        bool recentlyWalking = wasWalkingWithMomentumForStreak &&
+                               Time.unscaledTime - lastWalkingMomentumTime <= MomentumSessionGraceSeconds;
+
+        if (!walkingMomentumReady)
+        {
+            if (!recentlyWalking)
+            {
+                wasWalkingWithMomentumForStreak = false;
+                // Include steps already taken since the movement baseline (the
+                // ones taken while it still says WALK), so they aren't discarded
+                // when momentum finally establishes.
+                activeMomentumSteps = Mathf.Max(0, rawSteps - motionResetBaseSteps);
+            }
+            return;
+        }
+
+        if (!isWalkingWithMomentum)
+        {
+            if (recentlyWalking)
+            {
+                activeMomentumSteps = Mathf.Max(0, rawSteps - motionResetBaseSteps);
+                return;
+            }
+
+            wasWalkingWithMomentumForStreak = false;
+            motionResetBaseSteps = rawSteps;
+            activeMomentumSteps = 0;
+            return;
+        }
+
+        lastWalkingMomentumTime = Time.unscaledTime;
+        if (!wasWalkingWithMomentumForStreak)
+        {
+            wasWalkingWithMomentumForStreak = true;
+            motionResetBaseSteps = rawSteps;
+        }
+
+        activeMomentumSteps = Mathf.Max(0, rawSteps - motionResetBaseSteps);
+    }
+
+    private void UpdateWalkingMomentum(int currentSteps)
+    {
+        if (currentSteps < 0 || map == null || map.MapInformation == null || playerObj == null) return;
+        if (Time.unscaledTime < nextMomentumSampleTime && momentumSamples.Count > 0) return;
+
+        nextMomentumSampleTime = Time.unscaledTime + MomentumSampleIntervalSeconds;
+        Vector2d mercator = GetPlayerMercator();
+        momentumSamples.Add(new MomentumSample
+        {
+            time = Time.unscaledTime,
+            steps = currentSteps,
+            mercator = mercator,
+            pedometerDistanceMeters = pedometerService != null ? Mathf.Max(0f, (float)pedometerService.distanceMeters) : 0f
+        });
+
+        float cutoff = Time.unscaledTime - MomentumWindowSeconds;
+        while (momentumSamples.Count > 1 && momentumSamples[0].time < cutoff)
+            momentumSamples.RemoveAt(0);
+
+        if (momentumSamples.Count < 2)
+        {
+            walkingMomentumReady = false;
+            walkingMomentum = 0f;
+            isWalkingWithMomentum = false;
+            return;
+        }
+
+        MomentumSample oldest = momentumSamples[0];
+        MomentumSample latest = momentumSamples[momentumSamples.Count - 1];
+        float elapsedMinutes = Mathf.Max(0.01f, (latest.time - oldest.time) / 60f);
+        int stepDelta = Mathf.Max(0, latest.steps - oldest.steps);
+        double dx = latest.mercator.x - oldest.mercator.x;
+        double dy = latest.mercator.y - oldest.mercator.y;
+        float mapMeters = Mathf.Max(0f, (float)Math.Sqrt(dx * dx + dy * dy));
+        float pedometerMeters = Mathf.Max(0f, latest.pedometerDistanceMeters - oldest.pedometerDistanceMeters);
+        float meters = Mathf.Max(mapMeters, pedometerMeters);
+
+        lastStepsPerMinute = stepDelta / elapsedMinutes;
+        lastMetersPerStep = stepDelta > 0 ? meters / stepDelta : 0f;
+
+        float cadenceScore = Mathf.InverseLerp(8f, 45f, lastStepsPerMinute);
+        float displacementScore = Mathf.InverseLerp(8f, 45f, meters);
+        float strideScore = 0f;
+        if (stepDelta >= 6)
+        {
+            if (lastMetersPerStep < 0.20f) strideScore = 0f;
+            else if (lastMetersPerStep <= 0.75f) strideScore = Mathf.InverseLerp(0.20f, 0.75f, lastMetersPerStep);
+            else if (lastMetersPerStep <= 1.80f) strideScore = Mathf.InverseLerp(1.80f, 0.75f, lastMetersPerStep);
+        }
+
+        walkingMomentum = Mathf.Clamp01(cadenceScore * Mathf.Max(strideScore, displacementScore * 0.5f));
+        walkingMomentumReady = latest.time - oldest.time >= Mathf.Min(30f, MomentumWindowSeconds);
+        isWalkingWithMomentum = walkingMomentumReady && walkingMomentum >= MomentumWalkingThreshold;
+
+        // Keep sub-scores for the readable diagnostic.
+        lastCadenceScore = cadenceScore;
+        lastStrideScore = strideScore;
+        lastDisplacementScore = displacementScore;
+        lastMetersMoved = meters;
+        lastWindowMinutes = elapsedMinutes;
+    }
+
+    // Plain-language explanation of why momentum is low, plus the formula.
+    // Shown under the WALK prompt so it's clear what to do to fix it.
+    private string BuildMomentumDiagnostic()
+    {
+        if (!walkingMomentumReady)
+            return "<size=11>warming up… keep walking ~30s to measure</size>";
+
+        // Identify the weakest contributor.
+        // momentum = cadence × max(stride, displacement×0.5)
+        float moveTerm = Mathf.Max(lastStrideScore, lastDisplacementScore * 0.5f);
+        var reasons = new System.Collections.Generic.List<string>();
+        if (lastCadenceScore < 0.5f)
+            reasons.Add($"slow pace ({lastStepsPerMinute:F0} steps/min, want 25+)");
+        if (moveTerm < 0.5f)
+        {
+            if (lastStrideScore <= lastDisplacementScore * 0.5f)
+                reasons.Add($"not covering ground ({lastMetersMoved:F0} m in {lastWindowMinutes:F0} min)");
+            else
+                reasons.Add($"short strides ({lastMetersPerStep:F2} m/step, want ~0.75)");
+        }
+        if (reasons.Count == 0) reasons.Add("just below threshold — keep going");
+
+        int pct = Mathf.RoundToInt(walkingMomentum * 100f);
+        int needPct = Mathf.RoundToInt(MomentumWalkingThreshold * 100f);
+        string why = string.Join("; ", reasons);
+        return
+            $"<size=12>why low: {why}</size>\n" +
+            $"<size=10>momentum {pct}% (need {needPct}%)</size>\n" +
+            $"<size=9>formula: cadence × max(stride, move×0.5)</size>";
+    }
+
+    private string BuildMomentumLine(bool inert)
+    {
+        if (inert) return "<size=11>momentum: inert</size>";
+        if (!walkingMomentumReady) return "<size=11>momentum: scanning walk...</size>";
+        string state = isWalkingWithMomentum ? "walking" : "low";
+        int percent = Mathf.RoundToInt(walkingMomentum * 100f);
+        return $"<size=11>momentum: {state} {percent}%  {lastStepsPerMinute:F0} spm  {lastMetersPerStep:F2} m/step</size>";
+    }
+
+    private string BuildWalkingBucketLine(bool inert)
+    {
+        if (pedometerService == null) return "<size=11>walking: no pedometer</size>";
+        if (!pedometerService.walkBucketReady) return "<size=11>walking: measuring session...</size>";
+        string state = pedometerService.walkCurrentBucketInactive ? "inactive" : (inert ? "keep walking" : "active");
+        return $"<size=11>walking: {state} session {pedometerService.walkWindowSteps}/{Mathf.Max(0, ambientMinStepsToSpawn)}  current {pedometerService.walkCurrentBucketSteps}st/{pedometerService.walkCurrentBucketMeters:F0}m</size>";
+    }
+
+    private string BuildWalkingBucketDiagnostic()
+    {
+        if (pedometerService == null)
+            return "<size=11>no pedometer data</size>";
+        if (!pedometerService.walkBucketReady)
+            return "<size=11>measuring activity… start walking</size>";
+        string firstLine = pedometerService.walkCurrentBucketInactive
+            ? "current bucket inactive"
+            : $"session {pedometerService.walkWindowSteps}/{Mathf.Max(0, ambientMinStepsToSpawn)} steps";
+        return $"<size=11>{firstLine}</size>\n" +
+               $"<size=10>bucket {pedometerService.walkInactiveBucketMinutes}m needs {pedometerService.walkInactiveStepThreshold}st/{pedometerService.walkInactiveMetersThreshold:F0}m; active buckets {pedometerService.walkActiveBuckets}</size>";
+    }
+
+    private bool AmbientPortalsAllowedByActivity()
+    {
+        if (!requireKilosyncForAmbientPortals) return true;
+        if (pedometerService == null) pedometerService = FindFirstObjectByType<PedometerService>();
+        if (pedometerService == null) return false;
+        int minSteps = Mathf.Max(0, ambientMinStepsToSpawn);
+        pedometerService.RefreshWalkingBucketsIfDue(false, Mathf.RoundToInt(momentumSessionGraceMinutes), minSteps);
+        return pedometerService.HasWalkingBucketSignal(minSteps);
+    }
+
+    private void UpdateMovementBearingSample()
+    {
+        if (map == null || map.MapInformation == null || playerObj == null) return;
+        Vector2d current = GetPlayerMercator();
+        if (!_hasMovementBearingSample)
+        {
+            _lastMovementBearingMercator = current;
+            _hasMovementBearingSample = true;
+            return;
+        }
+
+        double dx = current.x - _lastMovementBearingMercator.x;
+        double dy = current.y - _lastMovementBearingMercator.y;
+        double meters = Math.Sqrt(dx * dx + dy * dy);
+        if (meters < 3d) return;
+
+        _lastMovementBearingDegrees = ((float)(Math.Atan2(dx, dy) * (180.0 / Math.PI)) + 360f) % 360f;
+        _lastMovementBearingMercator = current;
+        _hasMovementBearing = true;
+    }
+
+    private void RemoveAmbientPortalSignals()
+    {
+        for (int i = signals.Count - 1; i >= 0; i--)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role == SignalRole.SecondaryNearby && s.state != SignalState.CoolingDown)
+                RemoveSignal(s);
+        }
+    }
+
+    private AudioClip _beamSpawnPewClip;
+
+    private void PlayAmbientPortalSpawnSound()
+    {
+        if (Time.unscaledTime - _lastAmbientPortalSpawnSoundTime < Mathf.Max(0f, ambientPortalSpawnSoundCooldown)) return;
+
+        // Beam-spawn SFX: the ElevenLabs "pew" laser-appear sound. Loaded from
+        // Resources/Audio/BeamSpawn so it always wins over any stale clip wired
+        // in the inspector; falls back to the serialized clip only if missing.
+        if (_beamSpawnPewClip == null)
+            _beamSpawnPewClip = Resources.Load<AudioClip>("Audio/BeamSpawn");
+        AudioClip clip = _beamSpawnPewClip != null ? _beamSpawnPewClip : ambientPortalSpawnClip;
+        if (clip == null) return;
+
+        _lastAmbientPortalSpawnSoundTime = Time.unscaledTime;
+        var go = new GameObject("AmbientPortalSpawnSFX");
+        var source = go.AddComponent<AudioSource>();
+        source.clip = clip;
+        source.volume = ambientPortalSpawnVolume;
+        source.spatialBlend = 0f;
+        source.playOnAwake = false;
+        source.Play();
+        Destroy(go, clip.length + 0.25f);
     }
 
     private string BuildActivityPrompt(bool inert)
     {
-        if (!inert) return "";
+        if (!inert)
+        {
+            if (walkingMomentumReady && !isWalkingWithMomentum)
+            {
+                if (IsPlayerInsideBuildingCached())
+                    return "Go outside and walk to build momentum.";
+                return "Start walking outside to build momentum.";
+            }
+            return "";
+        }
 
         Signal loc = GetLocationTransmission();
         if (loc != null && showEnter && enterTarget == loc && !string.IsNullOrWhiteSpace(loc.locationName))
-            return $"you are at {loc.locationName}. go outside and walk 200 steps to establish kilosync.";
+            return $"you are at {loc.locationName}. go outside and walk {Mathf.Max(0, ambientMinStepsToSpawn)} steps to establish kilosync.";
 
         if (IsPlayerInsideBuildingCached())
-            return "Go outside and take 200 steps to establish kilosync.";
+            return $"Go outside and take {Mathf.Max(0, ambientMinStepsToSpawn)} steps to establish kilosync.";
 
-        return "Start walking... Take 200 steps to establish kilosync.";
+        return $"Start walking... Take {Mathf.Max(0, ambientMinStepsToSpawn)} steps to establish kilosync.";
     }
 
     private bool IsPlayerInsideBuildingCached()
@@ -874,18 +1201,81 @@ public class SignalDirectorV2 : MonoBehaviour
         return cachedInsideBuilding;
     }
 
-    private static string BuildStepsHeroText(int main, int daily, int weekly, string activityPrompt)
+    private string BuildStepStatusLine(bool active)
     {
-        return $"<size=10>steps</size>\n" +
-               $"<size=54><b>{FormatStepCount(main)}</b></size>\n" +
-               $"<size=10>24hr: {FormatStepCount(daily)}    7d: {FormatStepCount(weekly)}</size>" +
-               (string.IsNullOrWhiteSpace(activityPrompt) ? "" : $"\n<size=12>{activityPrompt}</size>");
+        if (!active) return "NO ACTIVITY DETECTED";
+
+        var playerMerc = GetPlayerMercator();
+        Signal nearest = GetNearestAmbientPortal(playerMerc, out float distanceMeters);
+        if (nearest == null) return "CONTINUE WALKING";
+
+        string arrow = ArrowGlyphForRelativeAngle(RelativeAngleTo(nearest, playerMerc));
+        return $"There is something at {FormatTeaserDistancePlain(distanceMeters)} {arrow}";
+    }
+
+    private Signal GetNearestAmbientPortal(Vector2d playerMerc, out float distanceMeters)
+    {
+        Signal nearest = null;
+        distanceMeters = float.MaxValue;
+        for (int i = 0; i < signals.Count; i++)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.state == SignalState.CoolingDown) continue;
+            if (s.role == SignalRole.LocationTransmission) continue;
+            if (s.transmissionType == TransmissionType.Location) continue;
+
+            float d = (float)DistanceTo(s, playerMerc);
+            if (d < distanceMeters)
+            {
+                distanceMeters = d;
+                nearest = s;
+            }
+        }
+        return nearest;
+    }
+
+    private static string ArrowGlyphForRelativeAngle(float angle)
+    {
+        angle = (angle + 360f) % 360f;
+        if (angle < 22.5f || angle >= 337.5f) return "↑";
+        if (angle < 67.5f) return "↗";
+        if (angle < 112.5f) return "→";
+        if (angle < 157.5f) return "↘";
+        if (angle < 202.5f) return "↓";
+        if (angle < 247.5f) return "↙";
+        if (angle < 292.5f) return "←";
+        return "↖";
+    }
+
+    private static string BuildStepsHeroText(int main, int daily, int weekly, string statusLine, bool showWalk = false)
+    {
+        string hero = showWalk ? "WALK" : FormatStepCount(main);
+        return $"<size=10>steps since stop</size>\n" +
+               $"<font=\"LiberationSans SDF\"><size=54>{hero}</size></font>\n" +
+               $"<size=10>24h: {FormatStepCount(daily)}    7d: {FormatStepCount(weekly)}</size>" +
+               (string.IsNullOrWhiteSpace(statusLine) ? "" : $"\n<size=12>{statusLine}</size>");
     }
 
     private static string FormatStepCount(int steps)
     {
         if (steps < 0) return "...";
         return steps.ToString("N0");
+    }
+
+    // True when the player is within enter-proximity of the active location
+    // transmission (point distance or building footprint). Mirrors the enter
+    // gate used elsewhere so "at a location" means the same thing everywhere.
+    private bool IsPlayerAtLocation()
+    {
+        var loc = GetLocationTransmission();
+        if (loc == null) return false;
+        if (loc.state == SignalState.Interpreting || loc.state == SignalState.Resolved) return false;
+        Vector2d playerMerc = GetPlayerMercator();
+        float dist = DistanceTo(loc, playerMerc);
+        Vector3 playerWorld = playerObj != null ? playerObj.transform.position : Vector3.zero;
+        bool nearBuilding = IsPlayerNearLocationBuilding(loc, playerWorld, ENTER_PROXIMITY_BUILDING_EDGE_METERS);
+        return nearBuilding || dist <= ENTER_PROXIMITY_LOCATION_METERS;
     }
 
 	    private void CreatePursuitHUD()
@@ -1149,15 +1539,42 @@ public class SignalDirectorV2 : MonoBehaviour
 
     private void OnTransmitTapped()
     {
-        // Transmitter row should always enter the transmitter (primary pursuit).
-        var target = GetPrimary();
-        if (target == null || target.transmissionType != TransmissionType.Transmitter) return;
-        HandleEnterTapped(target);
+        // Transmitting is user-initiated now; spawned map beams do not open a transmitter flow.
+    }
+
+    public void MarkAmbientPortalVisited(Signal sig)
+    {
+        if (sig == null) return;
+        if (sig.role == SignalRole.LocationTransmission || sig.transmissionType == TransmissionType.Location) return;
+
+        string beamId = !string.IsNullOrWhiteSpace(sig.externalKey) ? sig.externalKey.Trim() : "";
+        if (!string.IsNullOrEmpty(beamId) && visitedAmbientBeamIds.Add(beamId) && APIManager.Instance != null)
+            StartCoroutine(PostBeamVisit(beamId));
+
+        RemoveSignal(sig);
+    }
+
+    private IEnumerator PostBeamVisit(string beamId)
+    {
+        string safeId = beamId.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        string payload = $"{{\"beamId\":\"{safeId}\"}}";
+        bool ok = false;
+        string response = null;
+        yield return APIManager.Instance.Post("/k1l0/beams/visit", payload, (success, text) =>
+        {
+            ok = success;
+            response = text;
+        });
+
+        if (!ok)
+            Debug.LogWarning($"[SignalDirector] Beam visit failed beamId={beamId} response={response}");
+        else
+            Debug.Log($"[SignalDirector] Beam visit deleted beamId={beamId}");
     }
 
     private void OnViewArtifactTapped()
     {
-        // Artifact row enters the nearest artifact. If the button is visible but
+        // Ambient row enters the nearest ambient portal. If the button is visible but
         // we find none in-range, log it so we can debug mismatched distance gates.
         var playerMerc = GetPlayerMercator();
         Signal nearest = null;
@@ -1167,7 +1584,7 @@ public class SignalDirectorV2 : MonoBehaviour
             var s = signals[i];
             if (s == null) continue;
             if (s.role == SignalRole.LocationTransmission) continue;
-            if (s.transmissionType != TransmissionType.Artifact) continue;
+            if (s.transmissionType == TransmissionType.Location) continue;
             if (s.state == SignalState.CoolingDown) continue;
             if (s.state == SignalState.Interpreting || s.state == SignalState.Resolved) continue;
             float d = (float)DistanceTo(s, playerMerc);
@@ -1180,13 +1597,13 @@ public class SignalDirectorV2 : MonoBehaviour
 
         if (nearest == null)
         {
-            Debug.LogWarning("[SignalDirector] View Artifact tapped but no artifact signals exist");
+            Debug.LogWarning("[SignalDirector] View Ambient tapped but no ambient signals exist");
             return;
         }
 
         if (nearestDist > ENTER_PROXIMITY_BEAM_METERS)
         {
-            Debug.LogWarning($"[SignalDirector] View Artifact tapped but nearest is {nearestDist:F1}m away (needs <= {ENTER_PROXIMITY_BEAM_METERS}m)");
+            Debug.LogWarning($"[SignalDirector] View Ambient tapped but nearest is {nearestDist:F1}m away (needs <= {ENTER_PROXIMITY_BEAM_METERS}m)");
             return;
         }
 
@@ -1405,7 +1822,7 @@ public class SignalDirectorV2 : MonoBehaviour
         }
         if (!shouldShow) return;
         locEnterGO.transform.SetAsLastSibling();
-        PositionEnterButtonUnderTeasers(GetStoriesBottomFromTop() + TeaserBelowStoriesGap + (TeaserRowHeight + TeaserRowGap) * 3f + 6f);
+        PositionEnterButtonUnderTeasers(GetStoriesBottomFromTop() + TeaserBelowStoriesGap + TeaserRowHeight + TeaserRowGap + 6f);
 
         string subtext;
         switch (enterTargetType)
@@ -1669,107 +2086,30 @@ public class SignalDirectorV2 : MonoBehaviour
     private void UpdatePursuitHUD()
     {
         if (pursuitLabel == null || pursuitRow == null) return;
+        pursuitRow.SetActive(false);
+    }
+
+    private void UpdateArtifactHUD()
+    {
+        if (artifactLabel == null || artifactRow == null) return;
+        if (!showLegacyArtifactHud)
+        {
+            artifactRow.SetActive(false);
+            return;
+        }
 
         var playerMerc = GetPlayerMercator();
 
-        // Closest transmitter (green) — not necessarily the "primary" signal.
+        // Find nearest ambient portal signal (any role except LocationTransmission).
         Signal nearest = null;
         float nearestDist = float.MaxValue;
         for (int i = 0; i < signals.Count; i++)
         {
             var s = signals[i];
             if (s == null) continue;
-            if (s.role == SignalRole.LocationTransmission) continue;
             if (s.state == SignalState.CoolingDown) continue;
-            if (s.transmissionType != TransmissionType.Transmitter) continue;
-            float d = DistanceTo(s, playerMerc);
-            if (d < nearestDist)
-            {
-                nearestDist = d;
-                nearest = s;
-            }
-        }
-
-        if (nearest == null)
-        {
-            pursuitRow.SetActive(MapTeaserRowsVisible);
-            if (pursuitCompassGO != null && pursuitCompassGO.activeSelf) pursuitCompassGO.SetActive(false);
-            if (pursuitRowBg != null) pursuitRowBg.color = new Color(0f, 0f, 0f, 0f);
-            if (pursuitRowBorder != null && pursuitRowBorder.activeSelf) pursuitRowBorder.SetActive(false);
-            if (pursuitRowButton != null) pursuitRowButton.interactable = false;
-            if (pursuitDist != null) pursuitDist.text = "";
-            var scanRowRt = pursuitRow.GetComponent<RectTransform>();
-            if (scanRowRt != null && scanRowRt.sizeDelta.y > 30f) scanRowRt.sizeDelta = new Vector2(scanRowRt.sizeDelta.x, 30f);
-            var scanRt = pursuitLabel.rectTransform;
-            scanRt.offsetMin = new Vector2(0f, 0f);
-            scanRt.offsetMax = Vector2.zero;
-            pursuitLabel.fontSize = pursuitLabelNormalFontSize;
-            pursuitLabel.alignment = TextAlignmentOptions.MidlineLeft;
-            float scanBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
-            pursuitLabel.text = "scanning ambient locations...";
-            pursuitLabel.color = new Color(0.47f, 1f, 0.54f, 0.4f + scanBlink * 0.6f);
-            return;
-        }
-
-        pursuitRow.SetActive(MapTeaserRowsVisible);
-
-        float dist = nearestDist;
-        if (pursuitDist != null) pursuitDist.text = $"{dist:F0}m";
-
-        float tBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
-        float textAlpha = 0.4f + tBlink * 0.6f;
-        Color activeColor = showEnter && enterTargetType == TransmissionType.Transmitter ? TeaserRed : TeaserGreen;
-
-        // Normal teaser row: compass + rotating sentence, no border.
-        if (pursuitCompassGO != null && !pursuitCompassGO.activeSelf) pursuitCompassGO.SetActive(true);
-        if (pursuitRowBg != null) pursuitRowBg.color = new Color(0f, 0f, 0f, 0f);
-        if (pursuitRowBorder != null && pursuitRowBorder.activeSelf) pursuitRowBorder.SetActive(false);
-        if (pursuitRowButton != null) pursuitRowButton.interactable = false;
-
-        var normalRt = pursuitLabel.rectTransform;
-        normalRt.offsetMin = new Vector2(pursuitLabelNormalOffset.x, pursuitLabelNormalOffset.y);
-        normalRt.offsetMax = Vector2.zero;
-        pursuitLabel.fontSize = pursuitLabelNormalFontSize;
-        pursuitLabel.alignment = TextAlignmentOptions.MidlineLeft;
-
-        var rowRt = pursuitRow.GetComponent<RectTransform>();
-        if (rowRt != null && rowRt.sizeDelta.y > 30f) rowRt.sizeDelta = new Vector2(rowRt.sizeDelta.x, 30f);
-
-	        string distStr = FormatTeaserDistance(dist);
-		        pursuitLabel.text = $"{FormatSignalGpsTitle(nearest)} {distStr}";
-		        pursuitLabel.color = new Color(activeColor.r, activeColor.g, activeColor.b, textAlpha);
-
-        // Rotate compass arrow to point toward signal relative to device heading
-        if (pursuitArrowRt != null)
-        {
-            float relAngle = RelativeAngleTo(nearest, playerMerc);
-            pursuitArrowRt.localRotation = Quaternion.Euler(0, 0, -relAngle);
-            var arrowImg = pursuitArrowRt.GetComponent<Image>();
-            if (arrowImg != null)
-                arrowImg.color = new Color(activeColor.r, activeColor.g, activeColor.b, textAlpha);
-        }
-
-	        // Compass ring — steady, no blink
-	        if (pursuitCompassRing != null)
-	            pursuitCompassRing.color = new Color(activeColor.r, activeColor.g, activeColor.b, 0.6f);
-	    }
-
-	    private void UpdateArtifactHUD()
-	    {
-	        if (artifactLabel == null || artifactRow == null) return;
-
-	        var playerMerc = GetPlayerMercator();
-
-	        // Find nearest artifact signal (any role except LocationTransmission).
-	        Signal nearest = null;
-	        float nearestDist = float.MaxValue;
-	        for (int i = 0; i < signals.Count; i++)
-	        {
-	            var s = signals[i];
-	            if (s == null) continue;
-	            if (s.state == SignalState.CoolingDown) continue;
-	            if (s.role == SignalRole.LocationTransmission) continue;
-	            if (s.transmissionType != TransmissionType.Artifact) continue;
+            if (s.role == SignalRole.LocationTransmission) continue;
+            if (s.transmissionType == TransmissionType.Location) continue;
 
 	            float d = (float)DistanceTo(s, playerMerc);
 	            if (d < nearestDist)
@@ -1781,8 +2121,8 @@ public class SignalDirectorV2 : MonoBehaviour
 
 	        if (nearest == null)
 	        {
-	            artifactRow.SetActive(MapTeaserRowsVisible);
-	            if (artifactCompassGO != null && artifactCompassGO.activeSelf) artifactCompassGO.SetActive(false);
+            artifactRow.SetActive(!hudSuppressed);
+            if (artifactCompassGO != null && artifactCompassGO.activeSelf) artifactCompassGO.SetActive(false);
 	            if (artifactRowBg != null) artifactRowBg.color = new Color(0f, 0f, 0f, 0f);
 	            if (artifactRowBorder != null && artifactRowBorder.activeSelf) artifactRowBorder.SetActive(false);
 	            if (artifactRowButton != null) artifactRowButton.interactable = false;
@@ -1795,16 +2135,17 @@ public class SignalDirectorV2 : MonoBehaviour
 	            artifactLabel.fontSize = artifactLabelNormalFontSize;
 	            artifactLabel.alignment = TextAlignmentOptions.MidlineLeft;
 	            float scanBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
-	            artifactLabel.text = "scanning ambient locations...";
-	            artifactLabel.color = new Color(0.47f, 1f, 0.54f, 0.4f + scanBlink * 0.6f);
-	            return;
-	        }
+            artifactLabel.fontSize = artifactLabelEnterFontSize;   // hero-sized WALK
+            artifactLabel.text = "WALK";
+            artifactLabel.color = new Color(0.47f, 1f, 0.54f, 0.55f + scanBlink * 0.45f);
+            return;
+        }
 
-	        artifactRow.SetActive(MapTeaserRowsVisible);
+        artifactRow.SetActive(!hudSuppressed);
 
 	        float tBlink = Mathf.PingPong(Time.time * 0.5f, 1f);
 	        float textAlpha = 0.4f + tBlink * 0.6f;
-	        Color activeColor = showEnter && enterTargetType == TransmissionType.Artifact ? TeaserRed : TeaserGreen;
+	        Color activeColor = showEnter && enterTargetType != TransmissionType.Location ? TeaserRed : TeaserGreen;
 
 	        // Normal artifact row (always visible).
 	        if (artifactCompassGO != null && !artifactCompassGO.activeSelf) artifactCompassGO.SetActive(true);
@@ -1813,20 +2154,37 @@ public class SignalDirectorV2 : MonoBehaviour
 	        if (artifactRowButton != null) artifactRowButton.interactable = false; // ENTER is handled by the shared enter overlay
 
 	        var normalRt = artifactLabel.rectTransform;
-	        normalRt.offsetMin = new Vector2(artifactLabelNormalOffset.x, artifactLabelNormalOffset.y);
-	        normalRt.offsetMax = Vector2.zero;
-	        artifactLabel.fontSize = artifactLabelNormalFontSize;
-	        artifactLabel.alignment = TextAlignmentOptions.MidlineLeft;
+		        normalRt.offsetMin = new Vector2(DisturbanceLabelInset, artifactLabelNormalOffset.y);
+		        normalRt.offsetMax = Vector2.zero;
+		        artifactLabel.fontSize = artifactLabelNormalFontSize;
+		        artifactLabel.alignment = TextAlignmentOptions.MidlineLeft;
 
 	        var rowRt = artifactRow.GetComponent<RectTransform>();
 	        if (rowRt != null && rowRt.sizeDelta.y > 30f) rowRt.sizeDelta = new Vector2(rowRt.sizeDelta.x, 30f);
 
+		        if (artifactCompassGO != null)
+		        {
+		            artifactCompassGO.transform.localScale = Vector3.one * 1.7f;  // bigger arrow/compass
+		            var compassRt = artifactCompassGO.transform as RectTransform;
+		            if (compassRt != null) compassRt.anchoredPosition = new Vector2(DisturbanceCompassInset, 0f);
+		        }
 	        float dMeters = nearestDist;
-	        string distStr = FormatTeaserDistance(dMeters);
-	        string name = !string.IsNullOrEmpty(nearest.specialItem) ? nearest.specialItem : "artifact";
-	        string senderFirst = GetSignalSenderName(nearest);
-	        artifactLabel.text = $"{name} from {senderFirst} {distStr}";
+	        artifactLabel.text = "DISTURBANCE";
 	        artifactLabel.color = new Color(activeColor.r, activeColor.g, activeColor.b, textAlpha);
+	        if (artifactDist != null)
+	        {
+	            var distRt = artifactDist.rectTransform;
+	            distRt.anchorMin = new Vector2(0f, 0f);
+	            distRt.anchorMax = new Vector2(0f, 0f);
+	            distRt.pivot = new Vector2(0f, 1f);
+	            distRt.anchoredPosition = new Vector2(0f, -1f);
+	            distRt.sizeDelta = new Vector2(128f, 36f);
+	            artifactDist.transform.gameObject.SetActive(true);
+	            artifactDist.text = FormatTeaserDistancePlain(dMeters);
+	            artifactDist.fontSize = 40f;   // hero-sized distance, kept inside left safe area
+	            artifactDist.alignment = TextAlignmentOptions.TopLeft;
+	            artifactDist.color = Color.white;
+	        }
 
 	        if (artifactArrowRt != null)
 	        {
@@ -2314,21 +2672,47 @@ public class SignalDirectorV2 : MonoBehaviour
 	        if (useConcentricAmbientPool) return; // no primary pursuit in pool mode
 	        if (GetPrimary() != null) return;
 	        var playerMerc = GetPlayerMercator();
-	        SpawnSignal(SignalRole.PrimaryPursuit, SignalType.Presence, playerMerc,
-	                    primaryMinDist, primaryMaxDist, null,
-	                    TransmissionType.Transmitter);
+		        SpawnSignal(SignalRole.PrimaryPursuit, SignalType.Presence, playerMerc,
+		                    primaryMinDist, primaryMaxDist, null,
+		                    TransmissionType.Artifact);
 	    }
 
-	    private void FillSecondaries()
-	    {
-	        if (!useConcentricAmbientPool)
-	        {
-	            var playerMerc = GetPlayerMercator();
-	            while (CountByRole(SignalRole.SecondaryNearby) < maxSecondary)
+		    private void FillSecondaries()
+		    {
+            if (!AmbientPortalsAllowedByActivity())
+            {
+                _ambientPortalsWereAllowed = false;
+                RemoveAmbientPortalSignals();
+                if (!loggedAmbientBlockedByKilosync || Time.unscaledTime >= nextAmbientBlockedLogTime)
+                {
+                    nextAmbientBlockedLogTime = Time.unscaledTime + 15f;
+                    string pedState = pedometerService != null
+                        ? $"stepCount={pedometerService.stepCount} kilosync={pedometerService.kilosyncSteps} sixHour={pedometerService.stepsLast6Hours} sessionSteps={pedometerService.walkWindowSteps}/{ambientMinStepsToSpawn} currentBucket={pedometerService.walkCurrentBucketSteps}st/{pedometerService.walkCurrentBucketMeters:F0}m inactive={pedometerService.walkCurrentBucketInactive} bucketMinutes={pedometerService.walkInactiveBucketMinutes} activeBuckets={pedometerService.walkActiveBuckets} bucketReady={pedometerService.walkBucketReady} bucketWalking={pedometerService.HasWalkingBucketSignal(Mathf.Max(0, ambientMinStepsToSpawn))} ready={pedometerService.kilosyncReady} inert={pedometerService.isKilosyncInert}"
+                        : "pedometer=null";
+                    Debug.Log($"[SignalDirector] Ambient portals blocked: {pedState}. Walk enough in the last 25 minutes to enable spawning.");
+                    loggedAmbientBlockedByKilosync = true;
+                }
+                return;
+            }
+            if (!_ambientPortalsWereAllowed)
+            {
+                _ambientPortalsWereAllowed = true;
+                _lastBackendBeamRefreshTime = -999f;
+                _lastBackendScanLat = double.NaN;
+                _lastBackendScanLng = double.NaN;
+                _lastBackendScanTime = -999f;
+                Debug.Log("[SignalDirector] Ambient portals enabled by activity; forcing immediate backend scan.");
+            }
+            loggedAmbientBlockedByKilosync = false;
+
+		        if (!useConcentricAmbientPool)
+		        {
+		            var playerMerc = GetPlayerMercator();
+		            while (CountByRole(SignalRole.SecondaryNearby) < maxSecondary)
 	            {
-	                SpawnSignal(SignalRole.SecondaryNearby, SignalType.Presence, playerMerc,
-	                            secondaryMinDist, secondaryMaxDist, null,
-	                            TransmissionType.Transmitter);
+		                SpawnSignal(SignalRole.SecondaryNearby, SignalType.Presence, playerMerc,
+		                            secondaryMinDist, secondaryMaxDist, null,
+		                            TransmissionType.Artifact);
 	            }
 	            return;
 	        }
@@ -2392,11 +2776,7 @@ public class SignalDirectorV2 : MonoBehaviour
 	            float r = ringIndex * step;
 	            float minD = Mathf.Max(0f, r - step * 0.5f);
 	            float maxD = r + step * 0.5f;
-	            TransmissionType t;
-	            if (ambientAlternateArtifactTransmitter)
-	                t = (ringIndex % 2 == 1) ? TransmissionType.Artifact : TransmissionType.Transmitter;
-	            else
-	                t = UnityEngine.Random.value < ambientArtifactChance ? TransmissionType.Artifact : TransmissionType.Transmitter;
+		            TransmissionType t = TransmissionType.Artifact;
 
 	            // Strict: if we can't find a road point within the band's ring, skip spawning this ring.
 	            if (!TryPickRoadPointInRing(origin, minD, maxD, out var pos)) continue;
@@ -2414,7 +2794,7 @@ public class SignalDirectorV2 : MonoBehaviour
         while (CountByRole(SignalRole.DistantBackground) < maxDistant)
             SpawnSignal(SignalRole.DistantBackground, SignalType.Presence, playerMerc,
                         distantMinDist, distantMaxDist, null,
-                        TransmissionType.Transmitter);
+                        TransmissionType.Artifact);
     }
 
     private void EnsureBackendConcentricBeams(Vector2d originMercator)
@@ -2447,7 +2827,10 @@ public class SignalDirectorV2 : MonoBehaviour
             "{" +
             $"\"latitude\":{latitude}," +
             $"\"longitude\":{longitude}," +
-            $"\"maxMiles\":{ambientPoolMaxMiles}" +
+            $"\"maxMiles\":{ambientPoolMaxMiles}," +
+            $"\"stepMeters\":{Mathf.Max(5f, ambientRingStepMeters)}," +
+            $"\"minDistanceMeters\":{Mathf.Max(45f, ambientRingStepMeters * 0.8f)}," +
+            $"\"movementBearing\":{(_hasMovementBearing ? _lastMovementBearingDegrees.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")}" +
             "}";
 
         bool done = false;
@@ -2471,7 +2854,14 @@ public class SignalDirectorV2 : MonoBehaviour
         }
 
         if (parsed != null && parsed.ok && parsed.beams != null)
+        {
             yield return SyncAndFillBackendRings(parsed, latitude, longitude);
+            if ((parsed.fillPending || parsed.beams.Length == 0) && CountByRole(SignalRole.SecondaryNearby) == 0)
+            {
+                _lastBackendScanTime = Time.unscaledTime - Mathf.Max(5f, backendBeamMaxIntervalSeconds) + 10f;
+                Debug.Log($"[SignalDirector] Backend beam fill pending/empty; retrying nearby scan in ~10s (fillPending={parsed.fillPending}, beams={parsed.beams.Length})");
+            }
+        }
 
         _backendBeamRequestInFlight = false;
     }
@@ -2660,9 +3050,9 @@ public class SignalDirectorV2 : MonoBehaviour
 	        Vector2d pos = PickPosition(origin, minDist, maxDist, avoidPos, avoidMinDistMeters);
 	        var latLon = Conversions.WebMercatorToLatitudeLongitude(pos);
 
-	        // What used to be a single "Ambient" bucket now splits 50/50 into Artifact (object-centred)
-	        // and Transmitter (character-centred). The narrative engine reads this and picks framing.
-	        var ambientPick = forceTransmissionType ?? TransmissionType.Transmitter;
+	        var ambientPick = forceTransmissionType ?? TransmissionType.Artifact;
+	        if (ambientPick == TransmissionType.Transmitter)
+	            ambientPick = TransmissionType.Artifact;
 
 	        var sig = new Signal
 	        {
@@ -2684,11 +3074,13 @@ public class SignalDirectorV2 : MonoBehaviour
 	            sig.specialItem = "artifact";
 	        }
 
-	        signals.Add(sig);
-        Debug.Log($"[SignalDirector] Spawned {role}/{type} @ dist={DistanceTo(sig, origin):F0}m  id={sig.id}");
-        OnSignalSpawned?.Invoke(sig);
-        return sig;
-    }
+		        signals.Add(sig);
+	        Debug.Log($"[SignalDirector] Spawned {role}/{type} @ dist={DistanceTo(sig, origin):F0}m  id={sig.id}");
+	        OnSignalSpawned?.Invoke(sig);
+        if (role == SignalRole.SecondaryNearby)
+            PlayAmbientPortalSpawnSound();
+	        return sig;
+	    }
 
     /// <summary>
     /// Pick a road point within [minDist, maxDist] of origin.
@@ -2772,6 +3164,8 @@ public class SignalDirectorV2 : MonoBehaviour
 
     private Signal SpawnSignalAtPosition(SignalRole role, SignalType type, Vector2d pos, string chainParentId, TransmissionType transmissionType)
     {
+        if (transmissionType == TransmissionType.Transmitter)
+            transmissionType = TransmissionType.Artifact;
         var latLon = Conversions.WebMercatorToLatitudeLongitude(pos);
         var sig = new Signal
         {
@@ -2792,11 +3186,13 @@ public class SignalDirectorV2 : MonoBehaviour
             sig.specialItem = "artifact";
         }
 
-        signals.Add(sig);
-        OnSignalSpawned?.Invoke(sig);
-        OnSignalStateChanged?.Invoke(sig);
-        return sig;
-    }
+	        signals.Add(sig);
+	        OnSignalSpawned?.Invoke(sig);
+	        OnSignalStateChanged?.Invoke(sig);
+        if (role == SignalRole.SecondaryNearby)
+            PlayAmbientPortalSpawnSound();
+	        return sig;
+	    }
 
     // Backend ring beams need metadata set BEFORE events fire so BeamBridge logs
     // the correct ring + external id and visuals can key off teaser.
@@ -2810,6 +3206,8 @@ public class SignalDirectorV2 : MonoBehaviour
         int poolRingIndex,
         string teaser)
     {
+        if (transmissionType == TransmissionType.Transmitter)
+            transmissionType = TransmissionType.Artifact;
         var latLon = Conversions.WebMercatorToLatitudeLongitude(pos);
         var sig = new Signal
         {
@@ -2836,6 +3234,8 @@ public class SignalDirectorV2 : MonoBehaviour
         signals.Add(sig);
         OnSignalSpawned?.Invoke(sig);
         OnSignalStateChanged?.Invoke(sig);
+        if (role == SignalRole.SecondaryNearby)
+            PlayAmbientPortalSpawnSound();
         return sig;
     }
 
@@ -3148,8 +3548,19 @@ public class SignalDirectorV2 : MonoBehaviour
     private float RelativeAngleTo(Signal sig, Vector2d playerMerc)
     {
         float absBearing = BearingTo(sig, playerMerc);
-        float heading = Input.compass.enabled ? Input.compass.trueHeading : 0f;
+        float heading = GetLiveHeadingDegrees();
         return (absBearing - heading + 360f) % 360f;
+    }
+
+    private float GetLiveHeadingDegrees()
+    {
+        if (playerObj != null && (!Application.isMobilePlatform || GPSLocationController.GPSDisabled))
+            return playerObj.transform.eulerAngles.y;
+
+        if (Input.compass.enabled && Input.compass.headingAccuracy >= 0f)
+            return Input.compass.trueHeading;
+
+        return playerObj != null ? playerObj.transform.eulerAngles.y : 0f;
     }
 
     /// <summary>Heavy black drop-shadow on TMP text via underlay material keyword — readable on any background.</summary>

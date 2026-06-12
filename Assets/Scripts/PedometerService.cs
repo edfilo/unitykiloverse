@@ -16,6 +16,26 @@ public class PedometerService : MonoBehaviour
 
     // Track steps for all-time counting
     private int previousStepCount = 0;
+    private int appliedLiveSteps = 0;
+    private int kilosyncHistoricalBaseSteps = 0;
+    private int kilosyncSixHourBaseSteps = 0;
+
+    // Persist the live session step counter so it survives an app restart
+    // (otherwise "steps since stop" resets to 0 each launch — most visible on
+    // Mac/non-iOS where steps come from local movement, not HealthKit).
+    private const string KEY_SESSION_STEPS = "KiloSessionStepCount";
+    private const string KEY_SIM_HAS_STATE = "KiloSimHasState";
+    private const string KEY_SIM_STEPS_LAST_HOUR = "KiloSimStepsLastHour";
+    private const string KEY_SIM_STEPS_LAST_24H = "KiloSimStepsLast24Hours";
+    private const string KEY_SIM_STEPS_LAST_48H = "KiloSimStepsLast48Hours";
+    private const string KEY_SIM_STEPS_LAST_7D = "KiloSimStepsLast7Days";
+    private const string KEY_SIM_STEPS_LAST_6H = "KiloSimStepsLast6Hours";
+    private const string KEY_SIM_KILOSYNC_STEPS = "KiloSimKilosyncSteps";
+    private const string KEY_SIM_APPLIED_LIVE_STEPS = "KiloSimAppliedLiveSteps";
+    private const string KEY_SIM_DISTANCE_METERS = "KiloSimDistanceMeters";
+    private const string KEY_SIM_VIRTUAL_REMAINDER_METERS = "KiloSimVirtualStepRemainderMeters";
+    private float _nextSessionSave;
+    private bool loadedSimulatedStepState = false;
 
     // --- iOS Native Interface ---
     // --- iOS Native Interface ---
@@ -48,9 +68,54 @@ public class PedometerService : MonoBehaviour
     // Granular step data for ping button
     private Dictionary<int, int> cachedStepIntervals = new Dictionary<int, int>();
     private float virtualStepRemainderMeters = 0f;
+
+    public const int WalkingBucketMinutes = 5;
+    public const int WalkingBucketCount = 5;
+    public const int WalkingSessionMaxBuckets = 48;
+    public int walkWindowSteps = 0;
+    public int walkRecentSteps = 0;
+    public int walkActiveBuckets = 0;
+    public int walkCurrentBucketSteps = 0;
+    public double walkCurrentBucketMeters = 0d;
+    public int walkInactiveBucketMinutes = WalkingBucketMinutes;
+    public int walkInactiveStepThreshold = 20;
+    public double walkInactiveMetersThreshold = 15d;
+    public bool walkCurrentBucketInactive = true;
+    public bool walkBucketReady = false;
+    public bool walkBucketInFlight = false;
+    public string walkBucketStatus = "warming up";
+    private float nextWalkingBucketRefresh = 0f;
+    private const float WalkingBucketRefreshSeconds = 30f;
+
+    private struct VirtualStepEvent
+    {
+        public float time;
+        public int steps;
+        public float meters;
+    }
+
+    private readonly List<VirtualStepEvent> virtualStepEvents = new List<VirtualStepEvent>();
     
     // Static dictionary to map start timestamps to callbacks
     private static Dictionary<double, System.Action<int>> pendingIntervalCallbacks = new Dictionary<double, System.Action<int>>();
+    private static Dictionary<double, PedometerBucketRequest> pendingWalkingBucketCallbacks = new Dictionary<double, PedometerBucketRequest>();
+
+    private struct PedometerBucketRequest
+    {
+        public System.DateTime start;
+        public System.DateTime end;
+    }
+
+    public struct WalkingStepBucket
+    {
+        public System.DateTime start;
+        public System.DateTime end;
+        public int steps;
+        public double distanceMeters;
+    }
+
+    private static List<WalkingStepBucket> tempWalkingBuckets;
+    private static int pendingWalkingBucketRequests = 0;
 
         // 7-Day History
 
@@ -109,7 +174,17 @@ public class PedometerService : MonoBehaviour
         // PedometerUI removed - now using UILayoutManager with modular components
         // (StepsView is created by UILayoutManager)
 
-        // Initialize tracking
+        // Restore the persisted session counter so it continues across restarts.
+        // iOS overwrites stepCount from the native pedometer anyway, so only the
+        // local-accumulation platforms (Mac/editor/Android) need this restore.
+        #if !UNITY_IOS || UNITY_EDITOR
+        loadedSimulatedStepState = LoadSimulatedStepState();
+        if (!loadedSimulatedStepState)
+            stepCount = Mathf.Max(stepCount, PlayerPrefs.GetInt(KEY_SESSION_STEPS, 0));
+        #endif
+
+        // Initialize tracking. previousStepCount == stepCount so the restored
+        // steps aren't re-applied to the all-time total (already counted before).
         previousStepCount = stepCount;
         yield return null;
 
@@ -150,18 +225,21 @@ public class PedometerService : MonoBehaviour
         // Last 48 Hours
         _QueryPedometerData(now - 172800, now, On48HourStepsReceived);
 
+        // Last 7 days
+        GetLast7DaysSteps(null);
+
         GetLast24HoursBreakdown(UpdateKilosyncActivity);
         #else
-        stepsLast24Hours = 0;
-        stepsLast48Hours = 0;
-        stepsLastHour = 0;
-        stepsLast7Days = 0;
-        stepsLast6Hours = 0;
-        kilosyncSteps = 0;
-        isKilosyncInert = true;
-        kilosyncReady = true;
-        ResetSimulatedIntervalCache();
-        GetLast24HoursBreakdown(UpdateKilosyncActivity);
+        if (loadedSimulatedStepState)
+        {
+            RefreshLiveKilosyncState();
+            UpdateSimulatedIntervalCache();
+            Debug.Log($"[PedometerService] Simulated data restored. steps={stepCount} 1h={stepsLastHour} 24h={stepsLast24Hours} 7d={stepsLast7Days} kilosync={kilosyncSteps}");
+            return;
+        }
+
+        InitializeSimulatedStepTotalsFromSession();
+        SaveSimulatedStepState();
         
         Debug.Log("[PedometerService] Simulated Data reset to zero for desktop testing.");
         #endif
@@ -171,10 +249,9 @@ public class PedometerService : MonoBehaviour
     {
         if (hourly == null || hourly.Count == 0)
         {
-            kilosyncReady = true;
-            kilosyncSteps = Mathf.Max(0, stepCount);
-            stepsLast6Hours = stepsLastHour >= 0 ? stepsLastHour : 0;
-            isKilosyncInert = stepsLast6Hours < 200;
+            kilosyncHistoricalBaseSteps = 0;
+            kilosyncSixHourBaseSteps = 0;
+            RefreshLiveKilosyncState();
             return;
         }
 
@@ -200,11 +277,19 @@ public class PedometerService : MonoBehaviour
         for (int i = latestInactiveIndex + 1; i < hourly.Count; i++)
             activeSteps += Mathf.Max(0, hourly[i].steps);
 
-        kilosyncSteps = activeSteps + Mathf.Max(0, stepCount);
-        stepsLast6Hours = latestSixHourSteps;
+        kilosyncHistoricalBaseSteps = activeSteps;
+        kilosyncSixHourBaseSteps = latestSixHourSteps;
+        RefreshLiveKilosyncState();
+        Debug.Log($"[PedometerService] Kilosync steps={kilosyncSteps} 6h={stepsLast6Hours} inert={isKilosyncInert}");
+    }
+
+    private void RefreshLiveKilosyncState()
+    {
+        int live = Mathf.Max(0, stepCount);
+        kilosyncSteps = Mathf.Max(0, kilosyncHistoricalBaseSteps) + live;
+        stepsLast6Hours = Mathf.Max(0, kilosyncSixHourBaseSteps) + live;
         isKilosyncInert = stepsLast6Hours < 200;
         kilosyncReady = true;
-        Debug.Log($"[PedometerService] Kilosync steps={kilosyncSteps} 6h={stepsLast6Hours} inert={isKilosyncInert}");
     }
 
     public void GetLast7DaysSteps(System.Action<List<DailyStepData>> callback)
@@ -238,17 +323,23 @@ public class PedometerService : MonoBehaviour
 
     public void GetLast24HoursBreakdown(System.Action<List<HourlyStepData>> callback)
     {
+        GetLastHoursBreakdown(24, callback);
+    }
+
+    public void GetLastHoursBreakdown(int hours, System.Action<List<HourlyStepData>> callback)
+    {
         #if UNITY_IOS && !UNITY_EDITOR
+        hours = Mathf.Clamp(hours, 1, 168);
         onHourlyHistoryCallback = callback;
         tempHourlyList = new List<HourlyStepData>();
-        pendingHourlyRequests = 24;
+        pendingHourlyRequests = hours;
 
         double now = (System.DateTime.UtcNow - new System.DateTime(1970, 1, 1)).TotalSeconds;
         // Align now to top of hour
         long nowSeconds = (long)now;
         long topOfHour = nowSeconds - (nowSeconds % 3600);
 
-        for (int i = 0; i < 24; i++)
+        for (int i = 0; i < hours; i++)
         {
             double endTs = topOfHour - (i * 3600);
             double startTs = endTs - 3600;
@@ -256,9 +347,10 @@ public class PedometerService : MonoBehaviour
             _QueryPedometerData(startTs, endTs, OnHourlyBreakdownReceived);
         }
         #else
+        hours = Mathf.Clamp(hours, 1, 168);
         var list = new List<HourlyStepData>();
         System.DateTime now = System.DateTime.Now;
-        for(int i=0; i<24; i++) {
+        for(int i=0; i<hours; i++) {
             int steps = i == 0 ? Mathf.Max(0, stepsLastHour) : 0;
             list.Add(new HourlyStepData { time = now.AddHours(-i), steps = steps });
         }
@@ -361,9 +453,205 @@ public class PedometerService : MonoBehaviour
         return cachedStepIntervals.ContainsKey(minutes) ? cachedStepIntervals[minutes] : -1;
     }
 
+    public void RefreshWalkingBucketsIfDue(bool force = false, int inactivityBucketMinutes = WalkingBucketMinutes, int minActiveSteps = 50)
+    {
+        if (!force && Time.unscaledTime < nextWalkingBucketRefresh) return;
+        if (walkBucketInFlight) return;
+
+        nextWalkingBucketRefresh = Time.unscaledTime + WalkingBucketRefreshSeconds;
+        ConfigureWalkingSessionClassifier(inactivityBucketMinutes, minActiveSteps);
+
+        #if UNITY_IOS && !UNITY_EDITOR
+        QueryWalkingBucketsFromPedometer();
+        #else
+        UpdateWalkingBucketsFromVirtualEvents();
+        #endif
+    }
+
+    public bool HasWalkingBucketSignal(int minSteps)
+    {
+        if (!walkBucketReady) return false;
+        int required = Mathf.Max(0, minSteps);
+        if (required <= 0) return true;
+        return walkWindowSteps >= required;
+    }
+
+    public string GetWalkingBucketDiagnostic(int minSteps)
+    {
+        if (!walkBucketReady)
+            return "<size=11>walking: measuring last 25m...</size>";
+        string state = walkCurrentBucketInactive ? "inactive" : (HasWalkingBucketSignal(minSteps) ? "active" : "keep walking");
+        return $"<size=11>walking: {state} session {walkWindowSteps}/{Mathf.Max(0, minSteps)}  current {walkCurrentBucketSteps}st/{walkCurrentBucketMeters:F0}m</size>";
+    }
+
+    private void ConfigureWalkingSessionClassifier(int inactivityBucketMinutes, int minActiveSteps)
+    {
+        walkInactiveBucketMinutes = Mathf.Clamp(inactivityBucketMinutes, 1, 30);
+        int scaledStepThreshold = Mathf.RoundToInt(walkInactiveBucketMinutes * 4f);
+        walkInactiveStepThreshold = Mathf.Clamp(scaledStepThreshold, 3, Mathf.Max(3, Mathf.Max(0, minActiveSteps) - 1));
+        walkInactiveMetersThreshold = System.Math.Max(2d, walkInactiveBucketMinutes * 3d);
+    }
+
+    private void QueryWalkingBucketsFromPedometer()
+    {
+        #if UNITY_IOS && !UNITY_EDITOR
+        walkBucketInFlight = true;
+        tempWalkingBuckets = new List<WalkingStepBucket>();
+        pendingWalkingBucketCallbacks.Clear();
+        pendingWalkingBucketRequests = WalkingSessionMaxBuckets;
+
+        System.DateTime utcNow = System.DateTime.UtcNow;
+        double now = (utcNow - new System.DateTime(1970, 1, 1)).TotalSeconds;
+
+        for (int index = 0; index < WalkingSessionMaxBuckets; index++)
+        {
+            double endTs = now - (index * walkInactiveBucketMinutes * 60);
+            double startTs = endTs - (walkInactiveBucketMinutes * 60);
+            System.DateTime start = new System.DateTime(1970, 1, 1).AddSeconds(startTs).ToLocalTime();
+            System.DateTime end = new System.DateTime(1970, 1, 1).AddSeconds(endTs).ToLocalTime();
+            pendingWalkingBucketCallbacks[startTs] = new PedometerBucketRequest { start = start, end = end };
+            _QueryPedometerData(startTs, endTs, OnWalkingBucketReceived);
+        }
+        #endif
+    }
+
+    [AOT.MonoPInvokeCallback(typeof(PedometerCallback))]
+    private static void OnWalkingBucketReceived(int steps, double distance, double start, double end)
+    {
+        double matchedKey = -1;
+        bool found = false;
+
+        foreach (var key in pendingWalkingBucketCallbacks.Keys)
+        {
+            if (System.Math.Abs(key - start) < 1.0)
+            {
+                matchedKey = key;
+                found = true;
+                break;
+            }
+        }
+
+        if (found)
+        {
+            var request = pendingWalkingBucketCallbacks[matchedKey];
+            pendingWalkingBucketCallbacks.Remove(matchedKey);
+            tempWalkingBuckets?.Add(new WalkingStepBucket
+            {
+                start = request.start,
+                end = request.end,
+                steps = Mathf.Max(0, steps),
+                distanceMeters = System.Math.Max(0d, distance)
+            });
+        }
+        else
+        {
+            Debug.LogWarning($"[PedometerService] Walking bucket result start={start} had no pending callback.");
+        }
+
+        pendingWalkingBucketRequests--;
+        if (pendingWalkingBucketRequests > 0) return;
+
+        var instance = FindObjectOfType<PedometerService>();
+        if (instance != null)
+            instance.ApplyWalkingBuckets(tempWalkingBuckets);
+
+        pendingWalkingBucketCallbacks.Clear();
+        tempWalkingBuckets = null;
+    }
+
+    private void UpdateWalkingBucketsFromVirtualEvents()
+    {
+        float cutoff = Time.unscaledTime - (30f * WalkingSessionMaxBuckets * 60f);
+        while (virtualStepEvents.Count > 0 && virtualStepEvents[0].time < cutoff)
+            virtualStepEvents.RemoveAt(0);
+
+        var buckets = new List<WalkingStepBucket>();
+        System.DateTime now = System.DateTime.Now;
+        for (int index = 0; index < WalkingSessionMaxBuckets; index++)
+        {
+            float bucketEnd = Time.unscaledTime - (index * walkInactiveBucketMinutes * 60f);
+            float bucketStart = bucketEnd - (walkInactiveBucketMinutes * 60f);
+            int steps = 0;
+            double meters = 0d;
+            for (int i = 0; i < virtualStepEvents.Count; i++)
+            {
+                var e = virtualStepEvents[i];
+                if (e.time > bucketStart && e.time <= bucketEnd)
+                {
+                    steps += Mathf.Max(0, e.steps);
+                    meters += Mathf.Max(0f, e.meters);
+                }
+            }
+
+            buckets.Add(new WalkingStepBucket
+            {
+                start = now.AddMinutes(-(index + 1) * walkInactiveBucketMinutes),
+                end = now.AddMinutes(-index * walkInactiveBucketMinutes),
+                steps = steps,
+                distanceMeters = meters
+            });
+        }
+
+        ApplyWalkingBuckets(buckets);
+    }
+
+    private void ApplyWalkingBuckets(List<WalkingStepBucket> buckets)
+    {
+        walkBucketInFlight = false;
+        if (buckets == null || buckets.Count == 0)
+        {
+            walkBucketReady = false;
+            walkBucketStatus = "no walking buckets";
+            return;
+        }
+
+        buckets.Sort((a, b) => b.end.CompareTo(a.end));
+        int session = 0;
+        int recent = 0;
+        int active = 0;
+        for (int i = 0; i < buckets.Count; i++)
+        {
+            int steps = Mathf.Max(0, buckets[i].steps);
+            if (i < 2) recent += steps;
+            bool inactive = IsInactiveWalkingBucket(steps, buckets[i].distanceMeters);
+            if (i == 0)
+            {
+                walkCurrentBucketSteps = steps;
+                walkCurrentBucketMeters = buckets[i].distanceMeters;
+                walkCurrentBucketInactive = inactive;
+            }
+            if (inactive) break;
+            session += steps;
+            active++;
+        }
+
+        walkWindowSteps = session;
+        walkRecentSteps = recent;
+        walkActiveBuckets = active;
+        walkBucketReady = true;
+        walkBucketStatus = $"session={walkWindowSteps} current={walkCurrentBucketSteps}st/{walkCurrentBucketMeters:F0}m inactive={walkCurrentBucketInactive} bucket={walkInactiveBucketMinutes}m";
+        Debug.Log($"[PedometerService] Walking buckets updated: {walkBucketStatus}");
+    }
+
+    private bool IsInactiveWalkingBucket(int steps, double meters)
+    {
+        return steps < walkInactiveStepThreshold || (meters > 0d && meters < walkInactiveMetersThreshold);
+    }
+
     private int GetSimulatedStepsForInterval(int minutes)
     {
         if (minutes <= 0) return 0;
+        if (virtualStepEvents.Count > 0)
+        {
+            float cutoff = Time.unscaledTime - minutes * 60f;
+            int steps = 0;
+            for (int i = virtualStepEvents.Count - 1; i >= 0; i--)
+            {
+                if (virtualStepEvents[i].time < cutoff) break;
+                steps += Mathf.Max(0, virtualStepEvents[i].steps);
+            }
+            return steps;
+        }
         if (minutes >= 60) return Mathf.Max(0, stepsLastHour);
         return Mathf.RoundToInt(Mathf.Max(0, stepsLastHour) * Mathf.Clamp01(minutes / 60f));
     }
@@ -388,6 +676,8 @@ public class PedometerService : MonoBehaviour
         if (instance != null)
         {
             instance.stepsLastHour = steps;
+            if (instance.appliedLiveSteps > 0)
+                instance.stepsLastHour += instance.appliedLiveSteps;
             Debug.Log($"[PedometerService] Steps Last Hour: {steps}");
         }
     }
@@ -399,6 +689,8 @@ public class PedometerService : MonoBehaviour
         if (instance != null)
         {
             instance.stepsLast24Hours = steps;
+            if (instance.appliedLiveSteps > 0)
+                instance.stepsLast24Hours += instance.appliedLiveSteps;
             Debug.Log($"[PedometerService] Steps Last 24 Hours: {steps}");
         }
     }
@@ -410,6 +702,8 @@ public class PedometerService : MonoBehaviour
         if (instance != null)
         {
             instance.stepsLast48Hours = steps;
+            if (instance.appliedLiveSteps > 0)
+                instance.stepsLast48Hours += instance.appliedLiveSteps;
             Debug.Log($"[PedometerService] Steps Last 48 Hours: {steps}");
         }
     }
@@ -440,7 +734,7 @@ public class PedometerService : MonoBehaviour
             var instance = FindObjectOfType<PedometerService>();
             if (instance != null)
             {
-                instance.stepsLast7Days = total7Days;
+                instance.stepsLast7Days = total7Days + instance.appliedLiveSteps;
                 Debug.Log($"[PedometerService] Steps Last 7 Days: {total7Days}");
             }
 
@@ -475,8 +769,14 @@ public class PedometerService : MonoBehaviour
         if (stepCount > previousStepCount)
         {
             int newSteps = stepCount - previousStepCount;
-            DeviceIDManager.Instance.AddSteps(newSteps);
-            previousStepCount = stepCount;
+            ApplyLiveStepDelta(newSteps);
+        }
+
+        // Persist the session counter every few seconds so a restart resumes it.
+        if (Time.unscaledTime >= _nextSessionSave)
+        {
+            _nextSessionSave = Time.unscaledTime + 5f;
+            SaveSessionSteps();
         }
 
         #if UNITY_IOS && !UNITY_EDITOR
@@ -503,6 +803,40 @@ public class PedometerService : MonoBehaviour
         lastStepTime = Time.time;
     }
 
+    private void SaveSessionSteps()
+    {
+        PlayerPrefs.SetInt(KEY_SESSION_STEPS, Mathf.Max(0, stepCount));
+        #if !UNITY_IOS || UNITY_EDITOR
+        SaveSimulatedStepState();
+        #endif
+    }
+
+    void OnApplicationPause(bool paused) { if (paused) { SaveSessionSteps(); PlayerPrefs.Save(); } }
+    void OnApplicationQuit() { SaveSessionSteps(); PlayerPrefs.Save(); }
+
+    private void ApplyLiveStepDelta(int steps)
+    {
+        if (steps <= 0) return;
+
+        if (DeviceIDManager.Instance != null)
+            DeviceIDManager.Instance.AddSteps(steps);
+
+        appliedLiveSteps += steps;
+        previousStepCount += steps;
+
+        stepsLastHour = Mathf.Max(0, stepsLastHour) + steps;
+        stepsLast24Hours = Mathf.Max(0, stepsLast24Hours) + steps;
+        stepsLast48Hours = Mathf.Max(0, stepsLast48Hours) + steps;
+        stepsLast7Days = Mathf.Max(0, stepsLast7Days) + steps;
+
+        RefreshLiveKilosyncState();
+        UpdateSimulatedIntervalCache();
+        #if !UNITY_IOS || UNITY_EDITOR
+        RefreshWalkingBucketsIfDue(true);
+        SaveSimulatedStepState();
+        #endif
+    }
+
     public void RegisterVirtualMovementMeters(float meters)
     {
         if (meters <= 0f) return;
@@ -514,16 +848,25 @@ public class PedometerService : MonoBehaviour
 
         virtualStepRemainderMeters -= steps * stride;
         stepCount += steps;
-        distanceMeters += steps * stride;
-        stepsLastHour = Mathf.Max(0, stepsLastHour) + steps;
-        stepsLast24Hours = Mathf.Max(0, stepsLast24Hours) + steps;
-        stepsLast48Hours = Mathf.Max(0, stepsLast48Hours) + steps;
-        stepsLast7Days = Mathf.Max(0, stepsLast7Days) + steps;
-        stepsLast6Hours = Mathf.Max(0, stepsLast6Hours) + steps;
-        kilosyncSteps = Mathf.Max(0, kilosyncSteps) + steps;
-        kilosyncReady = true;
-        isKilosyncInert = stepsLast6Hours < 200;
-        UpdateSimulatedIntervalCache();
+        float appliedMeters = steps * stride;
+        distanceMeters += appliedMeters;
+        RecordVirtualStepEvent(steps, appliedMeters);
+        ApplyLiveStepDelta(steps);
+    }
+
+    private void RecordVirtualStepEvent(int steps, float meters)
+    {
+        if (steps <= 0) return;
+        virtualStepEvents.Add(new VirtualStepEvent
+        {
+            time = Time.unscaledTime,
+            steps = steps,
+            meters = Mathf.Max(0f, meters)
+        });
+
+        float cutoff = Time.unscaledTime - (30f * WalkingSessionMaxBuckets * 60f);
+        while (virtualStepEvents.Count > 0 && virtualStepEvents[0].time < cutoff)
+            virtualStepEvents.RemoveAt(0);
     }
 
     void OnDisable()
@@ -573,10 +916,103 @@ public class PedometerService : MonoBehaviour
         stepsLast7Days = 0;
         stepsLast6Hours = 0;
         kilosyncSteps = 0;
+        appliedLiveSteps = 0;
+        kilosyncHistoricalBaseSteps = 0;
+        kilosyncSixHourBaseSteps = 0;
         isKilosyncInert = true;
         kilosyncReady = true;
         virtualStepRemainderMeters = 0f;
+        virtualStepEvents.Clear();
+        walkWindowSteps = 0;
+        walkRecentSteps = 0;
+        walkActiveBuckets = 0;
+        walkCurrentBucketSteps = 0;
+        walkCurrentBucketMeters = 0d;
+        walkCurrentBucketInactive = true;
+        walkBucketReady = false;
+        walkBucketInFlight = false;
+        walkBucketStatus = "reset";
         ResetSimulatedIntervalCache();
+        #if !UNITY_IOS || UNITY_EDITOR
+        SaveSimulatedStepState();
+        PlayerPrefs.Save();
+        #endif
+    }
+
+    private bool LoadSimulatedStepState()
+    {
+        if (PlayerPrefs.GetInt(KEY_SIM_HAS_STATE, 0) != 1)
+            return false;
+
+        stepCount = Mathf.Max(0, PlayerPrefs.GetInt(KEY_SESSION_STEPS, 0));
+        previousStepCount = stepCount;
+        stepsLastHour = Mathf.Max(0, PlayerPrefs.GetInt(KEY_SIM_STEPS_LAST_HOUR, 0));
+        stepsLast24Hours = Mathf.Max(0, PlayerPrefs.GetInt(KEY_SIM_STEPS_LAST_24H, 0));
+        stepsLast48Hours = Mathf.Max(0, PlayerPrefs.GetInt(KEY_SIM_STEPS_LAST_48H, 0));
+        stepsLast7Days = Mathf.Max(0, PlayerPrefs.GetInt(KEY_SIM_STEPS_LAST_7D, 0));
+        stepsLast6Hours = Mathf.Max(0, PlayerPrefs.GetInt(KEY_SIM_STEPS_LAST_6H, 0));
+        kilosyncSteps = Mathf.Max(0, PlayerPrefs.GetInt(KEY_SIM_KILOSYNC_STEPS, stepCount));
+        appliedLiveSteps = Mathf.Max(0, PlayerPrefs.GetInt(KEY_SIM_APPLIED_LIVE_STEPS, 0));
+        distanceMeters = System.Math.Max(0d, PlayerPrefs.GetFloat(KEY_SIM_DISTANCE_METERS, 0f));
+        virtualStepRemainderMeters = Mathf.Max(0f, PlayerPrefs.GetFloat(KEY_SIM_VIRTUAL_REMAINDER_METERS, 0f));
+
+        if (stepCount > 0 && stepsLastHour == 0 && stepsLast24Hours == 0 && stepsLast7Days == 0 && kilosyncSteps == 0)
+            InitializeSimulatedStepTotalsFromSession();
+
+        kilosyncHistoricalBaseSteps = Mathf.Max(0, kilosyncSteps - stepCount);
+        kilosyncSixHourBaseSteps = Mathf.Max(0, stepsLast6Hours - stepCount);
+        isKilosyncInert = stepsLast6Hours < 200;
+        kilosyncReady = true;
+        UpdateSimulatedIntervalCache();
+        return true;
+    }
+
+    private void SaveSimulatedStepState()
+    {
+        PlayerPrefs.SetInt(KEY_SIM_HAS_STATE, 1);
+        PlayerPrefs.SetInt(KEY_SESSION_STEPS, Mathf.Max(0, stepCount));
+        PlayerPrefs.SetInt(KEY_SIM_STEPS_LAST_HOUR, Mathf.Max(0, stepsLastHour));
+        PlayerPrefs.SetInt(KEY_SIM_STEPS_LAST_24H, Mathf.Max(0, stepsLast24Hours));
+        PlayerPrefs.SetInt(KEY_SIM_STEPS_LAST_48H, Mathf.Max(0, stepsLast48Hours));
+        PlayerPrefs.SetInt(KEY_SIM_STEPS_LAST_7D, Mathf.Max(0, stepsLast7Days));
+        PlayerPrefs.SetInt(KEY_SIM_STEPS_LAST_6H, Mathf.Max(0, stepsLast6Hours));
+        PlayerPrefs.SetInt(KEY_SIM_KILOSYNC_STEPS, Mathf.Max(0, kilosyncSteps));
+        PlayerPrefs.SetInt(KEY_SIM_APPLIED_LIVE_STEPS, Mathf.Max(0, appliedLiveSteps));
+        PlayerPrefs.SetFloat(KEY_SIM_DISTANCE_METERS, (float)System.Math.Max(0d, distanceMeters));
+        PlayerPrefs.SetFloat(KEY_SIM_VIRTUAL_REMAINDER_METERS, Mathf.Max(0f, virtualStepRemainderMeters));
+    }
+
+    private void ResetSimulatedStepTotals()
+    {
+        stepsLast24Hours = 0;
+        stepsLast48Hours = 0;
+        stepsLastHour = 0;
+        stepsLast7Days = 0;
+        stepsLast6Hours = 0;
+        kilosyncSteps = 0;
+        appliedLiveSteps = 0;
+        kilosyncHistoricalBaseSteps = 0;
+        kilosyncSixHourBaseSteps = 0;
+        isKilosyncInert = true;
+        kilosyncReady = true;
+        ResetSimulatedIntervalCache();
+    }
+
+    private void InitializeSimulatedStepTotalsFromSession()
+    {
+        int restoredSteps = Mathf.Max(0, stepCount);
+        stepsLastHour = restoredSteps;
+        stepsLast24Hours = restoredSteps;
+        stepsLast48Hours = restoredSteps;
+        stepsLast7Days = restoredSteps;
+        stepsLast6Hours = restoredSteps;
+        kilosyncSteps = restoredSteps;
+        appliedLiveSteps = 0;
+        kilosyncHistoricalBaseSteps = 0;
+        kilosyncSixHourBaseSteps = 0;
+        isKilosyncInert = stepsLast6Hours < 200;
+        kilosyncReady = true;
+        UpdateSimulatedIntervalCache();
     }
 
     /// <summary>

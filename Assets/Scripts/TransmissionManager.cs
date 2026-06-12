@@ -67,8 +67,15 @@ public class TransmissionManager : MonoBehaviour
     // duplicate story for the same place.
     private readonly HashSet<string> primingLocationKeys = new HashSet<string>();
 
-    // ── Items (Artifacts) — RTDB users/<userId>/items ─────
+    public class InventoryMaterial
+    {
+        public string material;
+        public int grams;
+    }
+
+    // ── Rare Earth Elements — RTDB users/<userId>/items ─────
     private readonly List<string> cachedItems = new List<string>();
+    private readonly List<InventoryMaterial> cachedInventory = new List<InventoryMaterial>();
     private DatabaseReference itemsRef;
     private EventHandler<ValueChangedEventArgs> itemsHandler;
     private string itemsUserId;
@@ -244,15 +251,21 @@ public class TransmissionManager : MonoBehaviour
                 if (args.Snapshot == null) return;
 
                 cachedItems.Clear();
+                cachedInventory.Clear();
                 foreach (var child in args.Snapshot.Children)
                 {
                     if (child == null) continue;
-                    string a = child.Child("artifact")?.Value?.ToString();
-                    if (!string.IsNullOrWhiteSpace(a)) cachedItems.Add(a.Trim());
+                    string material = FirstChildString(child, "material", "artifactMaterial", "rareEarthMineral", "artifact");
+                    if (string.IsNullOrWhiteSpace(material)) continue;
+
+                    int grams = FirstChildInt(child, 0, "grams", "quantityGrams", "quantity");
+                    material = material.Trim();
+                    cachedItems.Add(material);
+                    cachedInventory.Add(new InventoryMaterial { material = material, grams = Mathf.Max(0, grams) });
                 }
 
                 cachedItems.Sort(StringComparer.OrdinalIgnoreCase);
-                Debug.Log($"[TransmissionManager] Items updated: {cachedItems.Count}");
+                Debug.Log($"[TransmissionManager] Rare earth elements updated: {cachedItems.Count}");
 
                 // If transmitter modal is open, refresh its inventory list.
                 var modal = TransmitterEnterModal.Instance;
@@ -305,6 +318,31 @@ public class TransmissionManager : MonoBehaviour
         itemsRef = null;
         itemsHandler = null;
         itemsUserId = null;
+    }
+
+    private static string FirstChildString(DataSnapshot parent, params string[] keys)
+    {
+        if (parent == null || keys == null) return null;
+        for (int i = 0; i < keys.Length; i++)
+        {
+            var value = parent.Child(keys[i])?.Value;
+            if (value == null) continue;
+            string text = value.ToString();
+            if (!string.IsNullOrWhiteSpace(text)) return text;
+        }
+        return null;
+    }
+
+    private static int FirstChildInt(DataSnapshot parent, int fallback, params string[] keys)
+    {
+        if (parent == null || keys == null) return fallback;
+        for (int i = 0; i < keys.Length; i++)
+        {
+            var value = parent.Child(keys[i])?.Value;
+            if (value == null) continue;
+            if (int.TryParse(value.ToString(), out int parsed)) return parsed;
+        }
+        return fallback;
     }
 
     // ── Beams (Live pool) — RTDB users/<userId>/beams/<signalId> ─────
@@ -440,6 +478,11 @@ public class TransmissionManager : MonoBehaviour
         if (DeviceIDManager.Instance != null)
             return DeviceIDManager.Instance.GetCurrentUserId();
         return "k1l0_anonymous";
+    }
+
+    public string GetUserIdForClient()
+    {
+        return GetUserId();
     }
 
     /// <summary>
@@ -1246,7 +1289,7 @@ public class TransmissionManager : MonoBehaviour
     public string PendingTeaser => pendingTeaser;
     public bool IsGenerating => isPriming || pendingShotForStory.Count > 0;
 
-    // Best-effort local inventory: all artifacts (objectName) we've seen from primed stories.
+    // Best-effort local inventory: rare earth elements collected by the user.
     public List<string> GetKnownArtifacts()
     {
         BeginItemsListener();
@@ -1264,15 +1307,49 @@ public class TransmissionManager : MonoBehaviour
         return list;
     }
 
-    // Writes an accepted artifact into RTDB at: users/<userId>/items/<pushId>
+    public List<InventoryMaterial> GetRareEarthInventory()
+    {
+        BeginItemsListener();
+        var totals = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 0; i < cachedInventory.Count; i++)
+        {
+            var item = cachedInventory[i];
+            if (item == null || string.IsNullOrWhiteSpace(item.material)) continue;
+            string material = item.material.Trim();
+            if (!totals.ContainsKey(material)) totals[material] = 0;
+            totals[material] += Mathf.Max(0, item.grams);
+        }
+
+        if (totals.Count == 0)
+        {
+            foreach (string item in cachedItems)
+            {
+                if (string.IsNullOrWhiteSpace(item)) continue;
+                string material = item.Trim();
+                if (!totals.ContainsKey(material)) totals[material] = 0;
+            }
+        }
+
+        var list = totals.Select(kv => new InventoryMaterial { material = kv.Key, grams = kv.Value }).ToList();
+        list.Sort((a, b) => string.Compare(a.material, b.material, StringComparison.OrdinalIgnoreCase));
+        return list;
+    }
+
+    // Writes an accepted rare earth element into RTDB at: users/<userId>/items/<pushId>
     public void AcceptItem(string artifact, string storyId, int shotNumber)
+    {
+        AcceptItem(artifact, storyId, shotNumber, 0);
+    }
+
+    public void AcceptItem(string artifact, string storyId, int shotNumber, int grams)
     {
         if (string.IsNullOrWhiteSpace(artifact)) return;
         string itemName = artifact.Trim();
         string uid = GetUserId();
         if (string.IsNullOrWhiteSpace(uid)) return;
 
-        AddCachedItem(itemName);
+        AddCachedItem(itemName, grams);
 
         FirebaseBootstrap.WhenReady(() =>
         {
@@ -1283,17 +1360,19 @@ public class TransmissionManager : MonoBehaviour
             var payload = new Dictionary<string, object>
             {
                 { "artifact", itemName },
+                { "material", itemName },
+                { "grams", Mathf.Max(0, grams) },
                 { "storyId", storyId ?? "" },
                 { "shotNumber", shotNumber },
                 { "createdAt", ServerValue.Timestamp }
             };
 
             itemRef.SetValueAsync(payload);
-            Debug.Log($"[TransmissionManager] Accepted item '{itemName}' → {path}/{itemRef.Key}");
+            Debug.Log($"[TransmissionManager] Accepted rare earth element '{itemName}' {grams}g → {path}/{itemRef.Key}");
         });
     }
 
-    private void AddCachedItem(string itemName)
+    private void AddCachedItem(string itemName, int grams = 0)
     {
         if (string.IsNullOrWhiteSpace(itemName)) return;
         string clean = itemName.Trim();
@@ -1302,6 +1381,8 @@ public class TransmissionManager : MonoBehaviour
             cachedItems.Add(clean);
             cachedItems.Sort(StringComparer.OrdinalIgnoreCase);
         }
+
+        cachedInventory.Add(new InventoryMaterial { material = clean, grams = Mathf.Max(0, grams) });
 
         var modal = TransmitterEnterModal.Instance;
         if (modal != null) modal.RefreshInventory();
@@ -1379,7 +1460,7 @@ public class TransmissionManager : MonoBehaviour
         });
     }
 
-    // Artifact-beam collection: seed an item directly from local beam seed/name/noun.
+    // Rare-earth collection: seed an item directly from local beam seed/name/noun.
     public void AddItemFromArtifactBeam(int beamSeed, int beamIndex, string beamName, string beamNoun)
     {
         string artifact = $"{(beamName ?? "").Trim()} {(beamNoun ?? "").Trim()}".Trim();
@@ -1387,6 +1468,8 @@ public class TransmissionManager : MonoBehaviour
 
         string uid = GetUserId();
         if (string.IsNullOrWhiteSpace(uid)) return;
+
+        AddCachedItem(artifact, 0);
 
         FirebaseBootstrap.WhenReady(() =>
         {
@@ -1397,6 +1480,8 @@ public class TransmissionManager : MonoBehaviour
             var payload = new Dictionary<string, object>
             {
                 { "artifact", artifact },
+                { "material", artifact },
+                { "grams", 0 },
                 { "kind", "artifact_beam" },
                 { "beamSeed", beamSeed },
                 { "beamIndex", beamIndex },
@@ -1406,7 +1491,7 @@ public class TransmissionManager : MonoBehaviour
             };
 
             itemRef.SetValueAsync(payload);
-            Debug.Log($"[TransmissionManager] Collected artifact '{artifact}' → {path}/{itemRef.Key}");
+            Debug.Log($"[TransmissionManager] Collected rare earth element '{artifact}' → {path}/{itemRef.Key}");
         });
     }
 
@@ -1432,6 +1517,116 @@ public class TransmissionManager : MonoBehaviour
 
         Debug.Log($"[TransmissionManager] Transmitter SEND starting artifact='{artifact}'");
         StartCoroutine(TransmitAndGenerateForTransmitter(sig, artifact, userAction));
+    }
+
+    public void StartTransmitterInteraction(Signal sig, string artifact, string userAction, string imageUrl, string spirits)
+    {
+        if (string.IsNullOrWhiteSpace(artifact)) return;
+        if (string.IsNullOrWhiteSpace(userAction)) return;
+        StartCoroutine(TransmitV2Coroutine(sig, artifact.Trim(), userAction.Trim(), imageUrl, spirits));
+    }
+
+    IEnumerator TransmitV2Coroutine(Signal sig, string artifact, string userAction, string imageUrl, string spirits)
+    {
+        // Show the transmission frame in its loading state with no pinned storyId,
+        // so it's active and will accept the v2 result when polling delivers it.
+        var frame = TransmissionFrame.Instance;
+        if (frame != null)
+            frame.ShowLoading(sig != null ? sig.locationName : "TRANSMISSION",
+                              sig != null ? sig.locationCategory : "ambient", null);
+
+        var body = JsonUtility.ToJson(new K1L0TransmitV2Request
+        {
+            userId = GetUserId(),
+            beamId = sig != null ? (!string.IsNullOrWhiteSpace(sig.externalKey) ? sig.externalKey : sig.id) : "",
+            element = artifact,
+            image = string.IsNullOrWhiteSpace(imageUrl) ? "" : imageUrl,
+            message = userAction,
+            mood = string.IsNullOrWhiteSpace(spirits) ? "medium" : spirits
+        });
+
+        bool success = false;
+        string responseText = null;
+        if (APIManager.Instance != null)
+        {
+            yield return APIManager.Instance.Post("/api/k1l0/v2/transmit", body, (ok, resp) =>
+            {
+                success = ok;
+                responseText = resp;
+            });
+        }
+
+        if (!success)
+        {
+            Debug.LogWarning($"[TransmissionManager] Transmit v2 failed: {responseText}");
+            yield break;
+        }
+
+        var resp = JsonUtility.FromJson<K1L0TransmitV2Response>(responseText);
+        string jobId = resp != null ? resp.jobId : null;
+        Debug.Log($"[TransmissionManager] Transmit v2 queued jobId={jobId ?? ""} material='{artifact}' spirits='{spirits}' image={(string.IsNullOrWhiteSpace(imageUrl) ? "none" : "yes")}");
+
+        if (string.IsNullOrWhiteSpace(jobId)) yield break;
+        // Poll the job until it's ready (or errors / times out), then deliver the
+        // finished video to the TransmissionFrame via the standard ready event.
+        yield return PollTransmitV2Result(jobId, sig);
+    }
+
+    // Poll GET /api/k1l0/v2/transmit/<jobId> until status=ready|error.
+    IEnumerator PollTransmitV2Result(string jobId, Signal sig)
+    {
+        string userId = GetUserId();
+        string endpoint = $"/api/k1l0/v2/transmit/{UnityWebRequest.EscapeURL(jobId)}?userId={UnityWebRequest.EscapeURL(userId)}";
+        const float pollEvery = 4f;
+        const float timeout = 600f; // 10 min cap
+        float start = Time.unscaledTime;
+
+        while (Time.unscaledTime - start < timeout)
+        {
+            yield return new WaitForSecondsRealtime(pollEvery);
+
+            bool ok = false;
+            string body = null;
+            if (APIManager.Instance != null)
+                yield return APIManager.Instance.Get(endpoint, (s, r) => { ok = s; body = r; });
+            if (!ok || string.IsNullOrWhiteSpace(body)) continue;
+
+            K1L0TransmitV2Status st;
+            try { st = JsonUtility.FromJson<K1L0TransmitV2Status>(body); }
+            catch { continue; }
+            if (st == null) continue;
+
+            if (st.status == "error")
+            {
+                Debug.LogWarning($"[TransmissionManager] Transmit v2 job {jobId} errored: {st.error}");
+                yield break;
+            }
+            if (st.status == "ready" && !string.IsNullOrWhiteSpace(st.finalUrl))
+            {
+                Debug.Log($"[TransmissionManager] Transmit v2 job {jobId} READY → {st.finalUrl}");
+                var td = new TransmissionData
+                {
+                    storyId = jobId,
+                    shotId = jobId,
+                    shotNumber = 1,
+                    transmissionType = "transmitter",
+                    locationName = sig != null ? sig.locationName : "",
+                    locationCategory = sig != null ? sig.locationCategory : "",
+                    latitude = sig != null ? sig.latitude : 0,
+                    longitude = sig != null ? sig.longitude : 0,
+                    imageUrl = !string.IsNullOrWhiteSpace(st.nbUrl) ? st.nbUrl : "",
+                    videoUrl = st.finalUrl,
+                    audioUrl = "",          // audio is muxed into the final video
+                    hasImage = !string.IsNullOrWhiteSpace(st.nbUrl),
+                    hasVideo = true,
+                    hasAudio = false,
+                };
+                OnTransmissionReady?.Invoke(td);
+                yield break;
+            }
+            // otherwise still gathering/planning/composing — keep polling
+        }
+        Debug.LogWarning($"[TransmissionManager] Transmit v2 job {jobId} timed out after {timeout}s");
     }
 
     public void StartLocationExchange(Signal sig, string artifact, string userAction, string leftItem)
@@ -1642,6 +1837,38 @@ class PrimeTransmitterRequest
     public string transmissionType; // "transmitter"
     public string artifact;
     public string userAction;
+}
+
+[Serializable]
+class K1L0TransmitV2Request
+{
+    public string userId;
+    public string beamId;
+    public string element;
+    public string image;
+    public string message;
+    public string mood;
+}
+
+[Serializable]
+class K1L0TransmitV2Response
+{
+    public bool ok;
+    public string jobId;
+    public string status;
+    public string error;
+}
+
+[Serializable]
+class K1L0TransmitV2Status
+{
+    public bool ok;
+    public string jobId;
+    public string status;     // gathering|planning|planned|image_ready|composing|ready|error
+    public string branch;     // selfie|scene|scene_noimage
+    public string nbUrl;      // the NanoBanana still (shown while video prepares)
+    public string finalUrl;   // the finished 30s transmission video
+    public string error;
 }
 
 [Serializable]

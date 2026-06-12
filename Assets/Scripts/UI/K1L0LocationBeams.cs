@@ -14,7 +14,7 @@ public class K1L0LocationBeams : MonoBehaviour
     private const float BeamWidth = 0.15f;
     private const int ParticleCount = 150;
     private const float ParticleSpeed = 8f;
-    private const float LabelHeight = 4f;
+    private const float LabelHeight = BeamHeight + 10f;
     private const float LabelFadeDistance = 1200f;
     private const float LabelMaxDistance = 2414f; // ~1.5 miles
 
@@ -41,6 +41,7 @@ public class K1L0LocationBeams : MonoBehaviour
         public GameObject root;
         public ParticleSystem particles;
         public TextMeshPro label;
+        public Renderer labelBackground;
         public string currentName;
         public string currentCategory;
     }
@@ -188,10 +189,9 @@ public class K1L0LocationBeams : MonoBehaviour
                     entry.currentName = data.Name;
                     entry.currentCategory = catGroup;
 
-                    string dist = data.Distance < 200f
-                        ? $"{Mathf.RoundToInt(data.Distance)}m"
-                        : $"{data.Distance / 1609.34f:F1}mi";
-                    entry.label.text = $"{data.Name.ToUpperInvariant()}\n<size=70%>{dist}</size>";
+                    // Label no longer shows "<name> / <distance>" — every location
+                    // beam reads as an "ANOMALY DETECTED" marker instead.
+                    entry.label.text = "ANOMALY DETECTED";
 
                     // Set beam particle color by category
                     Color catColor = CategoryColor(catGroup);
@@ -226,12 +226,17 @@ public class K1L0LocationBeams : MonoBehaviour
                     bool inFrustum = frustumPlanes != null &&
                         GeometryUtility.TestPlanesAABB(frustumPlanes, new Bounds(pos + Vector3.up * LabelHeight, Vector3.one * 5f));
 
-                    if (inFrustum && distToCamera < LabelMaxDistance)
+                    if (K1L0HUD.IsSurveillanceCameraOn && inFrustum && distToCamera < LabelMaxDistance)
                     {
                         float alpha = distToCamera < LabelFadeDistance ? 0.9f :
                             Mathf.Lerp(0.9f, 0f, (distToCamera - LabelFadeDistance) / (LabelMaxDistance - LabelFadeDistance));
                         Color c = entry.label.color;
                         entry.label.color = new Color(c.r, c.g, c.b, alpha);
+                        if (entry.labelBackground != null)
+                        {
+                            Color bg = entry.labelBackground.material.color;
+                            entry.labelBackground.material.color = new Color(bg.r, bg.g, bg.b, alpha * 0.82f);
+                        }
                         entry.label.gameObject.SetActive(true);
                     }
                     else
@@ -318,15 +323,28 @@ public class K1L0LocationBeams : MonoBehaviour
         labelGO.transform.SetParent(root.transform, false);
         labelGO.transform.localPosition = new Vector3(0f, LabelHeight, 0f);
 
+        GameObject bgGO = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        bgGO.name = "Background";
+        bgGO.transform.SetParent(labelGO.transform, false);
+        bgGO.transform.localPosition = new Vector3(0f, 0f, 0.08f);
+        bgGO.transform.localScale = new Vector3(30f, 7f, 1f);
+        var bgCollider = bgGO.GetComponent<Collider>();
+        if (bgCollider != null) Destroy(bgCollider);
+        Renderer bgRenderer = bgGO.GetComponent<Renderer>();
+        Shader bgShader = Shader.Find("Sprites/Default");
+        bgRenderer.material = new Material(bgShader != null ? bgShader : Shader.Find("Unlit/Color"));
+        bgRenderer.material.color = new Color(0f, 0f, 0f, 0.74f);
+        bgRenderer.sortingOrder = 99;
+
         TextMeshPro tmp = labelGO.AddComponent<TextMeshPro>();
         tmp.font = font;
-        tmp.fontSize = 3f;
+        tmp.fontSize = 6f;   // 2× (was 3) — "ANOMALY DETECTED" reads larger
         tmp.color = LabelColor;
-        tmp.alignment = TextAlignmentOptions.Bottom;
+        tmp.alignment = TextAlignmentOptions.Center;
         tmp.enableWordWrapping = false;
         tmp.overflowMode = TextOverflowModes.Overflow;
         tmp.sortingOrder = 100;
-        tmp.rectTransform.sizeDelta = new Vector2(20f, 5f);
+        tmp.rectTransform.sizeDelta = new Vector2(56f, 12f);  // widen box for the larger text
 
         labelGO.AddComponent<K1L0BillboardLabel>();
 
@@ -335,6 +353,7 @@ public class K1L0LocationBeams : MonoBehaviour
             root = root,
             particles = ps,
             label = tmp,
+            labelBackground = bgRenderer,
             currentName = null
         };
     }

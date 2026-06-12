@@ -1,54 +1,35 @@
-[2026-04-18 12:39:21] Boot log started (editor=True)
+[2026-06-06 14:13:28] Boot log started (editor=True)
 Log file: /Users/kiloverse/unitykiloverse/BootLog.txt
 If the editor locks up, the LAST line above is where it froze.
 ---
 0.000s f0 AfterSceneLoad
-0.007s f0 BootSequence Init
-0.054s f1 TeleportManager.Start
-0.056s f1 TeleportManager editor init done
-0.141s f1 GPS Start allowed
-0.141s f1 GPS.Start begin
-0.147s f1 GPS editor ready
-0.147s f1 OvertureMapManager.Start
-0.183s f1 OvertureMapManager sync init done
-0.208s f1 RenderManager.Start
-0.213s f1 RenderManager.Start complete
-0.921s f1 PedometerService.Start
-0.943s f1 GPSLocationController first Update after AllowPlayer
-0.967s f1 BootDiagnostics first Update after AllowPlayer
-0.967s f1 BootWatchdog first Update after AllowPlayer
-0.968s f1 PlayerBootGate first Update after AllowPlayer
-3.594s f1 Overture.Update first
-3.595s f1 OvertureMapManager first Update after AllowPlayer
-3.595s f1 BootSequence start
-3.595s f1 BootTask completed wait for AllowRender
-3.595s f1 BootTask completed wait for AllowGPS
-3.595s f1 BootTask completed wait for AllowTeleport
-3.595s f1 BootTask completed wait for AllowMap
-3.595s f1 BootSequence editor bypass - skip tiles wait
-3.595s f1 BootState AllowPlayer
-3.595s f1 BootTask completed wait for AllowPlayer
-3.595s f1 BootSequence complete (editor)
-3.829s f2 UserPresenceManager.Start
-3.830s f2 UserPresenceManager.DeferredStart
-4.087s f3 UserPresenceManager.userId
-4.233s f4 UserPresenceManager.pedometer
-4.244s f5 UserPresenceManager.gps
-4.263s f6 UserPresenceManager.coroutines queued
-4.263s f6 UserPresenceManager.FetchStories skipped
-4.291s f8 UserPresenceManager.Presence tick
-4.292s f8 UserPresenceManager.coroutines started
-9.418s f221 UserPresenceManager.Heartbeat start
-9.424s f221 Presence.SendHeartbeat begin
-11.647s f307 PostBoot grace period ended - map/building load can start
-14.442s f409 UserPresenceManager.Presence tick
-24.536s f975 UserPresenceManager.Presence tick
-34.540s f1839 UserPresenceManager.Presence tick
-44.546s f2657 UserPresenceManager.Presence tick
-108.141s f3393 UserPresenceManager.Presence tick
-118.143s f4197 UserPresenceManager.Presence tick
-123.444s f4625 UserPresenceManager.Heartbeat tick
-123.445s f4625 Presence.SendHeartbeat begin
-128.154s f5020 UserPresenceManager.Presence tick
-138.159s f5832 UserPresenceManager.Presence tick
-211.246s f6599 UserPresenceManager.Presence tick
+0.001s f0 BootSequence Init
+0.546s f1 UserPresenceManager.Start
+0.546s f1 UserPresenceManager.DeferredStart
+5.438s f1 BootSequence start
+5.439s f1 BootTask completed wait for AllowRender
+5.439s f1 BootTask completed wait for AllowGPS
+5.439s f1 BootTask completed wait for AllowTeleport
+5.439s f1 BootTask completed wait for AllowMap
+5.439s f1 BootSequence editor bypass - skip tiles wait
+5.439s f1 BootState AllowPlayer
+5.439s f1 BootTask completed wait for AllowPlayer
+5.439s f1 BootSequence complete (editor)
+5.683s f2 BootDiagnostics first Update after AllowPlayer
+5.683s f2 BootWatchdog first Update after AllowPlayer
+5.687s f2 PlayerBootGate first Update after AllowPlayer
+5.689s f2 UserPresenceManager.userId
+6.071s f3 UserPresenceManager.pedometer
+6.096s f4 UserPresenceManager.gps
+6.245s f5 UserPresenceManager.coroutines queued
+6.245s f5 UserPresenceManager.FetchStories skipped
+6.256s f7 UserPresenceManager.Presence tick
+6.256s f7 UserPresenceManager.coroutines started
+11.253s f244 UserPresenceManager.Heartbeat start
+11.261s f244 Presence.SendHeartbeat begin
+13.441s f569 PostBoot grace period ended - map/building load can start
+16.256s f1299 UserPresenceManager.Presence tick
+26.256s f4155 UserPresenceManager.Presence tick
+36.259s f7160 UserPresenceManager.Presence tick
+46.260s f10078 UserPresenceManager.Presence tick
+61.279s f12368 UserPresenceManager.Presence tick
