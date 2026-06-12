@@ -455,17 +455,25 @@ namespace KiloWorld.Rendering.Systems
                     VolumetricFogManager.instance.sun = directionalLight;
                 }
 
-                if (directionalLight.color != profile.lighting.moonlightColor)
-                    directionalLight.color = profile.lighting.moonlightColor;
-                
-                if (directionalLight.intensity != profile.lighting.moonlightIntensity)
-                    directionalLight.intensity = profile.lighting.moonlightIntensity;
+                if (profile.sky != null && profile.sky.dynamicSky)
+                {
+                    // Drive the sun/moon from the real solar position + weather.
+                    DriveSunLight(directionalLight);
+                }
+                else
+                {
+                    if (directionalLight.color != profile.lighting.moonlightColor)
+                        directionalLight.color = profile.lighting.moonlightColor;
 
-                // Always apply full rotation from profile
-                // We use localRotation or rotation? Usually global rotation for sun.
-                Quaternion targetRot = Quaternion.Euler(profile.lighting.moonlightRotation);
-                if (directionalLight.transform.rotation != targetRot)
-                    directionalLight.transform.rotation = targetRot;
+                    if (directionalLight.intensity != profile.lighting.moonlightIntensity)
+                        directionalLight.intensity = profile.lighting.moonlightIntensity;
+
+                    // Always apply full rotation from profile
+                    // We use localRotation or rotation? Usually global rotation for sun.
+                    Quaternion targetRot = Quaternion.Euler(profile.lighting.moonlightRotation);
+                    if (directionalLight.transform.rotation != targetRot)
+                        directionalLight.transform.rotation = targetRot;
+                }
 
                 var shadowType = profile.lighting.enableShadows ? LightShadows.Soft : LightShadows.None;
                 if (directionalLight.shadows != shadowType)
@@ -542,6 +550,12 @@ namespace KiloWorld.Rendering.Systems
         // aurora; off → dim red "offline" sky. WeatherTempF biases the hue warm/cool.
         public static bool SurveillanceActive = true;
         public static float WeatherTempF = float.NaN;
+        public static string WeatherGlyph = null;   // condition word/emoji from the presence feed
+
+        // Dynamic sky state.
+        private Material _proceduralSky;
+        private float _lastGiSunAlt = -999f;
+        private float _lastGiTime = -999f;
 
         private void ApplySky()
         {
@@ -554,6 +568,13 @@ namespace KiloWorld.Rendering.Systems
             
             if (mainCam.clearFlags != CameraClearFlags.Skybox)
                 mainCam.clearFlags = CameraClearFlags.Skybox;
+
+            if (profile.sky != null && profile.sky.dynamicSky)
+            {
+                ApplyProceduralSky();
+                ApplyAurora(mainCam);
+                return;
+            }
 
             if (profile.sky.hdriSkybox != null)
             {
@@ -630,6 +651,13 @@ namespace KiloWorld.Rendering.Systems
             // Hue reflects live state: surveillance on → green/teal (warm-biased by weather),
             // off → dim red. Intensity drives brightness; a slow pulse keeps it alive.
             float intensity = Mathf.Clamp(sky.auroraIntensity, 0f, 2f);
+            // Aurora belongs to the night — fade it as the sun climbs above the horizon.
+            if (sky.dynamicSky)
+            {
+                float night = Mathf.Clamp01((2f - _sunAlt) / 8f);
+                intensity *= night;
+                if (intensity <= 0.001f) { _auroraRoot.SetActive(false); return; }
+            }
             float warm = float.IsNaN(WeatherTempF) ? 0.5f : Mathf.Clamp01((WeatherTempF - 35f) / 55f);
             Color onHue = Color.Lerp(new Color(0.30f, 0.95f, 0.88f), new Color(0.58f, 1f, 0.55f), warm);
             Color hue = SurveillanceActive ? onHue : new Color(1f, 0.34f, 0.30f);
@@ -766,6 +794,163 @@ namespace KiloWorld.Rendering.Systems
             mat.EnableKeyword("_ALPHAPREMULTIPLY_ON");
             mat.EnableKeyword("_EMISSION");
             mat.renderQueue = 3000;
+        }
+
+        // ---------------------------------------------------------------------
+        // Dynamic sky: real sun position (time + GPS) + weather, weather-app style.
+        // ---------------------------------------------------------------------
+
+        private const float Deg2RadD = 0.01745329251994f;
+        private const float Rad2DegD = 57.2957795130823f;
+
+        // Maps the current weather glyph to sky character: cloudiness 0..1, wetness 0..1.
+        private static void WeatherFactors(out float cloud, out float wet, out bool snow)
+        {
+            cloud = 0f; wet = 0f; snow = false;
+            string g = WeatherGlyph;
+            if (string.IsNullOrEmpty(g)) return;
+            g = g.ToLowerInvariant();
+            if (g.Contains("storm") || g.Contains("thunder")) { cloud = 1f; wet = 1f; }
+            else if (g.Contains("rain") || g.Contains("drizzle") || g.Contains("🌧")) { cloud = 0.9f; wet = 0.85f; }
+            else if (g.Contains("snow") || g.Contains("❄")) { cloud = 0.85f; wet = 0.5f; snow = true; }
+            else if (g.Contains("fog") || g.Contains("mist") || g.Contains("🌫")) { cloud = 0.8f; wet = 0.3f; }
+            else if (g.Contains("overcast")) { cloud = 0.95f; }
+            else if (g.Contains("partly")) { cloud = 0.45f; }
+            else if (g.Contains("cloud") || g.Contains("☁") || g.Contains("⛅")) { cloud = 0.7f; }
+            // sun/clear → 0
+        }
+
+        private bool GetLatLon(out double lat, out double lon)
+        {
+            if (Input.location.status == LocationServiceStatus.Running)
+            {
+                lat = Input.location.lastData.latitude;
+                lon = Input.location.lastData.longitude;
+                if (lat != 0.0 || lon != 0.0) return true;
+            }
+            if (profile != null && profile.startupLocation != null)
+            {
+                profile.startupLocation.GetStartupCoordinates(out lat, out lon);
+                return true;
+            }
+            lat = 40.7; lon = -74.0;
+            return true;
+        }
+
+        // Sun altitude/azimuth (degrees) for a lat/lon at a UTC instant. Compact NOAA-style
+        // approximation — accurate to a small fraction of a degree, ample for sky colour.
+        private static void SunAltAz(double latDeg, double lonDeg, System.DateTime utc, out double altDeg, out double azDeg)
+        {
+            double dayFraction = (utc.Hour + utc.Minute / 60.0 + utc.Second / 3600.0) / 24.0;
+            double Y = utc.Year, M = utc.Month, D = utc.Day + dayFraction;
+            if (M <= 2) { Y -= 1; M += 12; }
+            double A = System.Math.Floor(Y / 100.0);
+            double B = 2 - A + System.Math.Floor(A / 4.0);
+            double JD = System.Math.Floor(365.25 * (Y + 4716)) + System.Math.Floor(30.6001 * (M + 1)) + D + B - 1524.5;
+            double n = JD - 2451545.0;
+
+            double L = (280.460 + 0.9856474 * n) % 360.0; if (L < 0) L += 360;
+            double g = (357.528 + 0.9856003 * n) % 360.0; if (g < 0) g += 360;
+            double gR = g * Deg2RadD;
+            double lambda = (L + 1.915 * System.Math.Sin(gR) + 0.020 * System.Math.Sin(2 * gR)) * Deg2RadD;
+            double eps = (23.439 - 0.0000004 * n) * Deg2RadD;
+            double delta = System.Math.Asin(System.Math.Sin(eps) * System.Math.Sin(lambda));
+            double alpha = System.Math.Atan2(System.Math.Cos(eps) * System.Math.Sin(lambda), System.Math.Cos(lambda));
+            double gmst = (280.46061837 + 360.98564736629 * n) % 360.0; if (gmst < 0) gmst += 360;
+            double H = ((gmst + lonDeg) - alpha * Rad2DegD) % 360.0;
+            double Hr = H * Deg2RadD;
+            double latR = latDeg * Deg2RadD;
+            double alt = System.Math.Asin(System.Math.Sin(latR) * System.Math.Sin(delta) +
+                                          System.Math.Cos(latR) * System.Math.Cos(delta) * System.Math.Cos(Hr));
+            double az = System.Math.Atan2(-System.Math.Sin(Hr),
+                                          System.Math.Tan(delta) * System.Math.Cos(latR) - System.Math.Sin(latR) * System.Math.Cos(Hr));
+            altDeg = alt * Rad2DegD;
+            azDeg = (az * Rad2DegD + 360.0) % 360.0;
+        }
+
+        private float _sunAlt = 30f;
+
+        private Vector3 CurrentSunDirection(out float altDeg)
+        {
+            GetLatLon(out double lat, out double lon);
+            SunAltAz(lat, lon, System.DateTime.UtcNow, out double alt, out double az);
+            altDeg = (float)alt;
+            float altR = (float)(alt * Deg2RadD), azR = (float)(az * Deg2RadD);
+            // az from north, clockwise. World +Z≈north, +X≈east, +Y up.
+            return new Vector3(Mathf.Sin(azR) * Mathf.Cos(altR), Mathf.Sin(altR), Mathf.Cos(azR) * Mathf.Cos(altR));
+        }
+
+        private void DriveSunLight(Light light)
+        {
+            Vector3 toSun = CurrentSunDirection(out float alt);
+            _sunAlt = alt;
+            // Keep the disc from sitting exactly on the horizon (avoids a hard flicker).
+            light.transform.rotation = Quaternion.LookRotation(-toSun.normalized, Vector3.up);
+
+            WeatherFactors(out float cloud, out float wet, out bool snow);
+
+            // Colour: warm at low sun, white high, cool moonlight below the horizon.
+            Color horizonWarm = new Color(1f, 0.62f, 0.36f);
+            Color midday = new Color(1f, 0.97f, 0.92f);
+            Color day = Color.Lerp(horizonWarm, midday, Mathf.Clamp01(alt / 22f));
+            Color moon = profile.lighting != null ? profile.lighting.moonlightColor : new Color(0.7f, 0.8f, 1f);
+            Color col = Color.Lerp(moon, day, Mathf.Clamp01((alt + 4f) / 9f));
+            // Overcast desaturates and greys the key light.
+            float grey = (col.r + col.g + col.b) / 3f;
+            col = Color.Lerp(col, new Color(grey, grey, grey), cloud * 0.6f);
+            light.color = col;
+
+            float dayInt = Mathf.Lerp(0.35f, 1.2f, Mathf.Clamp01((alt + 6f) / 30f));
+            light.intensity = dayInt * (1f - 0.5f * cloud);
+        }
+
+        private void ApplyProceduralSky()
+        {
+            // Built-in procedural skybox does real atmospheric scattering driven by the sun
+            // (RenderSettings.sun), so sunrise/sunset/day/night come for free. We modulate
+            // its tint/exposure/thickness by weather.
+            if (_proceduralSky == null || _proceduralSky.shader == null)
+            {
+                Shader s = Shader.Find("Skybox/Procedural");
+                if (s == null) return;
+                _proceduralSky = new Material(s) { name = "K1L0_DynamicSky" };
+            }
+            if (RenderSettings.skybox != _proceduralSky)
+                RenderSettings.skybox = _proceduralSky;
+
+            float alt = _sunAlt;
+            WeatherFactors(out float cloud, out float wet, out bool snow);
+
+            // Night darkens everything; twilight keeps a glow near the horizon.
+            float dayness = Mathf.Clamp01((alt + 6f) / 14f);   // 0 deep night .. 1 day
+            float baseExposure = profile.sky != null ? profile.sky.dynamicSkyExposure : 1.15f;
+
+            // Clear sky tint shifts from a warm twilight to daytime blue; weather greys it.
+            Color clearTint = Color.Lerp(new Color(0.55f, 0.45f, 0.6f), new Color(0.5f, 0.62f, 0.95f), dayness);
+            Color overcastTint = snow ? new Color(0.78f, 0.80f, 0.86f) : new Color(0.55f, 0.57f, 0.6f);
+            Color skyTint = Color.Lerp(clearTint, overcastTint, cloud);
+
+            float exposure = baseExposure * Mathf.Lerp(0.18f, 1f, dayness) * Mathf.Lerp(1f, 0.55f, cloud * (1f - 0.3f * (snow ? 1f : 0f)));
+            float atmThickness = Mathf.Lerp(1.0f, 0.4f, cloud) * Mathf.Lerp(1.3f, 1.0f, dayness); // thicker → redder near horizon
+            float sunSize = Mathf.Lerp(0.04f, 0.005f, cloud); // hide the disc under cloud
+
+            _proceduralSky.SetColor("_SkyTint", skyTint);
+            _proceduralSky.SetColor("_GroundColor", new Color(0.06f, 0.07f, 0.08f));
+            _proceduralSky.SetFloat("_AtmosphereThickness", atmThickness);
+            _proceduralSky.SetFloat("_Exposure", Mathf.Max(0.05f, exposure));
+            _proceduralSky.SetFloat("_SunSize", sunSize);
+
+            // Ambient follows the sky, but baking GI every frame is expensive — refresh only
+            // when the sun has moved a little or enough time passed.
+            if (RenderSettings.ambientMode != AmbientMode.Skybox)
+                RenderSettings.ambientMode = AmbientMode.Skybox;
+            RenderSettings.ambientIntensity = Mathf.Lerp(0.25f, 1f, dayness);
+            if (Mathf.Abs(alt - _lastGiSunAlt) > 0.75f || Time.time - _lastGiTime > 12f)
+            {
+                _lastGiSunAlt = alt;
+                _lastGiTime = Time.time;
+                DynamicGI.UpdateEnvironment();
+            }
         }
 
         private void ApplyPostFX()

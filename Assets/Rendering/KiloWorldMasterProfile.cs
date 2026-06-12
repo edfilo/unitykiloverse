@@ -193,6 +193,13 @@ namespace KiloWorld.Rendering
         [System.Serializable]
         public class SkySettings
         {
+            [Header("Dynamic Sky (live time + weather)")]
+            // When on, the sky + sun are driven by the real sun position (computed from
+            // device time + GPS) and the current weather, like a weather app. Overrides
+            // the HDRI skybox and the fixed moonlight rotation below.
+            public bool dynamicSky = true;
+            [Range(0.3f, 2.5f)] public float dynamicSkyExposure = 1.15f;
+
             [Header("HDRI Skybox")]
             public Cubemap hdriSkybox; // HDRI cubemap for realistic sky
             [Range(0, 8)] public float skyboxExposure = 1.0f; // Brightness multiplier
