@@ -4,12 +4,40 @@ using System.Linq;
 
 public class CommandLineBuild
 {
+    // Built-in skybox shaders are created at runtime via Shader.Find for the dynamic sky.
+    // Unity strips built-in shaders that aren't referenced by an asset, so Shader.Find
+    // returns null in player builds — force them into the build here.
+    static void EnsureAlwaysIncludedShaders(params string[] names)
+    {
+        var objs = AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/GraphicsSettings.asset");
+        if (objs == null || objs.Length == 0) { UnityEngine.Debug.LogWarning("[Build] GraphicsSettings.asset not found"); return; }
+        var so = new SerializedObject(objs[0]);
+        var arr = so.FindProperty("m_AlwaysIncludedShaders");
+        if (arr == null) { UnityEngine.Debug.LogWarning("[Build] m_AlwaysIncludedShaders not found"); return; }
+        foreach (var n in names)
+        {
+            var sh = UnityEngine.Shader.Find(n);
+            if (sh == null) { UnityEngine.Debug.LogWarning($"[Build] Shader not found: {n}"); continue; }
+            bool present = false;
+            for (int i = 0; i < arr.arraySize; i++)
+                if (arr.GetArrayElementAtIndex(i).objectReferenceValue == sh) { present = true; break; }
+            if (present) continue;
+            int idx = arr.arraySize;
+            arr.InsertArrayElementAtIndex(idx);
+            arr.GetArrayElementAtIndex(idx).objectReferenceValue = sh;
+            UnityEngine.Debug.Log($"[Build] ✓ Always-include shader: {n}");
+        }
+        so.ApplyModifiedProperties();
+        AssetDatabase.SaveAssets();
+    }
+
     public static void BuildiOS()
     {
         // K1L0 uses a local HTTP endpoint on LAN (and falls back to HTTPS tunnel/production).
         // iOS builds must allow insecure HTTP for UnityWebRequest, otherwise boot will throw:
         // "Non-secure network connections disabled in Player Settings" / "Insecure connection not allowed".
         PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
+        EnsureAlwaysIncludedShaders("Skybox/Procedural", "Skybox/Cubemap", "Universal Render Pipeline/Unlit", "Universal Render Pipeline/Particles/Unlit");
 
         var scenes = EditorBuildSettings.scenes
             .Where(s => s.enabled)
@@ -86,6 +114,7 @@ public class CommandLineBuild
 
     public static void BuildMac()
     {
+        EnsureAlwaysIncludedShaders("Skybox/Procedural", "Skybox/Cubemap", "Universal Render Pipeline/Unlit", "Universal Render Pipeline/Particles/Unlit");
         // Force asset pipeline + script compile refresh — batchmode with -quit sometimes
         // skips detecting edited .cs files and ships a stale assembly.
         AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);

@@ -190,6 +190,14 @@ public class K1L0ProfileMode : MonoBehaviour
             y = AddSlider(scrollContent, y, "DISTANCE", "auroraDistance", 80f, 900f, sky.auroraDistance, v => sky.auroraDistance = v);
             y = AddSlider(scrollContent, y, "WIDTH", "auroraWidth", 80f, 900f, sky.auroraWidth, v => sky.auroraWidth = v);
             y = AddSlider(scrollContent, y, "DRIFT", "auroraDriftSpeed", 0f, 2f, sky.auroraDriftSpeed, v => sky.auroraDriftSpeed = v);
+
+            // Manual time-of-day + weather, used when GPS mode is off.
+            y = AddHeader(scrollContent, y, "MANUAL SKY (GPS OFF)");
+            float manualHour = PlayerPrefs.GetFloat("k1lo_manualHour", 13f);
+            KiloWorld.Rendering.Systems.RenderManager.ManualHour = manualHour;
+            y = AddSlider(scrollContent, y, "TIME OF DAY", "manualHour", 0f, 24f, manualHour,
+                v => KiloWorld.Rendering.Systems.RenderManager.ManualHour = v);
+            y = AddWeatherRow(scrollContent, y);
         }
 
         // ── COLOR GRADING ──
@@ -384,6 +392,43 @@ public class K1L0ProfileMode : MonoBehaviour
             valTmp.color = on ? TerminalGreen : new Color(0.5f, 0.5f, 0.5f, 0.6f);
         });
         if (!current) valTmp.color = new Color(0.5f, 0.5f, 0.5f, 0.6f);
+
+        return y - RowH - RowGap;
+    }
+
+    private static readonly string[] WeatherGlyphs = { "clear", "partly cloudy", "cloudy", "overcast", "rain", "snow", "fog", "storm" };
+    private static readonly string[] WeatherNames = { "CLEAR", "PARTLY", "CLOUDY", "OVERCAST", "RAIN", "SNOW", "FOG", "STORM" };
+
+    // Weather picker: a whole-number slider that shows the condition name and feeds the
+    // dynamic sky's manual override (used when GPS is off).
+    private float AddWeatherRow(RectTransform content, float y)
+    {
+        int curIdx = Mathf.Clamp(Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_manualWeather", 0f)), 0, WeatherGlyphs.Length - 1);
+        KiloWorld.Rendering.Systems.RenderManager.ManualWeatherGlyph = WeatherGlyphs[curIdx];
+
+        var rowGO = new GameObject("S_manualWeather", typeof(RectTransform));
+        rowGO.transform.SetParent(content, false);
+        var rowRT = rowGO.GetComponent<RectTransform>();
+        rowRT.anchorMin = new Vector2(0, 1);
+        rowRT.anchorMax = new Vector2(1, 1);
+        rowRT.pivot = new Vector2(0.5f, 1);
+        rowRT.anchoredPosition = new Vector2(0, y);
+        rowRT.sizeDelta = new Vector2(0, RowH);
+        AddScrollHitArea(rowGO);
+
+        AddText(rowGO.transform, "Lab", new Vector2(0, 0), new Vector2(0.32f, 1), "WEATHER", 9.5f, TerminalDim, TextAlignmentOptions.Left);
+        var valTmp = AddText(rowGO.transform, "Val", new Vector2(0.84f, 0), new Vector2(1, 1), WeatherNames[curIdx], 9f, TerminalGreen, TextAlignmentOptions.Right);
+
+        var slider = CreateSliderVisual(rowGO.transform, new Vector2(0.33f, 0.15f), new Vector2(0.83f, 0.85f), 0, WeatherGlyphs.Length - 1, curIdx, true);
+        var s = slider;
+        slider.onValueChanged.AddListener(v => {
+            if (activeSlider != null && activeSlider != s) return;
+            int idx = Mathf.Clamp(Mathf.RoundToInt(v), 0, WeatherGlyphs.Length - 1);
+            KiloWorld.Rendering.Systems.RenderManager.ManualWeatherGlyph = WeatherGlyphs[idx];
+            PlayerPrefs.SetFloat("k1lo_manualWeather", idx);
+            PlayerPrefs.SetString("k1lo_manualWeatherGlyph", WeatherGlyphs[idx]);
+            valTmp.text = WeatherNames[idx];
+        });
 
         return y - RowH - RowGap;
     }

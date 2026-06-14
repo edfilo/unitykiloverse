@@ -93,6 +93,10 @@ namespace KiloWorld.Rendering.Systems
             LoadPref("auroraWidth", ref sky.auroraWidth);
             LoadPref("auroraVerticalSize", ref sky.auroraVerticalSize);
             LoadPref("auroraDriftSpeed", ref sky.auroraDriftSpeed);
+
+            LoadPref("manualHour", ref ManualHour);
+            if (PlayerPrefs.HasKey("k1lo_manualWeatherGlyph"))
+                ManualWeatherGlyph = PlayerPrefs.GetString("k1lo_manualWeatherGlyph");
         }
 
         private static void LoadPref(string key, ref float field)
@@ -542,8 +546,10 @@ namespace KiloWorld.Rendering.Systems
         private float _lastSkyboxExposure = -1f;
         private Color _lastSkyboxTint = Color.clear;
         private GameObject _auroraRoot;
+        private MeshFilter _auroraFilter;
         private Material _auroraMaterial;
         private Texture2D _auroraTexture;
+        private float _auroraSpan = -1f, _auroraElLow = -1f, _auroraElHigh = -1f;
 
         // Live state the aurora sky reflects. Set by the HUD surveillance toggle and the
         // presence/weather feed. SurveillanceActive: world (map) camera on → vivid green
@@ -552,8 +558,13 @@ namespace KiloWorld.Rendering.Systems
         public static float WeatherTempF = float.NaN;
         public static string WeatherGlyph = null;   // condition word/emoji from the presence feed
 
+        // Manual sky overrides, used only when GPS mode is off (no live time/location).
+        public static float ManualHour = 13f;            // 0..24 local hour
+        public static string ManualWeatherGlyph = "clear";
+
         // Dynamic sky state.
         private Material _proceduralSky;
+        private Material _nightCubeSky;
         private float _lastGiSunAlt = -999f;
         private float _lastGiTime = -999f;
 
@@ -573,6 +584,7 @@ namespace KiloWorld.Rendering.Systems
             {
                 ApplyProceduralSky();
                 ApplyAurora(mainCam);
+                ApplyPrecip(mainCam);
                 return;
             }
 
@@ -617,6 +629,7 @@ namespace KiloWorld.Rendering.Systems
             }
 
             ApplyAurora(mainCam);
+            ApplyPrecip(mainCam);
         }
 
         private void ApplyAurora(Camera mainCam)
@@ -632,6 +645,18 @@ namespace KiloWorld.Rendering.Systems
 
             var sky = profile.sky;
             _auroraRoot.SetActive(true);
+
+            // HEIGHT → how high the band sits, WIDTH → horizontal sweep, VERTICAL SIZE →
+            // band thickness. Rebuild the arc mesh only when one of these changes.
+            float span = Mathf.Lerp(50f, 220f, Mathf.InverseLerp(80f, 900f, sky.auroraWidth));
+            float elLow = Mathf.Lerp(2f, 45f, Mathf.InverseLerp(20f, 300f, sky.auroraHeight));
+            float elHigh = elLow + Mathf.Lerp(15f, 70f, Mathf.InverseLerp(20f, 320f, sky.auroraVerticalSize));
+            if (_auroraFilter != null &&
+                (Mathf.Abs(span - _auroraSpan) > 0.5f || Mathf.Abs(elLow - _auroraElLow) > 0.5f || Mathf.Abs(elHigh - _auroraElHigh) > 0.5f))
+            {
+                _auroraSpan = span; _auroraElLow = elLow; _auroraElHigh = elHigh;
+                _auroraFilter.sharedMesh = CreateAuroraMesh(span, elLow, elHigh);
+            }
 
             Vector3 planarForward = mainCam.transform.forward;
             planarForward.y = 0f;
@@ -685,8 +710,8 @@ namespace KiloWorld.Rendering.Systems
             _auroraRoot = new GameObject("K1L0_AuroraSky");
             _auroraRoot.hideFlags = HideFlags.DontSave;
 
-            var meshFilter = _auroraRoot.AddComponent<MeshFilter>();
-            meshFilter.sharedMesh = CreateAuroraMesh();
+            _auroraFilter = _auroraRoot.AddComponent<MeshFilter>();
+            _auroraFilter.sharedMesh = CreateAuroraMesh(130f, 9f, 54f);
 
             var meshRenderer = _auroraRoot.AddComponent<MeshRenderer>();
             Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
@@ -706,12 +731,9 @@ namespace KiloWorld.Rendering.Systems
         // A curved ribbon spanning a wide arc of the upper sky (unit radius — the runtime
         // scales it to fit inside the far clip). Reads as a sky feature you can pan across,
         // not a flat billboard parked in front of the camera.
-        private static Mesh CreateAuroraMesh()
+        private static Mesh CreateAuroraMesh(float spanDeg, float elLowDeg, float elHighDeg)
         {
             const int seg = 32;             // horizontal segments
-            const float spanDeg = 130f;     // total horizontal sweep
-            const float elLowDeg = 9f;      // bottom edge elevation
-            const float elHighDeg = 54f;    // top edge elevation
             float elLow = elLowDeg * Mathf.Deg2Rad;
             float elHigh = elHighDeg * Mathf.Deg2Rad;
 
@@ -807,7 +829,7 @@ namespace KiloWorld.Rendering.Systems
         private static void WeatherFactors(out float cloud, out float wet, out bool snow)
         {
             cloud = 0f; wet = 0f; snow = false;
-            string g = WeatherGlyph;
+            string g = GPSLocationController.GPSDisabled ? ManualWeatherGlyph : WeatherGlyph;
             if (string.IsNullOrEmpty(g)) return;
             g = g.ToLowerInvariant();
             if (g.Contains("storm") || g.Contains("thunder")) { cloud = 1f; wet = 1f; }
@@ -872,6 +894,18 @@ namespace KiloWorld.Rendering.Systems
 
         private Vector3 CurrentSunDirection(out float altDeg)
         {
+            // GPS off → no live location/time, so the sun follows the manual hour slider:
+            // a simple arc (0° at 6h/18h, +60° at noon, below the horizon at night).
+            if (GPSLocationController.GPSDisabled)
+            {
+                float hr = Mathf.Repeat(ManualHour, 24f);
+                float dayAngle = (hr - 6f) / 12f * Mathf.PI;
+                altDeg = 60f * Mathf.Sin(dayAngle);
+                float azM = Mathf.Lerp(70f, 290f, Mathf.Clamp01(hr / 24f));
+                float aR = altDeg * Deg2RadD, zR = azM * Deg2RadD;
+                return new Vector3(Mathf.Sin(zR) * Mathf.Cos(aR), Mathf.Sin(aR), Mathf.Cos(zR) * Mathf.Cos(aR));
+            }
+
             GetLatLon(out double lat, out double lon);
             SunAltAz(lat, lon, System.DateTime.UtcNow, out double alt, out double az);
             altDeg = (float)alt;
@@ -906,8 +940,48 @@ namespace KiloWorld.Rendering.Systems
 
         private void ApplyProceduralSky()
         {
+            float alt = _sunAlt;
+            WeatherFactors(out float cloud, out float wet, out bool snow);
+
+            // At night, use the authored star/moon cubemap (the profile's hdriSkybox) — the
+            // real night sky. Day/dawn/dusk use the sun-driven procedural scattering sky.
+            // Switch once the sun is below civil twilight, where the procedural sky is
+            // already near-dark, so the handoff is soft.
+            if (alt < -4f && profile.sky != null && profile.sky.hdriSkybox != null)
+            {
+                if (_nightCubeSky == null || _nightCubeSky.shader == null)
+                {
+                    Shader cs = Shader.Find("Skybox/Cubemap");
+                    if (cs != null) _nightCubeSky = new Material(cs) { name = "K1L0_NightSky" };
+                }
+                if (_nightCubeSky != null)
+                {
+                    if (_nightCubeSky.GetTexture("_Tex") != profile.sky.hdriSkybox)
+                        _nightCubeSky.SetTexture("_Tex", profile.sky.hdriSkybox);
+                    if (RenderSettings.skybox != _nightCubeSky)
+                        RenderSettings.skybox = _nightCubeSky;
+
+                    float deepNight = Mathf.Clamp01((-4f - alt) / 6f);       // 0 at -4°, 1 by -10°
+                    // Skybox/Cubemap tint of 0.5 grey is neutral; overcast greys/dims it.
+                    float t = Mathf.Lerp(0.5f, 0.34f, cloud);
+                    _nightCubeSky.SetColor("_Tint", new Color(t, t, t, 1f));
+                    _nightCubeSky.SetFloat("_Exposure", Mathf.Lerp(0.7f, 1.05f, deepNight) * (1f - 0.35f * cloud));
+                    _nightCubeSky.SetFloat("_Rotation", profile.sky.skyboxRotation);
+
+                    if (RenderSettings.ambientMode != AmbientMode.Skybox)
+                        RenderSettings.ambientMode = AmbientMode.Skybox;
+                    RenderSettings.ambientIntensity = 0.22f;
+                    if (Mathf.Abs(alt - _lastGiSunAlt) > 1.5f || Time.time - _lastGiTime > 20f)
+                    {
+                        _lastGiSunAlt = alt; _lastGiTime = Time.time;
+                        DynamicGI.UpdateEnvironment();
+                    }
+                    return;
+                }
+            }
+
             // Built-in procedural skybox does real atmospheric scattering driven by the sun
-            // (RenderSettings.sun), so sunrise/sunset/day/night come for free. We modulate
+            // (RenderSettings.sun), so sunrise/sunset/day come for free. We modulate
             // its tint/exposure/thickness by weather.
             if (_proceduralSky == null || _proceduralSky.shader == null)
             {
@@ -917,9 +991,6 @@ namespace KiloWorld.Rendering.Systems
             }
             if (RenderSettings.skybox != _proceduralSky)
                 RenderSettings.skybox = _proceduralSky;
-
-            float alt = _sunAlt;
-            WeatherFactors(out float cloud, out float wet, out bool snow);
 
             // Night darkens everything; twilight keeps a glow near the horizon.
             float dayness = Mathf.Clamp01((alt + 6f) / 14f);   // 0 deep night .. 1 day
@@ -951,6 +1022,133 @@ namespace KiloWorld.Rendering.Systems
                 _lastGiTime = Time.time;
                 DynamicGI.UpdateEnvironment();
             }
+        }
+
+        // ---------------------------------------------------------------------
+        // Precipitation: rain / snow particles, driven by the active weather.
+        // ---------------------------------------------------------------------
+        private GameObject _precipRoot;
+        private ParticleSystem _precip;
+        private int _precipMode = -1;   // -1 unset, 0 none, 1 rain, 2 snow
+
+        private void ApplyPrecip(Camera cam)
+        {
+            WeatherFactors(out float cloud, out float wet, out bool snow);
+            int mode = snow ? 2 : (wet > 0.45f ? 1 : 0);
+
+            EnsurePrecip(cam);
+            if (_precip == null) return;
+
+            if (mode != _precipMode)
+            {
+                _precipMode = mode;
+                ConfigurePrecip(mode);
+            }
+
+            var em = _precip.emission;
+            if (mode == 0)
+            {
+                em.rateOverTime = 0f;
+                if (_precip.isEmitting) _precip.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+                return;
+            }
+            em.rateOverTime = mode == 1 ? Mathf.Lerp(280f, 1100f, wet) : Mathf.Lerp(120f, 460f, Mathf.Max(cloud, wet));
+            if (!_precip.isPlaying) _precip.Play();
+        }
+
+        private void EnsurePrecip(Camera cam)
+        {
+            if (_precipRoot != null) return;
+            if (cam == null) return;
+
+            _precipRoot = new GameObject("K1L0_Precip");
+            _precipRoot.hideFlags = HideFlags.DontSave;
+            _precipRoot.transform.SetParent(cam.transform, false);
+            _precipRoot.transform.localPosition = new Vector3(0f, 16f, 2f);
+            _precipRoot.transform.localRotation = Quaternion.identity;
+
+            _precip = _precipRoot.AddComponent<ParticleSystem>();
+            var main = _precip.main;
+            main.simulationSpace = ParticleSystemSimulationSpace.World; // fall through the world, not with the camera
+            main.maxParticles = 2500;
+            main.playOnAwake = false;
+
+            var shape = _precip.shape;
+            shape.shapeType = ParticleSystemShapeType.Box;
+            shape.scale = new Vector3(46f, 1f, 46f);
+
+            var renderer = _precip.GetComponent<ParticleSystemRenderer>();
+            Shader sh = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+            if (sh == null) sh = Shader.Find("Sprites/Default");
+            var mat = new Material(sh) { name = "K1L0_PrecipMat" };
+            var tex = MakePrecipDot(32);
+            mat.SetTexture("_BaseMap", tex);
+            mat.SetTexture("_MainTex", tex);
+            mat.SetFloat("_Surface", 1f);
+            mat.SetFloat("_Blend", 0f);
+            mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            mat.SetInt("_ZWrite", 0);
+            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            mat.renderQueue = 3100;
+            renderer.material = mat;
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            renderer.receiveShadows = false;
+
+            _precip.Stop(true, ParticleSystemStopBehavior.StopEmitting);
+        }
+
+        private void ConfigurePrecip(int mode)
+        {
+            if (_precip == null) return;
+            var main = _precip.main;
+            var renderer = _precip.GetComponent<ParticleSystemRenderer>();
+            var noise = _precip.noise;
+            var col = _precip.colorOverLifetime; col.enabled = false;
+
+            if (mode == 1) // rain
+            {
+                main.startLifetime = 1.1f;
+                main.startSpeed = 0f;
+                main.gravityModifier = 4.5f;
+                main.startSize = new ParticleSystem.MinMaxCurve(0.045f, 0.09f);
+                main.startColor = new Color(0.62f, 0.72f, 0.9f, 0.55f);
+                renderer.renderMode = ParticleSystemRenderMode.Stretch;
+                renderer.lengthScale = 0.22f;
+                renderer.velocityScale = 0.13f;
+                noise.enabled = false;
+            }
+            else if (mode == 2) // snow
+            {
+                main.startLifetime = 7f;
+                main.startSpeed = 0f;
+                main.gravityModifier = 0.22f;
+                main.startSize = new ParticleSystem.MinMaxCurve(0.05f, 0.13f);
+                main.startColor = new Color(1f, 1f, 1f, 0.9f);
+                renderer.renderMode = ParticleSystemRenderMode.Billboard;
+                renderer.lengthScale = 1f;
+                renderer.velocityScale = 0f;
+                noise.enabled = true;
+                noise.strength = 0.7f;
+                noise.frequency = 0.25f;
+                noise.scrollSpeed = 0.35f;
+            }
+        }
+
+        private static Texture2D MakePrecipDot(int size)
+        {
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear };
+            Vector2 c = new Vector2(size * 0.5f, size * 0.5f);
+            for (int y = 0; y < size; y++)
+                for (int x = 0; x < size; x++)
+                {
+                    float d = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), c) / (size * 0.5f);
+                    float a = Mathf.Clamp01(1f - d);
+                    a = Mathf.Pow(a, 1.6f);
+                    tex.SetPixel(x, y, new Color(1f, 1f, 1f, a));
+                }
+            tex.Apply();
+            return tex;
         }
 
         private void ApplyPostFX()
