@@ -3,28 +3,18 @@ using UnityEngine.UI;
 using TMPro;
 
 /// <summary>
-/// Top-right status panel with 4 metrics: Movement, Hydration, Listeners, Dust
-/// Movement and Hydration have progress bars; Listeners and Dust show values.
+/// Steps hero widget (lower-right): live step count in a large hero font, with the
+/// 24-hour and 7-day totals centered in a single row beneath it.
 /// </summary>
 public class MovementPanel : MonoBehaviour
 {
-    private const int MOVEMENT_GOAL = 15000;
-    private const int HYDRATION_GOAL = 8; // glasses of water
-
-    private Image movementBarFill;
-    private Image hydrationBarFill;
-    private TextMeshProUGUI movementValue;
-    private TextMeshProUGUI hydrationValue;
-    private TextMeshProUGUI listenersValue;
-    private TextMeshProUGUI dustValue;
+    private Text heroValue;
+    private TextMeshProUGUI subValue;
     private PedometerService pedometerService;
     private bool built;
 
-    // Simulated values
-    private int listeners;
-    private float dust;
-
     static TMP_FontAsset _interLight;
+    static Font _cleanSans;
     static TMP_FontAsset LoadInterLight()
     {
         if (_interLight == null)
@@ -32,17 +22,29 @@ public class MovementPanel : MonoBehaviour
         return _interLight;
     }
 
+    static Font LoadCleanSans()
+    {
+        if (_cleanSans != null) return _cleanSans;
+
+        try
+        {
+            _cleanSans = Font.CreateDynamicFontFromOSFont(
+                new[] { "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Helvetica", "Arial" },
+                96);
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogWarning($"[MovementPanel] Failed to create clean sans font: {e.Message}");
+        }
+
+        return _cleanSans != null ? _cleanSans : Resources.GetBuiltinResource<Font>("Arial.ttf");
+    }
+
     void Start()
     {
         pedometerService = FindFirstObjectByType<PedometerService>();
-
-        // Simulated values
-        var rng = new System.Random(System.DateTime.Now.DayOfYear);
-        listeners = rng.Next(12, 847);
-        dust = rng.Next(10, 100) / 10f;
-
         EnsureUI();
-        InvokeRepeating(nameof(UpdateMetrics), 0.5f, 2f);
+        InvokeRepeating(nameof(UpdateMetrics), 0.2f, 1f); // 1s cadence for a live feel
     }
 
     void EnsureUI()
@@ -53,104 +55,51 @@ public class MovementPanel : MonoBehaviour
         RectTransform root = GetComponent<RectTransform>();
         if (root == null) root = gameObject.AddComponent<RectTransform>();
 
-        float rowHeight = 42f;
-        float panelWidth = 260f;
-        float panelHeight = rowHeight * 4 + 16f; // 4 rows + padding
+        const float panelWidth = 280f;
+        const float panelHeight = 116f;
         root.sizeDelta = new Vector2(panelWidth, panelHeight);
 
         Image bg = gameObject.AddComponent<Image>();
         bg.color = new Color(0, 0, 0, 0.4f);
         bg.raycastTarget = false;
 
-        float y = -8f;
         var font = LoadInterLight() ?? TMP_Settings.defaultFontAsset;
 
-        // Row 1: Movement (progress bar)
-        movementValue = CreateRow(font, "Movement", ref y, rowHeight, out movementBarFill,
-            new Color(0.2f, 0.8f, 1f, 0.9f));
+        // Hero: live step count, large + centered, fills the upper portion.
+        var heroObj = new GameObject("HeroSteps");
+        heroObj.transform.SetParent(transform, false);
+        heroValue = heroObj.AddComponent<Text>();
+        heroValue.font = LoadCleanSans();
+        heroValue.fontSize = 58;
+        heroValue.fontStyle = FontStyle.Normal;
+        heroValue.color = Color.white;
+        heroValue.text = "--";
+        heroValue.alignment = TextAnchor.MiddleCenter;
+        heroValue.horizontalOverflow = HorizontalWrapMode.Overflow;
+        heroValue.verticalOverflow = VerticalWrapMode.Overflow;
+        heroValue.raycastTarget = false;
+        var hr = heroObj.GetComponent<RectTransform>();
+        hr.anchorMin = new Vector2(0, 0.34f);
+        hr.anchorMax = new Vector2(1, 1f);
+        hr.offsetMin = Vector2.zero;
+        hr.offsetMax = Vector2.zero;
 
-        // Row 2: Hydration (progress bar)
-        hydrationValue = CreateRow(font, "Hydration", ref y, rowHeight, out hydrationBarFill,
-            new Color(0.3f, 0.9f, 0.5f, 0.9f));
-
-        // Row 3: Listeners (value only)
-        listenersValue = CreateRow(font, "Listeners", ref y, rowHeight, out _, default);
-
-        // Row 4: Dust (value only)
-        dustValue = CreateRow(font, "Dust", ref y, rowHeight, out _, default);
-    }
-
-    TextMeshProUGUI CreateRow(TMP_FontAsset font, string label, ref float y, float rowHeight,
-        out Image barFillOut, Color barColor)
-    {
-        barFillOut = null;
-        float labelFontSize = 19f;
-        float valueFontSize = 16f;
-        bool hasBar = barColor.a > 0f;
-
-        // Label (left)
-        var labelObj = new GameObject(label + "Label");
-        labelObj.transform.SetParent(transform, false);
-        var labelTmp = labelObj.AddComponent<TextMeshProUGUI>();
-        labelTmp.font = font;
-        labelTmp.fontSize = labelFontSize;
-        labelTmp.color = Color.white;
-        labelTmp.text = label;
-        labelTmp.alignment = TextAlignmentOptions.TopLeft;
-        var lr = labelObj.GetComponent<RectTransform>();
-        lr.anchorMin = new Vector2(0, 1);
-        lr.anchorMax = new Vector2(0.5f, 1);
-        lr.pivot = new Vector2(0, 1);
-        lr.anchoredPosition = new Vector2(12, y);
-        lr.sizeDelta = new Vector2(0, hasBar ? 20f : rowHeight);
-
-        // Value (right)
-        var valObj = new GameObject(label + "Value");
-        valObj.transform.SetParent(transform, false);
-        var valTmp = valObj.AddComponent<TextMeshProUGUI>();
-        valTmp.font = font;
-        valTmp.fontSize = valueFontSize;
-        valTmp.color = new Color(0.7f, 0.7f, 0.7f, 1f);
-        valTmp.text = "--";
-        valTmp.alignment = TextAlignmentOptions.TopRight;
-        var vr = valObj.GetComponent<RectTransform>();
-        vr.anchorMin = new Vector2(0.5f, 1);
-        vr.anchorMax = new Vector2(1, 1);
-        vr.pivot = new Vector2(1, 1);
-        vr.anchoredPosition = new Vector2(-12, y);
-        vr.sizeDelta = new Vector2(0, hasBar ? 20f : rowHeight);
-
-        if (hasBar)
-        {
-            // Bar background
-            var barBgObj = new GameObject(label + "BarBg");
-            barBgObj.transform.SetParent(transform, false);
-            var barBg = barBgObj.AddComponent<Image>();
-            barBg.color = new Color(1, 1, 1, 0.1f);
-            barBg.raycastTarget = false;
-            var bgR = barBgObj.GetComponent<RectTransform>();
-            bgR.anchorMin = new Vector2(0, 1);
-            bgR.anchorMax = new Vector2(1, 1);
-            bgR.pivot = new Vector2(0, 1);
-            bgR.anchoredPosition = new Vector2(12, y - 22f);
-            bgR.sizeDelta = new Vector2(-24, 12f);
-
-            // Bar fill
-            var barObj = new GameObject(label + "BarFill");
-            barObj.transform.SetParent(barBgObj.transform, false);
-            var fill = barObj.AddComponent<Image>();
-            fill.color = barColor;
-            fill.raycastTarget = false;
-            var fr = barObj.GetComponent<RectTransform>();
-            fr.anchorMin = Vector2.zero;
-            fr.anchorMax = new Vector2(0, 1);
-            fr.offsetMin = Vector2.zero;
-            fr.offsetMax = Vector2.zero;
-            barFillOut = fill;
-        }
-
-        y -= rowHeight;
-        return valTmp;
+        // Sub row: 24H and 7D totals, centered on a single line beneath the hero.
+        var subObj = new GameObject("SubStats");
+        subObj.transform.SetParent(transform, false);
+        subValue = subObj.AddComponent<TextMeshProUGUI>();
+        subValue.font = font;
+        subValue.fontSize = 17f;
+        subValue.color = new Color(0.72f, 0.72f, 0.72f, 1f);
+        subValue.text = "24H --   ·   7D --";
+        subValue.alignment = TextAlignmentOptions.Center;
+        subValue.enableWordWrapping = false;
+        subValue.overflowMode = TextOverflowModes.Overflow;
+        var sr = subObj.GetComponent<RectTransform>();
+        sr.anchorMin = new Vector2(0, 0f);
+        sr.anchorMax = new Vector2(1, 0.33f);
+        sr.offsetMin = new Vector2(0, 6f);
+        sr.offsetMax = Vector2.zero;
     }
 
     void UpdateMetrics()
@@ -161,30 +110,17 @@ public class MovementPanel : MonoBehaviour
             if (pedometerService == null) return;
         }
 
-        // Movement
-        int steps = pedometerService.stepsLast48Hours;
-        if (steps < 0) steps = pedometerService.stepsLast24Hours;
-        if (steps < 0) steps = 0;
-        float moveRatio = Mathf.Clamp01((float)steps / MOVEMENT_GOAL);
-        if (movementValue != null)
-            movementValue.text = $"{steps:N0} / {MOVEMENT_GOAL:N0}";
-        if (movementBarFill != null)
-            movementBarFill.GetComponent<RectTransform>().anchorMax = new Vector2(moveRatio, 1);
+        // Hero: live session step count. Fall back to today's 24h total when the
+        // session count is still 0 so the hero is never a lonely "0".
+        int live = pedometerService.stepCount;
+        if (live <= 0 && pedometerService.stepsLast24Hours > 0)
+            live = pedometerService.stepsLast24Hours;
+        if (heroValue != null)
+            heroValue.text = live.ToString("N0");
 
-        // Hydration (simulated: random 2-7 glasses)
-        int glasses = new System.Random(System.DateTime.Now.Hour + System.DateTime.Now.DayOfYear).Next(2, 7);
-        float hydRatio = Mathf.Clamp01((float)glasses / HYDRATION_GOAL);
-        if (hydrationValue != null)
-            hydrationValue.text = $"{glasses} / {HYDRATION_GOAL}";
-        if (hydrationBarFill != null)
-            hydrationBarFill.GetComponent<RectTransform>().anchorMax = new Vector2(hydRatio, 1);
-
-        // Listeners
-        if (listenersValue != null)
-            listenersValue.text = $"{listeners:N0}";
-
-        // Dust
-        if (dustValue != null)
-            dustValue.text = $"{dust:F1} oz";
+        if (subValue != null)
+            subValue.text = $"24H {Fmt(pedometerService.stepsLast24Hours)}   ·   7D {Fmt(pedometerService.stepsLast7Days)}";
     }
+
+    static string Fmt(int steps) => steps >= 0 ? steps.ToString("N0") : "--";
 }

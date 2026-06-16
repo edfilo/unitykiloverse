@@ -308,7 +308,7 @@ public class K1L0HUD : MonoBehaviour
         dock.OnButtonTapped = OnDockButtonTapped;
     }
 
-    // Top-right circular badge holding the surveillance-camera glyph — a small
+    // Lower-right circular badge holding the surveillance-camera glyph — a small
     // "you are being watched" motif for the K1L0 HUD.
     void CreateSurveillanceCamBadge()
     {
@@ -319,10 +319,10 @@ public class K1L0HUD : MonoBehaviour
         go.transform.SetParent(safeArea != null ? safeArea : K1L0CanvasRoot.HUD, false);
         go.transform.SetAsLastSibling();
         var rt = go.GetComponent<RectTransform>();
-        rt.anchorMin = new Vector2(1f, 1f);
-        rt.anchorMax = new Vector2(1f, 1f);
-        rt.pivot = new Vector2(1f, 1f);
-        rt.anchoredPosition = new Vector2(-16f, -16f);   // inset from top-right safe-area corner
+        rt.anchorMin = new Vector2(1f, 0f);
+        rt.anchorMax = new Vector2(1f, 0f);
+        rt.pivot = new Vector2(1f, 0f);
+        rt.anchoredPosition = new Vector2(-16f, 66f);   // lower-right, just above the dock/menu bar
         rt.sizeDelta = new Vector2(diameter, diameter);
 
         var circle = go.GetComponent<Image>();

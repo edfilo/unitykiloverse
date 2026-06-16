@@ -58,23 +58,23 @@ public static class MDIIcons
     public static string WeatherIcon(string glyphKey)
     {
         if (string.IsNullOrEmpty(glyphKey)) return Sunny;
-        switch (glyphKey.ToLower())
+        switch (glyphKey.Trim().ToLowerInvariant())
         {
-            case "sun": case "sunny": case "clear":
+            case "sun": case "sunny": case "clear": case "☀": case "01d": case "01n":
                 return Sunny;
-            case "cloud": case "cloudy": case "overcast":
+            case "cloud": case "cloudy": case "overcast": case "☁": case "03d": case "03n": case "04d": case "04n":
                 return Cloudy;
-            case "partly cloudy": case "partlycloudy":
+            case "partly cloudy": case "partlycloudy": case "⛅": case "02d": case "02n":
                 return PartlyCloudy;
-            case "rain": case "rainy": case "drizzle":
+            case "rain": case "rainy": case "drizzle": case "🌧": case "09d": case "09n": case "10d": case "10n":
                 return Rainy;
-            case "snow": case "snowy":
+            case "snow": case "snowy": case "❄": case "13d": case "13n":
                 return Snowy;
-            case "storm": case "thunder": case "thunderstorm":
+            case "storm": case "thunder": case "thunderstorm": case "⛈": case "11d": case "11n":
                 return Lightning;
-            case "fog": case "foggy": case "mist":
+            case "fog": case "foggy": case "mist": case "🌫": case "50d": case "50n":
                 return Fog;
-            case "wind": case "windy":
+            case "wind": case "windy": case "🌬":
                 return Windy;
             default:
                 return Sunny;

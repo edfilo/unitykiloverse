@@ -1,6 +1,9 @@
 using UnityEngine;
 using UnityEngine.UI;
+using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Text;
 
 public class PedometerService : MonoBehaviour
 {
@@ -85,7 +88,13 @@ public class PedometerService : MonoBehaviour
     public bool walkBucketInFlight = false;
     public string walkBucketStatus = "warming up";
     private float nextWalkingBucketRefresh = 0f;
-    private const float WalkingBucketRefreshSeconds = 30f;
+    private const float WalkingBucketRefreshSeconds = 60f;
+    private const int MinuteStepBucketCount = 60;
+    private const string StepMinuteSyncPathName = "stepMinutes";
+    public bool minuteStepSyncReady = false;
+    public long minuteStepSyncUpdatedAt = 0;
+    public int minuteStepSyncLiveSteps = 0;
+    private string lastMinuteStepSyncSignature = "";
 
     private struct VirtualStepEvent
     {
@@ -99,6 +108,7 @@ public class PedometerService : MonoBehaviour
     // Static dictionary to map start timestamps to callbacks
     private static Dictionary<double, System.Action<int>> pendingIntervalCallbacks = new Dictionary<double, System.Action<int>>();
     private static Dictionary<double, PedometerBucketRequest> pendingWalkingBucketCallbacks = new Dictionary<double, PedometerBucketRequest>();
+    private static Dictionary<double, PedometerBucketRequest> pendingMinuteStepCallbacks = new Dictionary<double, PedometerBucketRequest>();
 
     private struct PedometerBucketRequest
     {
@@ -114,8 +124,18 @@ public class PedometerService : MonoBehaviour
         public double distanceMeters;
     }
 
+    public struct MinuteStepBucket
+    {
+        public System.DateTime start;
+        public System.DateTime end;
+        public int steps;
+        public double distanceMeters;
+    }
+
     private static List<WalkingStepBucket> tempWalkingBuckets;
     private static int pendingWalkingBucketRequests = 0;
+    private static List<MinuteStepBucket> tempMinuteStepBuckets;
+    private static int pendingMinuteStepRequests = 0;
 
         // 7-Day History
 
@@ -462,9 +482,9 @@ public class PedometerService : MonoBehaviour
         ConfigureWalkingSessionClassifier(inactivityBucketMinutes, minActiveSteps);
 
         #if UNITY_IOS && !UNITY_EDITOR
-        QueryWalkingBucketsFromPedometer();
+        QueryMinuteStepsFromPedometer();
         #else
-        UpdateWalkingBucketsFromVirtualEvents();
+        UpdateMinuteStepsFromVirtualEvents();
         #endif
     }
 
@@ -513,6 +533,73 @@ public class PedometerService : MonoBehaviour
             _QueryPedometerData(startTs, endTs, OnWalkingBucketReceived);
         }
         #endif
+    }
+
+    private void QueryMinuteStepsFromPedometer()
+    {
+        #if UNITY_IOS && !UNITY_EDITOR
+        walkBucketInFlight = true;
+        tempMinuteStepBuckets = new List<MinuteStepBucket>();
+        pendingMinuteStepCallbacks.Clear();
+        pendingMinuteStepRequests = MinuteStepBucketCount;
+
+        System.DateTime utcNow = System.DateTime.UtcNow;
+        double now = (utcNow - new System.DateTime(1970, 1, 1)).TotalSeconds;
+
+        for (int index = 0; index < MinuteStepBucketCount; index++)
+        {
+            double endTs = now - (index * 60);
+            double startTs = endTs - 60;
+            System.DateTime start = new System.DateTime(1970, 1, 1).AddSeconds(startTs).ToLocalTime();
+            System.DateTime end = new System.DateTime(1970, 1, 1).AddSeconds(endTs).ToLocalTime();
+            pendingMinuteStepCallbacks[startTs] = new PedometerBucketRequest { start = start, end = end };
+            _QueryPedometerData(startTs, endTs, OnMinuteStepBucketReceived);
+        }
+        #endif
+    }
+
+    [AOT.MonoPInvokeCallback(typeof(PedometerCallback))]
+    private static void OnMinuteStepBucketReceived(int steps, double distance, double start, double end)
+    {
+        double matchedKey = -1;
+        bool found = false;
+
+        foreach (var key in pendingMinuteStepCallbacks.Keys)
+        {
+            if (System.Math.Abs(key - start) < 1.0)
+            {
+                matchedKey = key;
+                found = true;
+                break;
+            }
+        }
+
+        if (found)
+        {
+            var request = pendingMinuteStepCallbacks[matchedKey];
+            pendingMinuteStepCallbacks.Remove(matchedKey);
+            tempMinuteStepBuckets?.Add(new MinuteStepBucket
+            {
+                start = request.start,
+                end = request.end,
+                steps = Mathf.Max(0, steps),
+                distanceMeters = System.Math.Max(0d, distance)
+            });
+        }
+        else
+        {
+            Debug.LogWarning($"[PedometerService] Minute step result start={start} had no pending callback.");
+        }
+
+        pendingMinuteStepRequests--;
+        if (pendingMinuteStepRequests > 0) return;
+
+        var instance = FindObjectOfType<PedometerService>();
+        if (instance != null)
+            instance.ApplyMinuteStepBuckets(tempMinuteStepBuckets, true);
+
+        pendingMinuteStepCallbacks.Clear();
+        tempMinuteStepBuckets = null;
     }
 
     [AOT.MonoPInvokeCallback(typeof(PedometerCallback))]
@@ -593,6 +680,156 @@ public class PedometerService : MonoBehaviour
         }
 
         ApplyWalkingBuckets(buckets);
+    }
+
+    private void UpdateMinuteStepsFromVirtualEvents()
+    {
+        float cutoff = Time.unscaledTime - (MinuteStepBucketCount * 60f);
+        while (virtualStepEvents.Count > 0 && virtualStepEvents[0].time < cutoff)
+            virtualStepEvents.RemoveAt(0);
+
+        var buckets = new List<MinuteStepBucket>();
+        System.DateTime now = System.DateTime.Now;
+        for (int index = 0; index < MinuteStepBucketCount; index++)
+        {
+            float bucketEnd = Time.unscaledTime - (index * 60f);
+            float bucketStart = bucketEnd - 60f;
+            int steps = 0;
+            double meters = 0d;
+            for (int i = 0; i < virtualStepEvents.Count; i++)
+            {
+                var e = virtualStepEvents[i];
+                if (e.time > bucketStart && e.time <= bucketEnd)
+                {
+                    steps += Mathf.Max(0, e.steps);
+                    meters += Mathf.Max(0f, e.meters);
+                }
+            }
+
+            buckets.Add(new MinuteStepBucket
+            {
+                start = now.AddMinutes(-(index + 1)),
+                end = now.AddMinutes(-index),
+                steps = steps,
+                distanceMeters = meters
+            });
+        }
+
+        ApplyMinuteStepBuckets(buckets, true);
+    }
+
+    private void ApplyMinuteStepBuckets(List<MinuteStepBucket> minuteBuckets, bool writeToRtdb)
+    {
+        walkBucketInFlight = false;
+        if (minuteBuckets == null || minuteBuckets.Count == 0)
+        {
+            minuteStepSyncReady = false;
+            walkBucketReady = false;
+            walkBucketStatus = "no minute steps";
+            return;
+        }
+
+        minuteBuckets.Sort((a, b) => b.end.CompareTo(a.end));
+        var aggregateBuckets = BuildWalkingBucketsFromMinuteBuckets(minuteBuckets);
+        ApplyWalkingBuckets(aggregateBuckets);
+
+        minuteStepSyncReady = true;
+        minuteStepSyncUpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        minuteStepSyncLiveSteps = Mathf.Max(0, walkWindowSteps);
+
+        if (writeToRtdb)
+            WriteMinuteStepsToRtdb(minuteBuckets);
+    }
+
+    private List<WalkingStepBucket> BuildWalkingBucketsFromMinuteBuckets(List<MinuteStepBucket> minuteBuckets)
+    {
+        var buckets = new List<WalkingStepBucket>();
+        int minutesPerBucket = Mathf.Clamp(walkInactiveBucketMinutes, 1, 30);
+        for (int startIndex = 0; startIndex < minuteBuckets.Count; startIndex += minutesPerBucket)
+        {
+            int endIndex = Mathf.Min(minuteBuckets.Count, startIndex + minutesPerBucket);
+            int steps = 0;
+            double meters = 0d;
+            DateTime start = minuteBuckets[startIndex].start;
+            DateTime end = minuteBuckets[startIndex].end;
+            for (int i = startIndex; i < endIndex; i++)
+            {
+                steps += Mathf.Max(0, minuteBuckets[i].steps);
+                meters += System.Math.Max(0d, minuteBuckets[i].distanceMeters);
+                if (minuteBuckets[i].start < start) start = minuteBuckets[i].start;
+                if (minuteBuckets[i].end > end) end = minuteBuckets[i].end;
+            }
+
+            buckets.Add(new WalkingStepBucket
+            {
+                start = start,
+                end = end,
+                steps = steps,
+                distanceMeters = meters
+            });
+        }
+        return buckets;
+    }
+
+    private void WriteMinuteStepsToRtdb(List<MinuteStepBucket> minuteBuckets)
+    {
+        if (minuteBuckets == null || minuteBuckets.Count == 0) return;
+        if (FirebaseRestClient.Instance == null || DeviceIDManager.Instance == null) return;
+
+        string userId = DeviceIDManager.Instance.GetCurrentUserId();
+        if (string.IsNullOrWhiteSpace(userId)) return;
+
+        string signature = BuildMinuteStepSignature(minuteBuckets);
+        if (signature == lastMinuteStepSyncSignature) return;
+        lastMinuteStepSyncSignature = signature;
+
+        #if UNITY_IOS && !UNITY_EDITOR
+        string source = "ios_pedometer";
+        #else
+        string source = "virtual";
+        #endif
+
+        var sb = new StringBuilder(4096);
+        sb.Append("{");
+        sb.Append("\"updatedAt\":").Append(minuteStepSyncUpdatedAt).Append(",");
+        sb.Append("\"bucketSeconds\":60,");
+        sb.Append("\"source\":\"").Append(source).Append("\",");
+        sb.Append("\"liveSteps\":").Append(Mathf.Max(0, walkWindowSteps)).Append(",");
+        sb.Append("\"currentBucketSteps\":").Append(Mathf.Max(0, walkCurrentBucketSteps)).Append(",");
+        sb.Append("\"currentBucketMeters\":").Append(System.Math.Max(0d, walkCurrentBucketMeters).ToString("F2", CultureInfo.InvariantCulture)).Append(",");
+        sb.Append("\"inactive\":").Append(walkCurrentBucketInactive ? "true" : "false").Append(",");
+        sb.Append("\"minutes\":[");
+        int count = Mathf.Min(MinuteStepBucketCount, minuteBuckets.Count);
+        for (int i = 0; i < count; i++)
+        {
+            if (i > 0) sb.Append(",");
+            long start = new DateTimeOffset(minuteBuckets[i].start.ToUniversalTime()).ToUnixTimeSeconds();
+            long end = new DateTimeOffset(minuteBuckets[i].end.ToUniversalTime()).ToUnixTimeSeconds();
+            sb.Append("{\"start\":").Append(start)
+                .Append(",\"end\":").Append(end)
+                .Append(",\"steps\":").Append(Mathf.Max(0, minuteBuckets[i].steps))
+                .Append(",\"meters\":").Append(System.Math.Max(0d, minuteBuckets[i].distanceMeters).ToString("F2", CultureInfo.InvariantCulture))
+                .Append("}");
+        }
+        sb.Append("]}");
+
+        string path = $"users/{userId}/{StepMinuteSyncPathName}";
+        FirebaseRestClient.Instance.SetData(path, sb.ToString(),
+            _ => Debug.Log($"[PedometerService] RTDB step minute sync wrote {count} rows live={walkWindowSteps} inactive={walkCurrentBucketInactive}"),
+            err => Debug.LogWarning($"[PedometerService] RTDB step minute sync failed: {err}"));
+    }
+
+    private string BuildMinuteStepSignature(List<MinuteStepBucket> minuteBuckets)
+    {
+        var sb = new StringBuilder(256);
+        int count = Mathf.Min(MinuteStepBucketCount, minuteBuckets.Count);
+        sb.Append(count).Append('|').Append(walkWindowSteps).Append('|').Append(walkCurrentBucketInactive ? 1 : 0);
+        for (int i = 0; i < count; i++)
+        {
+            long end = new DateTimeOffset(minuteBuckets[i].end.ToUniversalTime()).ToUnixTimeSeconds();
+            sb.Append('|').Append(end / 60).Append(':').Append(Mathf.Max(0, minuteBuckets[i].steps));
+        }
+        return sb.ToString();
     }
 
     private void ApplyWalkingBuckets(List<WalkingStepBucket> buckets)
@@ -829,12 +1066,29 @@ public class PedometerService : MonoBehaviour
         stepsLast48Hours = Mathf.Max(0, stepsLast48Hours) + steps;
         stepsLast7Days = Mathf.Max(0, stepsLast7Days) + steps;
 
+        ApplyLiveStepsToWalkingWindow(steps);
         RefreshLiveKilosyncState();
         UpdateSimulatedIntervalCache();
         #if !UNITY_IOS || UNITY_EDITOR
         RefreshWalkingBucketsIfDue(true);
         SaveSimulatedStepState();
         #endif
+    }
+
+    private void ApplyLiveStepsToWalkingWindow(int steps)
+    {
+        if (steps <= 0) return;
+
+        // The 60-minute RTDB/pedometer sync is authoritative, but it only refreshes
+        // once per minute. Apply live pedometer deltas immediately so the HUD feels
+        // alive while the next minute-bucket sync catches up and re-normalizes.
+        walkWindowSteps = Mathf.Max(0, walkWindowSteps) + steps;
+        walkRecentSteps = Mathf.Max(0, walkRecentSteps) + steps;
+        walkCurrentBucketSteps = Mathf.Max(0, walkCurrentBucketSteps) + steps;
+        walkBucketReady = true;
+        walkCurrentBucketInactive = false;
+        walkBucketStatus = $"live session={walkWindowSteps} current={walkCurrentBucketSteps}st/{walkCurrentBucketMeters:F0}m";
+        minuteStepSyncLiveSteps = Mathf.Max(0, walkWindowSteps);
     }
 
     public void RegisterVirtualMovementMeters(float meters)

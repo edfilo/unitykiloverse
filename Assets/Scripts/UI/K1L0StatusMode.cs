@@ -168,6 +168,7 @@ public class K1L0StatusMode : MonoBehaviour
         int steps7d = ped != null ? ped.stepsLast7Days : -1;
 
         int kilosync = ped != null ? ped.kilosyncSteps : -1;
+        int liveSteps = ped != null && ped.walkBucketReady ? Mathf.Max(0, ped.walkWindowSteps) : kilosync;
         bool inert = ped == null || !ped.kilosyncReady || ped.isKilosyncInert;
         var inventory = TransmissionManager.Instance != null
             ? TransmissionManager.Instance.GetRareEarthInventory()
@@ -175,9 +176,9 @@ public class K1L0StatusMode : MonoBehaviour
 
         StringBuilder sb = new StringBuilder(512);
         sb.AppendLine("<color=#8EFF9F>> STRENGTH (STEPS)</color>");
-        sb.AppendLine($"> steps: <color=#BCFFC5>{FormatSteps(kilosync)}</color>");
-        sb.AppendLine($"> 24h:   <color=#BCFFC5>{FormatSteps(steps24)}</color>");
-        sb.AppendLine($"> 7d:    <color=#BCFFC5>{FormatSteps(steps7d)}</color>");
+        sb.AppendLine($"> live: <color=#BCFFC5>{FormatSteps(liveSteps)}</color>");
+        sb.AppendLine($"> 24h:  <color=#BCFFC5>{FormatSteps(steps24)}</color>");
+        sb.AppendLine($"> 7d:   <color=#BCFFC5>{FormatSteps(steps7d)}</color>");
         if (inert)
             sb.AppendLine("<color=#6EFF84>> kilosync inert</color>");
         sb.AppendLine();

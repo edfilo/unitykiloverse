@@ -462,6 +462,46 @@ public class UserPresenceManager : MonoBehaviour
         public string avatarUrl;
     }
 
+    private static string WeatherGlyphForOverlay(string glyphOrIcon)
+    {
+        if (string.IsNullOrWhiteSpace(glyphOrIcon)) return "";
+
+        switch (glyphOrIcon.Trim().ToLowerInvariant())
+        {
+            case "sun":
+            case "sunny":
+            case "clear":
+                return "☀";
+            case "cloud":
+            case "cloudy":
+            case "overcast":
+                return "☁";
+            case "partly cloudy":
+            case "partlycloudy":
+                return "⛅";
+            case "rain":
+            case "rainy":
+            case "drizzle":
+                return "🌧";
+            case "snow":
+            case "snowy":
+                return "❄";
+            case "storm":
+            case "thunder":
+            case "thunderstorm":
+                return "⛈";
+            case "fog":
+            case "foggy":
+            case "mist":
+                return "🌫";
+            case "wind":
+            case "windy":
+                return "🌬";
+            default:
+                return "";
+        }
+    }
+
     private void HandlePingResponse(string json)
     {
         if (string.IsNullOrEmpty(json)) return;
@@ -504,9 +544,11 @@ public class UserPresenceManager : MonoBehaviour
                 string weatherStr = null;
                 // JsonUtility deserializes "weather":null as empty object, check icon to confirm real data
                 if (data.weather != null && !string.IsNullOrEmpty(data.weather.icon))
+                {
                     weatherStr = $"{Mathf.RoundToInt(data.weather.temperatureF)}°F";
+                }
                 if (!string.IsNullOrEmpty(data.city) || weatherStr != null)
-                    CityWeatherOverlay.Show(data.city, weatherStr);
+                    CityWeatherOverlay.Show(data.city, weatherStr, !string.IsNullOrEmpty(data.weather?.glyph) ? data.weather.glyph : data.weather?.icon);
             }
 
             if (data != null && !string.IsNullOrEmpty(data.message))

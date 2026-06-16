@@ -39,6 +39,11 @@ public class K1L0ProfileMode : MonoBehaviour
     private bool initialized;
     private TextMeshProUGUI beamDebugText;
 
+    // Rebuild flag: when true the settings UI is the UI Toolkit version (robust pointer-capture
+    // sliders, no SliderScrollBlocker). Set false to fall back to the legacy uGUI build below.
+    private static readonly bool UseUITK = true;
+    private K1L0SettingsUITK uitk;
+
     public void Initialize(RectTransform parent, TMP_FontAsset font)
     {
         monoFont = font;
@@ -49,6 +54,17 @@ public class K1L0ProfileMode : MonoBehaviour
         rt.anchorMax = Vector2.one;
         rt.offsetMin = new Vector2(8f, 8f);
         rt.offsetMax = new Vector2(-8f, -8f);
+
+        if (UseUITK)
+        {
+            var panel = GetComponentInParent<K1L0GlassPanel>();
+            var uitkGO = new GameObject("K1L0SettingsUITK");
+            uitk = uitkGO.AddComponent<K1L0SettingsUITK>();
+            uitk.Initialize(font != null ? font.sourceFontFile : null,
+                () => panel?.OnCloseClicked?.Invoke());
+            initialized = true;
+            return;
+        }
 
         bodyText = CreateBodyText(rt);
         CreatePostFXPanel(rt);
@@ -202,6 +218,7 @@ public class K1L0ProfileMode : MonoBehaviour
 
         // ── COLOR GRADING ──
         y = AddHeader(scrollContent, y, "COLOR GRADING");
+        y = AddSlider(scrollContent, y, "BRIGHTNESS", "exposureFixedValue", -1f, 2f, pfx.exposureFixedValue, v => pfx.exposureFixedValue = v, true);
         y = AddSlider(scrollContent, y, "SATURATION", "saturation", -100, 100, pfx.saturation, v => pfx.saturation = v, true);
         y = AddSlider(scrollContent, y, "CONTRAST", "contrast", -100, 100, pfx.contrast, v => pfx.contrast = v, true);
         y = AddSlider(scrollContent, y, "HUE SHIFT", "hueShift", -100, 100, pfx.hueShift, v => pfx.hueShift = v, true);
@@ -254,7 +271,7 @@ public class K1L0ProfileMode : MonoBehaviour
             y = AddHeader(scrollContent, y, "CAMERA / GOD VIEW");
             y = AddSlider(scrollContent, y, "HEIGHT", "godPositionY", 10, 500, cam.godPositionY, v => { cam.godPositionY = v; ApplyCameraLiveUpdate(); });
             y = AddSlider(scrollContent, y, "DISTANCE", "godPositionZ", 10, 500, cam.godPositionZ, v => { cam.godPositionZ = v; ApplyCameraLiveUpdate(); });
-            y = AddSlider(scrollContent, y, "PITCH", "godRotationX", 0, 90, cam.godRotationX, v => { cam.godRotationX = v; ApplyCameraLiveUpdate(); });
+            y = AddSlider(scrollContent, y, "PITCH", "godRotationX", -90, 90, cam.godRotationX, v => { cam.godRotationX = v; ApplyCameraLiveUpdate(); });
             y = AddSlider(scrollContent, y, "FAR CLIP", "farClipPlane", 100, 5000, cam.farClipPlane, v => { cam.farClipPlane = v; ApplyCameraLiveUpdate(); });
         }
 
@@ -383,9 +400,19 @@ public class K1L0ProfileMode : MonoBehaviour
         // Slider as 0/1 toggle
         var slider = CreateSliderVisual(rowGO.transform, new Vector2(0.33f, 0.15f), new Vector2(0.84f, 0.85f), 0, 1, current ? 1f : 0f, true);
         var s = slider; // capture for closure
+        bool state = current;
+        float lastToggleTime = -10f;
         slider.onValueChanged.AddListener(v => {
             if (activeSlider != null && activeSlider != s) return;
             bool on = v >= 0.5f;
+            if (on == state) return;
+            if (Time.unscaledTime - lastToggleTime < 0.25f)
+            {
+                s.SetValueWithoutNotify(state ? 1f : 0f);
+                return;
+            }
+            lastToggleTime = Time.unscaledTime;
+            state = on;
             setter(on);
             PlayerPrefs.SetFloat("k1lo_" + prefsKey, on ? 1f : 0f);
             valTmp.text = on ? "ON" : "OFF";
@@ -604,6 +631,12 @@ public class K1L0ProfileMode : MonoBehaviour
         if (!initialized)
             return;
 
+        if (UseUITK)
+        {
+            uitk?.Show();
+            return;
+        }
+
         UpdateAuthButton();
         UpdateProdApiToggle();
         if (perfRoutine != null) StopCoroutine(perfRoutine);
@@ -612,6 +645,12 @@ public class K1L0ProfileMode : MonoBehaviour
 
     private void OnDisable()
     {
+        if (UseUITK)
+        {
+            uitk?.Hide();
+            return;
+        }
+
         if (perfRoutine != null)
         {
             StopCoroutine(perfRoutine);
@@ -654,33 +693,10 @@ public class K1L0ProfileMode : MonoBehaviour
         if (!initialized || bodyText == null || lineBgContainer == null)
             return;
 
-        string callSign = "---";
-        string channel = "---";
         string signal = FirebaseAuthManager.Instance != null && FirebaseAuthManager.Instance.isAuthenticated ? "AUTHENTICATED" : "ANON";
         string deviceId = DeviceIDManager.Instance != null ? DeviceIDManager.Instance.GetCurrentUserId() : "offline";
 
-        RenderProfileText(callSign, signal, channel, deviceId);
-
-        if (FirebaseRestClient.Instance != null && DeviceIDManager.Instance != null)
-        {
-            string userId = DeviceIDManager.Instance.GetCurrentUserId();
-            FirebaseRestClient.Instance.GetFirestoreData("users", userId,
-                (response) =>
-                {
-                    try
-                    {
-                        callSign = ExtractStringField(response, "callSign") ?? "---";
-                        channel = ExtractStringField(response, "instagram");
-                        channel = string.IsNullOrEmpty(channel) ? "---" : "@" + channel;
-                        RenderProfileText(callSign, signal, channel, deviceId);
-                    }
-                    catch
-                    {
-                        RenderProfileText(callSign, signal, channel, deviceId);
-                    }
-                },
-                _ => { });
-        }
+        RenderProfileText(signal, deviceId);
     }
 
     private string ExtractStringField(string json, string fieldName)
@@ -697,11 +713,10 @@ public class K1L0ProfileMode : MonoBehaviour
         return json.Substring(start, end - start);
     }
 
-    private void RenderProfileText(string callSign, string signal, string channel, string deviceId)
+    private void RenderProfileText(string signal, string deviceId)
     {
         StringBuilder sb = new StringBuilder(256);
-        sb.AppendLine($"> CALLSIGN <color=#BCFFC5>{callSign}</color>  SIGNAL <color=#BCFFC5>{signal}</color>");
-        sb.AppendLine($"> CHANNEL  <color=#BCFFC5>{channel}</color>");
+        sb.AppendLine($"> SIGNAL   <color=#BCFFC5>{signal}</color>");
         sb.Append($"> DEVICE   <color=#BCFFC5>{TrimDevice(deviceId)}</color>");
         bodyText.text = sb.ToString();
         UpdateLineBackgrounds();

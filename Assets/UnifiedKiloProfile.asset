@@ -166,8 +166,8 @@ MonoBehaviour:
     lensDistortionXMultiplier: 1
     lensDistortionYMultiplier: 1
     lensDistortionScale: 1
-    exposureEnabled: 0
-    exposureFixedValue: 0.2
+    exposureEnabled: 1
+    exposureFixedValue: 0.35
     depthOfFieldEnabled: 1
     focusDistance: 4
     aperture: 3
@@ -179,8 +179,8 @@ MonoBehaviour:
     temperature: -13
     tint: 4
     hueShift: 0
-    saturation: -15.7
-    contrast: 28
+    saturation: 35
+    contrast: 18
     shadows: {x: 1.01, y: 1.02, z: 1.06, w: 0.03}
     midtones: {x: 1.06, y: 1.01, z: 0.96, w: 0.02}
     highlights: {x: 1.2, y: 0.98, z: 0.8, w: 0}

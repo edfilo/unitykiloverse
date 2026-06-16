@@ -53,8 +53,20 @@ namespace KiloWorld.Rendering.Systems
         {
             if (profile == null) return;
             var pfx = profile.postFX;
-            pfx.saturation = PlayerPrefs.GetFloat("k1lo_saturation", -100f);
+            if (PlayerPrefs.GetInt("k1lo_brightMapDefaults_v1", 0) != 1)
+            {
+                PlayerPrefs.SetFloat("k1lo_saturation", 35f);
+                PlayerPrefs.SetFloat("k1lo_contrast", 18f);
+                PlayerPrefs.SetFloat("k1lo_exposureFixedValue", 0.35f);
+                PlayerPrefs.SetInt("k1lo_brightMapDefaults_v1", 1);
+                PlayerPrefs.Save();
+            }
+
+            pfx.saturation = PlayerPrefs.GetFloat("k1lo_saturation", 35f);
+            pfx.contrast = PlayerPrefs.GetFloat("k1lo_contrast", 18f);
+            pfx.exposureFixedValue = PlayerPrefs.GetFloat("k1lo_exposureFixedValue", 0.35f);
             LoadPref("contrast", ref pfx.contrast);
+            LoadPref("exposureFixedValue", ref pfx.exposureFixedValue);
             LoadPref("hueShift", ref pfx.hueShift);
             LoadPref("temperature", ref pfx.temperature);
             LoadPref("tint", ref pfx.tint);
@@ -77,6 +89,15 @@ namespace KiloWorld.Rendering.Systems
             LoadPrefBool("motionBlurEnabled", ref pfx.motionBlurEnabled);
             LoadPref("filmGrainIntensity", ref pfx.filmGrainIntensity);
             LoadPrefBool("filmGrainEnabled", ref pfx.filmGrainEnabled);
+            if (PlayerPrefs.GetInt("k1lo_skyBandingDither_v1", 0) != 1)
+            {
+                pfx.filmGrainEnabled = true;
+                pfx.filmGrainIntensity = Mathf.Max(pfx.filmGrainIntensity, 0.085f);
+                PlayerPrefs.SetInt("k1lo_filmGrainEnabled", 1);
+                PlayerPrefs.SetFloat("k1lo_filmGrainIntensity", pfx.filmGrainIntensity);
+                PlayerPrefs.SetInt("k1lo_skyBandingDither_v1", 1);
+                PlayerPrefs.Save();
+            }
 
             // Camera
             var cam = profile.camera;
@@ -1253,7 +1274,7 @@ namespace KiloWorld.Rendering.Systems
                                       Mathf.Abs(profile.postFX.contrast) > 0.001f;
             _colorAdjustments.active = colorGradingActive;
             _colorAdjustments.postExposure.overrideState = true;
-            _colorAdjustments.postExposure.value = 0f;
+            _colorAdjustments.postExposure.value = profile.postFX.exposureEnabled ? profile.postFX.exposureFixedValue : 0f;
 
             // --- Depth of Field ---
             if (_depthOfField == null) globalVolume.profile.TryGet(out _depthOfField);

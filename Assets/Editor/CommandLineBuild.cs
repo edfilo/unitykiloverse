@@ -39,6 +39,15 @@ public class CommandLineBuild
         PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
         EnsureAlwaysIncludedShaders("Skybox/Procedural", "Skybox/Cubemap", "Universal Render Pipeline/Unlit", "Universal Render Pipeline/Particles/Unlit");
 
+        // Manual code signing for device builds. Scoping the team/profile to the Unity
+        // targets here (rather than passing them globally to xcodebuild) keeps the signing
+        // settings off the SwiftPM/Firebase package targets, which reject provisioning
+        // profiles. Team 7R2746UPX7 with the local "com.filowatt.k1lo" development profile.
+        PlayerSettings.iOS.appleEnableAutomaticSigning = false;
+        PlayerSettings.iOS.appleDeveloperTeamID = "7R2746UPX7";
+        PlayerSettings.iOS.iOSManualProvisioningProfileType = ProvisioningProfileType.Development;
+        PlayerSettings.iOS.iOSManualProvisioningProfileID = "67f9ab53-0e20-4359-86f4-41dc044a69e0";
+
         var scenes = EditorBuildSettings.scenes
             .Where(s => s.enabled)
             .Select(s => s.path)

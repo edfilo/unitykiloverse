@@ -405,8 +405,18 @@ public class SignalDirectorV2 : MonoBehaviour
     private GameObject locEnterBorder;
     private Image locEnterButtonBg;
     private UnityEngine.UI.Button locEnterButton;
-    private TextMeshProUGUI dailyStepsLabel;
+    private Text dailyStepsLabel;
     private TextMeshProUGUI weeklyStepsLabel;
+    private GameObject stepsWidgetRoot;
+    private Text stepsHeroLabel;
+    private static Font cleanSansStepsUiFont;
+    private TextMeshProUGUI stepsMetaLabel;
+    private TextMeshProUGUI stepsCtaLabel;
+    private TextMeshProUGUI stepsDistanceLabel;
+    private GameObject stepsCompassRow;
+    private GameObject stepsCompassGO;
+    private RectTransform stepsCompassArrowRt;
+    private Image stepsCompassRing;
     private PedometerService pedometerService;
     private struct MomentumSample
     {
@@ -488,7 +498,8 @@ public class SignalDirectorV2 : MonoBehaviour
         if (artifactRow != null) artifactRow.SetActive(!suppress);
         if (locRow != null) locRow.SetActive(MapTeaserRowsVisible);
         if (locEnterGO != null) locEnterGO.SetActive(!suppress);
-        if (dailyStepsLabel != null) dailyStepsLabel.gameObject.SetActive(!suppress);
+        if (stepsWidgetRoot != null) stepsWidgetRoot.SetActive(!suppress);
+        else if (dailyStepsLabel != null) dailyStepsLabel.gameObject.SetActive(!suppress);
     }
 
     private bool MapTeaserRowsVisible => showMapTeaserRows && !hudSuppressed;
@@ -863,11 +874,12 @@ public class SignalDirectorV2 : MonoBehaviour
     {
         var font = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
         if (font == null) font = TMP_Settings.defaultFontAsset;
-        dailyStepsLabel = CreateStepRow("StepsBlock", 19, BuildStepsHeroText(-1, -1, -1, "NO ACTIVITY DETECTED", true), font);
+        stepsWidgetRoot = CreateStepWidget("StepsBlock", 19, font);
+        dailyStepsLabel = stepsHeroLabel;
         weeklyStepsLabel = null;
     }
 
-    private TextMeshProUGUI CreateStepRow(string name, int order, string text, TMP_FontAsset font)
+    private GameObject CreateStepWidget(string name, int order, TMP_FontAsset font)
     {
         var row = new GameObject(name);
         row.transform.SetParent(K1L0CanvasRoot.HUD, false);
@@ -875,28 +887,213 @@ public class SignalDirectorV2 : MonoBehaviour
         rowRt.anchorMin = new Vector2(0f, 1f);
         rowRt.anchorMax = new Vector2(1f, 1f);
         rowRt.pivot = new Vector2(0f, 1f);
-        rowRt.sizeDelta = new Vector2(-24f, 150f);
-        K1L0HudLayoutController.RegisterTopElement(rowRt, name, order, 150f, 16f);
+        rowRt.sizeDelta = new Vector2(-24f, 245f);
+        K1L0HudLayoutController.RegisterTopElement(rowRt, name, order, 245f, 24f);
 
-        var label = row.AddComponent<TextMeshProUGUI>();
+        var stack = row.AddComponent<VerticalLayoutGroup>();
+        stack.padding = new RectOffset(0, 0, 44, 0);
+        stack.spacing = 0f;
+        stack.childAlignment = TextAnchor.UpperCenter;
+        stack.childControlWidth = true;
+        stack.childControlHeight = true;
+        stack.childForceExpandWidth = true;
+        stack.childForceExpandHeight = false;
+
+        stepsHeroLabel = CreateStepsHeroText("StepsHero", row.transform, 56, new Color(1f, 1f, 1f, 0.96f), 62f);
+        stepsHeroLabel.text = "0";
+
+        var stepsUnitLabel = CreateStepsText("StepsUnit", row.transform, font, 11f, new Color(1f, 1f, 1f, 0.72f), 18f, TextAlignmentOptions.Midline);
+        stepsUnitLabel.text = "steps";
+
+        stepsMetaLabel = CreateStepsText("StepsMeta", row.transform, font, 11f, new Color(1f, 1f, 1f, 0.82f), 16f, TextAlignmentOptions.Midline);
+        stepsMetaLabel.text = "24h: ...    7d: ...";
+
+        CreateLayoutSpacer("StepsCtaSpacer", row.transform, 8f);
+        stepsCtaLabel = CreateStepsText("StepsCta", row.transform, font, 13f, new Color(0.47f, 1f, 0.54f, 0.95f), 24f, TextAlignmentOptions.Midline);
+        stepsCtaLabel.color = new Color(0.47f, 1f, 0.54f, 0.95f);
+        stepsCtaLabel.overflowMode = TextOverflowModes.Overflow;
+        stepsCtaLabel.text = "WALK TO BUILD YOUR STRENGTH";
+
+        stepsCompassRow = new GameObject("StepsCompassRow");
+        stepsCompassRow.transform.SetParent(row.transform, false);
+        var compassRowRt = stepsCompassRow.AddComponent<RectTransform>();
+        compassRowRt.sizeDelta = new Vector2(0f, 84f);
+        var compassLayout = stepsCompassRow.AddComponent<LayoutElement>();
+        compassLayout.preferredHeight = 84f;
+        compassLayout.minHeight = 0f;
+        compassLayout.flexibleWidth = 1f;
+
+        stepsCompassGO = CreateLargeStepCompass(stepsCompassRow.transform, out stepsCompassRing, out stepsCompassArrowRt, out stepsDistanceLabel);
+        stepsCompassRow.SetActive(false);
+        return row;
+    }
+
+    private static Font LoadCleanSansStepsUiFont()
+    {
+        if (cleanSansStepsUiFont != null) return cleanSansStepsUiFont;
+
+        try
+        {
+            cleanSansStepsUiFont = Font.CreateDynamicFontFromOSFont(
+                new[] { "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Helvetica", "Arial" },
+                96);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[SignalDirectorV2] Failed to create clean sans steps font: {e.Message}");
+        }
+
+        return cleanSansStepsUiFont != null ? cleanSansStepsUiFont : Resources.GetBuiltinResource<Font>("Arial.ttf");
+    }
+
+    private Text CreateStepsHeroText(string name, Transform parent, int fontSize, Color color, float height)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        var rt = go.AddComponent<RectTransform>();
+        rt.sizeDelta = new Vector2(0f, height);
+
+        var layout = go.AddComponent<LayoutElement>();
+        layout.preferredHeight = height;
+        layout.minHeight = height;
+        layout.flexibleWidth = 1f;
+
+        var label = go.AddComponent<Text>();
+        label.font = LoadCleanSansStepsUiFont();
+        label.fontSize = fontSize;
+        label.fontStyle = FontStyle.Normal;
+        label.alignment = TextAnchor.LowerCenter;
+        label.color = color;
+        label.raycastTarget = false;
+        label.horizontalOverflow = HorizontalWrapMode.Overflow;
+        label.verticalOverflow = VerticalWrapMode.Overflow;
+        return label;
+    }
+
+    private void CreateLayoutSpacer(string name, Transform parent, float height)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        var rt = go.AddComponent<RectTransform>();
+        rt.sizeDelta = new Vector2(0f, height);
+        var layout = go.AddComponent<LayoutElement>();
+        layout.preferredHeight = height;
+        layout.minHeight = height;
+        layout.flexibleWidth = 1f;
+    }
+
+    private TextMeshProUGUI CreateStepsText(string name, Transform parent, TMP_FontAsset font, float fontSize, Color color, float height, TextAlignmentOptions alignment, bool useShadow = true)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(parent, false);
+        var rt = go.AddComponent<RectTransform>();
+        rt.sizeDelta = new Vector2(0f, height);
+
+        var layout = go.AddComponent<LayoutElement>();
+        layout.preferredHeight = height;
+        layout.minHeight = height;
+        layout.flexibleWidth = 1f;
+
+        var label = go.AddComponent<TextMeshProUGUI>();
         label.font = font;
-        label.fontSize = 10f;
-        label.lineSpacing = -14f;
-        label.alignment = TextAlignmentOptions.TopLeft;
-        label.color = new Color(0.47f, 1f, 0.54f, 0.68f);
-        label.margin = new Vector4(0f, 8f, 0f, 0f);
-        label.text = text;
+        label.fontSize = fontSize;
+        label.alignment = alignment;
+        label.color = color;
+        label.margin = Vector4.zero;
         label.raycastTarget = false;
         label.richText = true;
-        label.textWrappingMode = TextWrappingModes.Normal;
+        label.textWrappingMode = TextWrappingModes.NoWrap;
         label.overflowMode = TextOverflowModes.Overflow;
-        ApplyHeavyShadow(label);
+        if (useShadow)
+        {
+            ApplyHeavyShadow(label);
+        }
+        else
+        {
+            label.fontStyle = FontStyles.Normal;
+            label.fontWeight = FontWeight.Regular;
+            label.enableVertexGradient = false;
+            label.outlineWidth = 0f;
+            label.outlineColor = Color.clear;
+            var shadows = go.GetComponents<Shadow>();
+            for (int i = 0; i < shadows.Length; i++)
+                Destroy(shadows[i]);
+        }
         return label;
+    }
+
+    private GameObject CreateLargeStepCompass(Transform parent, out Image ringImg, out RectTransform arrowRt, out TextMeshProUGUI distanceTmp)
+    {
+        const float compassSize = 58f;
+        var container = new GameObject("StepsCompass");
+        container.transform.SetParent(parent, false);
+        var cRt = container.AddComponent<RectTransform>();
+        cRt.anchorMin = new Vector2(0.5f, 0.5f);
+        cRt.anchorMax = new Vector2(0.5f, 0.5f);
+        cRt.pivot = new Vector2(0.5f, 0.5f);
+        cRt.anchoredPosition = new Vector2(0f, 8f);
+        cRt.sizeDelta = new Vector2(compassSize, compassSize);
+
+        var bgGO = new GameObject("CompassBg");
+        bgGO.transform.SetParent(container.transform, false);
+        var bgRt = bgGO.AddComponent<RectTransform>();
+        bgRt.anchorMin = Vector2.zero;
+        bgRt.anchorMax = Vector2.one;
+        bgRt.offsetMin = Vector2.zero;
+        bgRt.offsetMax = Vector2.zero;
+        var bgImg = bgGO.AddComponent<Image>();
+        bgImg.color = new Color(0f, 0f, 0f, 0.96f);
+        bgImg.raycastTarget = false;
+        CreateFilledCircleSprite(bgImg);
+
+        var ringGO = new GameObject("Ring");
+        ringGO.transform.SetParent(container.transform, false);
+        var ringRt = ringGO.AddComponent<RectTransform>();
+        ringRt.anchorMin = Vector2.zero;
+        ringRt.anchorMax = Vector2.one;
+        ringRt.offsetMin = Vector2.zero;
+        ringRt.offsetMax = Vector2.zero;
+        ringImg = ringGO.AddComponent<Image>();
+        ringImg.color = new Color(0.47f, 1f, 0.54f, 0.9f);
+        ringImg.raycastTarget = false;
+        CreateRingSprite(ringImg);
+
+        var arrowGO = new GameObject("Arrow");
+        arrowGO.transform.SetParent(container.transform, false);
+        arrowRt = arrowGO.AddComponent<RectTransform>();
+        arrowRt.anchorMin = new Vector2(0.5f, 0.5f);
+        arrowRt.anchorMax = new Vector2(0.5f, 0.5f);
+        arrowRt.pivot = new Vector2(0.5f, 0.5f);
+        arrowRt.anchoredPosition = Vector2.zero;
+        arrowRt.sizeDelta = new Vector2(compassSize * 0.66f, compassSize * 0.66f);
+        var arrowImg = arrowGO.AddComponent<Image>();
+        arrowImg.color = new Color(0.47f, 1f, 0.54f, 1f);
+        arrowImg.raycastTarget = false;
+        CreateArrowSprite(arrowImg);
+
+        var distGO = new GameObject("Distance");
+        distGO.transform.SetParent(container.transform, false);
+        var distRt = distGO.AddComponent<RectTransform>();
+        distRt.anchorMin = new Vector2(0.5f, 0f);
+        distRt.anchorMax = new Vector2(0.5f, 0f);
+        distRt.pivot = new Vector2(0.5f, 1f);
+        distRt.anchoredPosition = new Vector2(0f, -2f);
+        distRt.sizeDelta = new Vector2(96f, 16f);
+        distanceTmp = distGO.AddComponent<TextMeshProUGUI>();
+        distanceTmp.font = Resources.Load<TMP_FontAsset>("Fonts/IBMPlexMono-Regular SDF") ?? TMP_Settings.defaultFontAsset;
+        distanceTmp.fontSize = 10f;
+        distanceTmp.text = "";
+        distanceTmp.alignment = TextAlignmentOptions.Top;
+        distanceTmp.color = Color.white;
+        distanceTmp.raycastTarget = false;
+        ApplyHeavyShadow(distanceTmp);
+
+        return container;
     }
 
     private void UpdateStepsHUD()
     {
-        if (dailyStepsLabel == null) return;
+        if (stepsHeroLabel == null) return;
         if (pedometerService == null) pedometerService = FindFirstObjectByType<PedometerService>();
         int rawMain = pedometerService != null ? pedometerService.kilosyncSteps : -1;
         int daily = pedometerService != null ? pedometerService.stepsLast24Hours : -1;
@@ -904,12 +1101,36 @@ public class SignalDirectorV2 : MonoBehaviour
         if (pedometerService != null)
             pedometerService.RefreshWalkingBucketsIfDue(false, Mathf.RoundToInt(momentumSessionGraceMinutes), Mathf.Max(0, ambientMinStepsToSpawn));
         bool active = pedometerService != null && pedometerService.walkBucketReady && !pedometerService.walkCurrentBucketInactive;
-        bool showWalk = !active;
         int liveWalkSteps = pedometerService != null && pedometerService.walkBucketReady
             ? Mathf.Max(0, pedometerService.walkWindowSteps)
             : Mathf.Max(0, rawMain);
-        string statusLine = BuildStepStatusLine(active);
-        dailyStepsLabel.text = BuildStepsHeroText(liveWalkSteps, daily, weekly, statusLine, showWalk);
+
+        var playerMerc = GetPlayerMercator();
+        float distanceMeters = float.MaxValue;
+        Signal nearest = active ? GetNearestAmbientPortal(playerMerc, out distanceMeters) : null;
+
+        stepsHeroLabel.text = FormatStepCount(liveWalkSteps);
+        if (stepsMetaLabel != null)
+            stepsMetaLabel.text = $"24h: {FormatStepCount(daily)}    7d: {FormatStepCount(weekly)}";
+
+        bool anomaly = nearest != null;
+        if (stepsCtaLabel != null)
+        {
+            stepsCtaLabel.text = !active ? "WALK TO BUILD YOUR STRENGTH" : anomaly ? "ANOMALY DETECTED" : "CONTINUE WALKING";
+            stepsCtaLabel.color = anomaly ? new Color(1f, 0.2f, 0.18f, 0.95f) : new Color(0.47f, 1f, 0.54f, 0.95f);
+        }
+
+        if (stepsCompassRow != null) stepsCompassRow.SetActive(anomaly);
+        if (stepsCompassGO != null) stepsCompassGO.SetActive(anomaly);
+        if (anomaly)
+        {
+            if (stepsCompassArrowRt != null)
+                stepsCompassArrowRt.localEulerAngles = new Vector3(0f, 0f, -RelativeAngleTo(nearest, playerMerc));
+            if (stepsDistanceLabel != null)
+                stepsDistanceLabel.text = FormatTeaserDistancePlain(distanceMeters);
+            if (stepsCompassRing != null)
+                stepsCompassRing.color = new Color(1f, 0.2f, 0.18f, 0.9f);
+        }
     }
 
     private void UpdateActiveMomentumSteps(int rawSteps)
