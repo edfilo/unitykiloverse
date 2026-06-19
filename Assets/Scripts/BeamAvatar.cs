@@ -10,6 +10,8 @@ using UnityEngine.Networking;
 [RequireComponent(typeof(MeshRenderer))]
 public class BeamAvatar : MonoBehaviour
 {
+    private const float ParticleBeamTargetHeight = 150f;
+
     public enum BeamVisualMode
     {
         LegacyMagicParticles,
@@ -231,7 +233,7 @@ public class BeamAvatar : MonoBehaviour
         #endif
 
         var main = magicalParticles.main;
-        float targetHeight = 150f;
+        float targetHeight = ParticleBeamTargetHeight;
         float safeSpeed = Mathf.Max(0.5f, particleSpeed);
         float lifetime = targetHeight / safeSpeed;
 
@@ -503,12 +505,13 @@ public class BeamAvatar : MonoBehaviour
         {
             UpdateBeamAppearance();
             Vector3 orbWorldPos = transform.position;
+            float visibleBeamHeight = GetVisibleBeamHeight();
             beamRenderer.SetPosition(0, orbWorldPos);
-            beamRenderer.SetPosition(1, orbWorldPos + Vector3.up * beamHeight);
+            beamRenderer.SetPosition(1, orbWorldPos + Vector3.up * visibleBeamHeight);
             if (beamGlowRenderer != null)
             {
                 beamGlowRenderer.SetPosition(0, orbWorldPos);
-                beamGlowRenderer.SetPosition(1, orbWorldPos + Vector3.up * beamHeight);
+                beamGlowRenderer.SetPosition(1, orbWorldPos + Vector3.up * visibleBeamHeight);
             }
         }
     }
@@ -576,6 +579,13 @@ public class BeamAvatar : MonoBehaviour
             beamGlowRenderer.endWidth = Mathf.Max(1.4f, beamWidth * 0.75f);
             ApplyBeamMaterial(beamGlowRenderer.material, false);
         }
+    }
+
+    private float GetVisibleBeamHeight()
+    {
+        if (visualMode == BeamVisualMode.SpaceLaser || useMagicalParticles)
+            return Mathf.Min(beamHeight, ParticleBeamTargetHeight);
+        return beamHeight;
     }
 
     private void ApplyBeamMaterial(Material beamMat, bool core = false)

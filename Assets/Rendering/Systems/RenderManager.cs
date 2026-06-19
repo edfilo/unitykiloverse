@@ -582,6 +582,12 @@ namespace KiloWorld.Rendering.Systems
         // Manual sky overrides, used only when GPS mode is off (no live time/location).
         public static float ManualHour = 13f;            // 0..24 local hour
         public static string ManualWeatherGlyph = "clear";
+        public static int ManualSkyRevision { get; private set; }
+
+        public static void NotifyManualSkyChanged()
+        {
+            ManualSkyRevision++;
+        }
 
         // Dynamic sky state.
         private Material _proceduralSky;
@@ -600,6 +606,14 @@ namespace KiloWorld.Rendering.Systems
             
             if (mainCam.clearFlags != CameraClearFlags.Skybox)
                 mainCam.clearFlags = CameraClearFlags.Skybox;
+
+            if (global::DynamicSkyVideoController.IsActive)
+            {
+                global::DynamicSkyVideoController.ForceApply();
+                ApplyAurora(mainCam);
+                ApplyPrecip(mainCam);
+                return;
+            }
 
             if (profile.sky != null && profile.sky.dynamicSky)
             {

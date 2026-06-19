@@ -14,7 +14,7 @@ public class K1L0LocationBeams : MonoBehaviour
     private const float BeamWidth = 0.15f;
     private const int ParticleCount = 150;
     private const float ParticleSpeed = 8f;
-    private const float LabelHeight = BeamHeight + 10f;
+    private const float LabelHeight = BeamHeight;
     private const float LabelFadeDistance = 1200f;
     private const float LabelMaxDistance = 2414f; // ~1.5 miles
 

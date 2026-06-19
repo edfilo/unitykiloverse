@@ -201,6 +201,10 @@ public class SignalDirectorV2 : MonoBehaviour
     public int ambientMinStepsToSpawn = 50;
     [Tooltip("Minutes before a recent walking session expires after momentum drops.")]
     [Range(1f, 30f)] public float momentumSessionGraceMinutes = 1.5f;
+    [Tooltip("Minutes before newly spawned ambient portals expire in Firestore.")]
+    [Range(1f, 240f)] public float ambientBeamTtlMinutes = 20f;
+    [Tooltip("Meters from an ambient transmission portal required before Enter Portal can collect it.")]
+    [Range(1f, 100f)] public float ambientCollectRadiusMeters = 10f;
     [Tooltip("Optional clip played when new ambient portals appear.")]
     public AudioClip ambientPortalSpawnClip;
     [Range(0f, 1f)]
@@ -456,13 +460,13 @@ public class SignalDirectorV2 : MonoBehaviour
     private Signal locEnterStickySignal;           // signal ENTER is sticking to
     private const float ENTER_MIN_VISIBLE_SECONDS = 120f; // keep ENTER on for at least 2 min
     // ENTER radius is type-specific:
-    // - Artifact + Transmitter beams: require very close proximity (<=10m)
+    // - Ambient transmission beams use ambientCollectRadiusMeters.
     // - Location beams: <=10m OR within 10m of the containing building footprint
-    private const float ENTER_PROXIMITY_BEAM_METERS = 10f;      // Artifact / Transmitter
     private const float ENTER_PROXIMITY_LOCATION_METERS = 10f;  // Location point distance
     private const float ENTER_PROXIMITY_BUILDING_EDGE_METERS = 10f; // Distance-to-footprint allowance
     private const float ENTER_HIDE_DISTANCE_METERS = 20f; // hide ENTER after moving ~20m away
     private Signal enterCandidate;                 // the signal the ENTER button currently targets
+    private float AmbientCollectRadiusMeters => Mathf.Clamp(ambientCollectRadiusMeters, 1f, 100f);
 
     // ── Shared enter-state (populated by ComputeEnterState, read by both rows)
     // These answer "is there an active ENTER target, and what kind?" — so the
@@ -715,8 +719,16 @@ public class SignalDirectorV2 : MonoBehaviour
             ambientMinStepsToSpawn = Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_ambientMinStepsToSpawn"));
         if (PlayerPrefs.HasKey("k1lo_momentumSessionGraceMinutes"))
             momentumSessionGraceMinutes = PlayerPrefs.GetFloat("k1lo_momentumSessionGraceMinutes");
+        if (PlayerPrefs.HasKey("k1lo_ambientBeamTtlMinutes"))
+            ambientBeamTtlMinutes = PlayerPrefs.GetFloat("k1lo_ambientBeamTtlMinutes");
+        else if (PlayerPrefs.HasKey("k1lo_ambientBeamTtlHours"))
+            ambientBeamTtlMinutes = PlayerPrefs.GetFloat("k1lo_ambientBeamTtlHours") * 60f;
+        if (PlayerPrefs.HasKey("k1lo_ambientCollectRadiusMeters"))
+            ambientCollectRadiusMeters = PlayerPrefs.GetFloat("k1lo_ambientCollectRadiusMeters");
         ambientMinStepsToSpawn = Mathf.Clamp(ambientMinStepsToSpawn, 0, 2000);
         momentumSessionGraceMinutes = Mathf.Clamp(momentumSessionGraceMinutes, 1f, 30f);
+        ambientBeamTtlMinutes = Mathf.Clamp(ambientBeamTtlMinutes, 1f, 240f);
+        ambientCollectRadiusMeters = Mathf.Clamp(ambientCollectRadiusMeters, 1f, 100f);
         // Show only the single nearest ambient disturbance (not a field of ~20 in
         // the distance). Forced here so it wins over any value serialized on the
         // component in the scene.
@@ -1822,9 +1834,9 @@ public class SignalDirectorV2 : MonoBehaviour
             return;
         }
 
-        if (nearestDist > ENTER_PROXIMITY_BEAM_METERS)
+        if (nearestDist > AmbientCollectRadiusMeters)
         {
-            Debug.LogWarning($"[SignalDirector] View Ambient tapped but nearest is {nearestDist:F1}m away (needs <= {ENTER_PROXIMITY_BEAM_METERS}m)");
+            Debug.LogWarning($"[SignalDirector] View Ambient tapped but nearest is {nearestDist:F1}m away (needs <= {AmbientCollectRadiusMeters}m)");
             return;
         }
 
@@ -1946,7 +1958,7 @@ public class SignalDirectorV2 : MonoBehaviour
             if (s.state == SignalState.CoolingDown) continue;
             if (s.state == SignalState.Interpreting || s.state == SignalState.Resolved) continue;
             float d = DistanceTo(s, playerMerc);
-            if (d <= ENTER_PROXIMITY_BEAM_METERS && d < bestDist)
+            if (d <= AmbientCollectRadiusMeters && d < bestDist)
             {
                 bestDist = d;
                 best = s;
@@ -3051,6 +3063,7 @@ public class SignalDirectorV2 : MonoBehaviour
             $"\"maxMiles\":{ambientPoolMaxMiles}," +
             $"\"stepMeters\":{Mathf.Max(5f, ambientRingStepMeters)}," +
             $"\"minDistanceMeters\":{Mathf.Max(45f, ambientRingStepMeters * 0.8f)}," +
+            $"\"ttlMinutes\":{Mathf.Clamp(ambientBeamTtlMinutes, 1f, 240f).ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
             $"\"movementBearing\":{(_hasMovementBearing ? _lastMovementBearingDegrees.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")}" +
             "}";
 

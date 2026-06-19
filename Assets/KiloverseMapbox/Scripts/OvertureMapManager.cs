@@ -44,8 +44,9 @@ namespace Kiloverse.Mapbox
         public static string _lastTileUrl = "";
         public static string _lastTileResult = "";
 
-        // Debug overlay disabled — was showing MAP/TILES status on screen
-        // void OnGUI() { ... }
+        private void OnGUI()
+        {
+        }
 
         private void OnDisable()
         {
@@ -148,10 +149,7 @@ private void Start()
             return;
         }
 
-        m_PlacesFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/places/{z}/{x}/{y}.mvt");
-        m_BuildingsFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/buildings/{z}/{x}/{y}.mvt");
-        m_TransportationFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/transportation/{z}/{x}/{y}.mvt");
-        m_BaseFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/base/{z}/{x}/{y}.mvt");
+        CreateTileFetchers(ResolveTileBaseURLImmediate());
         Debug.Log("[OvertureMapManager] Tile fetchers created");
 
         var vectorLayerModule = FindFirstObjectByType<MapboxVLMS>();
@@ -241,20 +239,29 @@ private void Start()
         BootDiagnostics.Mark("Overture map allowed");
         _debugStatus = "WAITING GPS";
 
-        // Wait for GPS to be ready
-        while (!GPSLocationController.GPSReady)
+        float gpsWaitStart = Time.realtimeSinceStartup;
+        while (!GPSLocationController.GPSReady && Time.realtimeSinceStartup - gpsWaitStart < 10f)
         {
             yield return null;
         }
-        _debugStatus = "GPS READY";
 
-        BootDiagnostics.Mark("Overture GPS ready");
+        if (GPSLocationController.GPSReady)
+        {
+            _debugStatus = "GPS READY";
+            BootDiagnostics.Mark("Overture GPS ready");
+        }
+        else
+        {
+            _debugStatus = "GPS TIMEOUT; INIT MAP";
+            BootDiagnostics.Mark("Overture GPS timeout; continuing");
+            Debug.LogWarning("[OvertureMapManager] GPS not ready after 10s; initializing tiles from current map/profile position.");
+        }
 #if UNITY_EDITOR
         // Yield a few frames to let BootSequence settle before heavy Find/Construct
         for (int i = 0; i < 5; i++) yield return null;
         BootDiagnostics.Mark("Overture after editor yield");
 #endif
-        Debug.Log("[OvertureMapManager] ✓ GPS ready, initializing...");
+        Debug.Log("[OvertureMapManager] ✓ Initializing Overture tiles...");
 
         if (_map == null)
         {
@@ -268,11 +275,9 @@ private void Start()
             yield break;
         }
 
-        // Endpoints point to the new Cloudflare Worker /xyz/ route
-        m_PlacesFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/places/{z}/{x}/{y}.mvt");
-        m_BuildingsFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/buildings/{z}/{x}/{y}.mvt");
-        m_TransportationFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/transportation/{z}/{x}/{y}.mvt");
-        m_BaseFetcher = new XYZTileFetcher("https://api.kilomeme.com/xyz/base/{z}/{x}/{y}.mvt");
+        string tileBaseURL = null;
+        yield return ResolveTileBaseURL(url => tileBaseURL = url);
+        CreateTileFetchers(tileBaseURL);
 
         Debug.Log("[OvertureMapManager] Tile fetchers created, yielding...");
 
@@ -518,12 +523,13 @@ private void DoUpdate()
 
             if (_doUpdateCallCount == 130) Debug.Log($"[OvertureMapManager] tick130: GPS={GPSLocationController.GPSReady} m_Layers={m_Layers?.Count} m_Renderer={m_Renderer != null} PostBoot={BootState.PostBootGracePeriodElapsed}");
 
-            // CRITICAL: Wait for GPS before loading/repositioning tiles (prevents main thread blocking during GPS init)
-            if (!GPSLocationController.GPSReady)
+            // Do not block tile loading forever on GPS. Boot/Teleport can seed the map
+            // from a profile fallback, and Overture still needs to draw from that position.
+            if (!GPSLocationController.GPSReady && _map != null && !_map.HasGPSPosition)
             {
                 if (_doUpdateCallCount % 300 == 0) // Log periodically
                 {
-                    Debug.Log("[OvertureMapManager] Waiting for GPS to be ready before loading tiles...");
+                    Debug.Log("[OvertureMapManager] Waiting for map position before loading tiles...");
                 }
                 return;
             }
@@ -861,6 +867,43 @@ private void RequestCurrentTile()
                 layer.UpdateTilesForPosition(playerLatLon, _map, useFrustumLoading, visibleTiles);
             }
         }
+
+        private void CreateTileFetchers(string baseURL)
+        {
+            // Overture vector tiles are currently served by the production Cloudflare API.
+            // LAN/api-tunnel handles app JSON endpoints, but /xyz/* returns 404 there.
+            baseURL = "https://api.kilomeme.com";
+            m_PlacesFetcher = new XYZTileFetcher($"{baseURL}/xyz/places/{{z}}/{{x}}/{{y}}.mvt");
+            m_BuildingsFetcher = new XYZTileFetcher($"{baseURL}/xyz/buildings/{{z}}/{{x}}/{{y}}.mvt");
+            m_TransportationFetcher = new XYZTileFetcher($"{baseURL}/xyz/transportation/{{z}}/{{x}}/{{y}}.mvt");
+            m_BaseFetcher = new XYZTileFetcher($"{baseURL}/xyz/base/{{z}}/{{x}}/{{y}}.mvt");
+            Debug.Log($"[OvertureMapManager] Tile API base: {baseURL}");
+        }
+
+        private string ResolveTileBaseURLImmediate()
+        {
+            string baseURL = null;
+            try
+            {
+                baseURL = APIManager.Instance != null ? APIManager.Instance.GetBaseURL() : null;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[OvertureMapManager] Could not read APIManager base URL: {ex.Message}");
+            }
+
+#if UNITY_EDITOR || UNITY_STANDALONE_OSX
+            return "https://api.kilomeme.com";
+#else
+            return "https://api.kilomeme.com";
+#endif
+        }
+
+        private IEnumerator ResolveTileBaseURL(Action<string> onComplete)
+        {
+            yield return null;
+            onComplete?.Invoke("https://api.kilomeme.com");
+        }
     }
 
     public class XYZTileFetcher
@@ -892,9 +935,7 @@ private void RequestCurrentTile()
             float startTime = Time.realtimeSinceStartup;
             using (var request = UnityWebRequest.Get(url))
             {
-#if UNITY_EDITOR
-                request.timeout = 15; // Editor: avoid hanging forever if API is down
-#endif
+                request.timeout = Application.isEditor ? 15 : 8;
                 yield return request.SendWebRequest();
 
                 float elapsed = (Time.realtimeSinceStartup - startTime) * 1000f;

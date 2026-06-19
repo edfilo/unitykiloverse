@@ -3,6 +3,7 @@
 # Usage:
 #   kbuild run --tag "K1L0 iOS" build-k1l0-device.sh          # Device build
 #   kbuild run --tag "K1L0 OTA" build-k1l0-device.sh --ota    # OTA build
+#   K1L0_USE_UNITY=1 build-k1l0-device.sh --ota               # Legacy Unity build
 set -e
 
 MODE="device"
@@ -17,6 +18,9 @@ APP_NAME="K1L0"
 LOG="/tmp/k1l0_unity_build.log"
 OTA_DIR="/tmp/tedfred_ota"
 OTA_URL="https://tunnel.kilo.gallery/ota/latest"
+USE_UNITY="${K1L0_USE_UNITY:-0}"
+NATIVE_BUILD_SCRIPT="$PROJECT/native-ios/build_native_ota.sh"
+NATIVE_APP="/tmp/k1l0_native_build/K1L0.app"
 
 # Detect connected iPhone — returns "XCODE_ID|DEVICECTL_ID"
 detect_device() {
@@ -34,6 +38,36 @@ echo "║  K1L0 iOS Build — $MODE mode"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 PIPELINE_START=$(date +%s)
+
+if [[ "$USE_UNITY" != "1" ]]; then
+  echo "▸ Native Swift mode: Unity compile/export is intentionally skipped"
+  echo "  Unity build path is still intact; run with K1L0_USE_UNITY=1 to restore it."
+  "$NATIVE_BUILD_SCRIPT"
+
+  if [[ "$MODE" == "device" ]]; then
+    DEVCTL_ID="00008140-000A292A0CE0801C"
+    if ! xcrun devicectl list devices 2>/dev/null | grep -q "$DEVCTL_ID"; then
+      DEVCTL_ID=$(xcrun devicectl list devices 2>/dev/null | grep -i "iphone" | grep -vi "unavailable" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[A-F0-9]{8}-/) print $i}' | head -1)
+    fi
+    if [ -z "$DEVCTL_ID" ]; then
+      echo "  ✗ No connected iPhone found for native install"
+      exit 1
+    fi
+    echo "▸ Installing native Swift app on $DEVCTL_ID"
+    xcrun devicectl device install app --device "$DEVCTL_ID" "$NATIVE_APP"
+    xcrun devicectl device process launch --device "$DEVCTL_ID" "$BUNDLE_ID"
+  fi
+
+  TOTAL=$(($(date +%s) - PIPELINE_START))
+  TOTAL_STR="${TOTAL}s"
+  if [ $TOTAL -ge 60 ]; then TOTAL_STR="$((TOTAL/60))m $((TOTAL%60))s"; fi
+  echo ""
+  echo "╔══════════════════════════════════════════╗"
+  echo "║  ✓ K1L0 native $MODE BUILD COMPLETE: $TOTAL_STR"
+  echo "╚══════════════════════════════════════════╝"
+  echo "BUILD SUCCEEDED"
+  exit 0
+fi
 
 # --- Step 1: Unity ---
 echo "▸ Step 1/3: Unity IL2CPP"
@@ -118,6 +152,8 @@ if [[ "$MODE" == "ota" ]]; then
       -archivePath "$ARCHIVE" \
       -allowProvisioningUpdates \
       CODE_SIGN_STYLE=Automatic \
+      PROVISIONING_PROFILE_SPECIFIER="" \
+      PROVISIONING_PROFILE="" \
       DEVELOPMENT_TEAM=$TEAM_ID \
       CODE_SIGN_IDENTITY="Apple Development" \
       clean archive 2>&1 | tee /tmp/k1l0_xcode_archive.log | tail -5

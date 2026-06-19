@@ -69,6 +69,23 @@ public class iOSPostProcessor
             // Write to file
             File.WriteAllText(plistPath, plist.WriteToString());
             Debug.Log("[iOSPostProcessor] Added NSMotionUsageDescription and NSLocationWhenInUseUsageDescription to Info.plist");
+
+            string projPath = PBXProject.GetPBXProjectPath(path);
+            PBXProject proj = new PBXProject();
+            proj.ReadFromFile(projPath);
+
+            string mainTarget = proj.GetUnityMainTargetGuid();
+            string frameworkTarget = proj.GetUnityFrameworkTargetGuid();
+
+            proj.AddFrameworkToProject(frameworkTarget, "SwiftUI.framework", false);
+            proj.AddFrameworkToProject(frameworkTarget, "UIKit.framework", false);
+            proj.AddFrameworkToProject(frameworkTarget, "CoreMotion.framework", false);
+            proj.AddFrameworkToProject(frameworkTarget, "CoreLocation.framework", false);
+            proj.SetBuildProperty(frameworkTarget, "SWIFT_VERSION", "5.0");
+            proj.SetBuildProperty(mainTarget, "ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES", "YES");
+            proj.SetBuildProperty(frameworkTarget, "ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES", "NO");
+            proj.WriteToFile(projPath);
+            Debug.Log("[iOSPostProcessor] Added K1L0 SwiftUI weather overlay to UnityFramework");
 #endif
         }
     }

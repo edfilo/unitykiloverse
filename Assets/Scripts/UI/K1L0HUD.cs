@@ -4,9 +4,23 @@ using TMPro;
 using System.Collections;
 using UnityEngine.EventSystems;
 using System.Collections.Generic;
+using KiloWorld.Rendering.Systems;
+using KiloWorld.UI.Stories;
 
 public class K1L0HUD : MonoBehaviour
 {
+    private static readonly string[] ManualWeatherGlyphs =
+    {
+        "clear",
+        "partly cloudy",
+        "cloudy",
+        "overcast",
+        "rain",
+        "snow",
+        "fog",
+        "storm"
+    };
+
     private Canvas canvas;
     private RectTransform safeArea;
     private TextMeshProUGUI weatherText;
@@ -61,6 +75,13 @@ public class K1L0HUD : MonoBehaviour
     public static Sprite RoundedRectSprite { get; private set; }
     public static float PanelMapBrightness => Mathf.Clamp01(PlayerPrefs.GetFloat(PanelMapBrightnessPref, 0.01f));
     public static bool IsSurveillanceCameraOn => Instance != null && Instance._mapVisible;
+
+    void Awake()
+    {
+        Instance = this;
+        if (gameObject.name != "K1L0HUD")
+            gameObject.name = "K1L0HUD";
+    }
 
     public static void SetPanelMapBrightness(float value)
     {
@@ -414,13 +435,18 @@ public class K1L0HUD : MonoBehaviour
             {
                 cam.clearFlags = _savedClearFlags;
                 cam.backgroundColor = _savedBgColor;
-                cam.cullingMask = _savedCullingMask;
+                cam.cullingMask = _savedCullingMask != 0 ? _savedCullingMask : ~0;
+                var playerController = FindFirstObjectByType<KiloFirstPersonController>();
+                if (playerController != null)
+                    playerController.SetMapModalCameraActive(true);
+                Debug.Log($"[K1L0HUD] Map visible: camera={cam.name} cullingMask={cam.cullingMask} clearFlags={cam.clearFlags}");
             }
             else
             {
                 cam.clearFlags = CameraClearFlags.SolidColor;
                 cam.backgroundColor = Color.black;
                 cam.cullingMask = 0;   // render nothing 3D → black
+                Debug.Log($"[K1L0HUD] Map hidden: camera={cam.name}");
             }
         }
         // Ring glows green when the map is ON, dim red when surveillance/off.
@@ -568,6 +594,268 @@ public class K1L0HUD : MonoBehaviour
     void ToggleHudVisible()
     {
         SetHudVisible(!hudUserVisible);
+    }
+
+    public void SetNativeOverlayMode(string enabled)
+    {
+        bool nativeOverlay = enabled == "1" || string.Equals(enabled, "true", System.StringComparison.OrdinalIgnoreCase);
+        SetHudVisible(!nativeOverlay);
+    }
+
+    public void SetNativeMapVisible(string enabled)
+    {
+        bool visible = enabled == "1" || string.Equals(enabled, "true", System.StringComparison.OrdinalIgnoreCase);
+        SetMapVisible(visible);
+    }
+
+    public void SetNativeSetting(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return;
+        int split = payload.IndexOf('=');
+        if (split <= 0) return;
+
+        string key = payload.Substring(0, split);
+        string value = payload.Substring(split + 1);
+        bool boolValue = value == "1" || value.Equals("true", System.StringComparison.OrdinalIgnoreCase);
+        float.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float floatValue);
+
+        var rm = RenderManager.Instance;
+        var profile = rm != null ? rm.profile : null;
+        if (profile != null)
+        {
+            switch (key)
+            {
+                case "saturation":
+                    profile.postFX.saturation = floatValue;
+                    SaveFloat("saturation", floatValue);
+                    break;
+                case "contrast":
+                    profile.postFX.contrast = floatValue;
+                    SaveFloat("contrast", floatValue);
+                    break;
+                case "mapBrightness":
+                    profile.postFX.exposureFixedValue = floatValue;
+                    profile.postFX.exposureEnabled = true;
+                    SaveFloat("exposureFixedValue", floatValue);
+                    break;
+                case "hueShift":
+                    profile.postFX.hueShift = floatValue;
+                    SaveFloat("hueShift", floatValue);
+                    break;
+                case "temperature":
+                    profile.postFX.temperature = floatValue;
+                    profile.postFX.temperatureOverride = true;
+                    SaveFloat("temperature", floatValue);
+                    break;
+                case "tint":
+                    profile.postFX.tint = floatValue;
+                    profile.postFX.tintOverride = true;
+                    SaveFloat("tint", floatValue);
+                    break;
+                case "bloomEnabled":
+                    profile.postFX.bloomEnabled = boolValue;
+                    SaveBool("bloomEnabled", boolValue);
+                    break;
+                case "bloomIntensity":
+                    profile.postFX.bloomIntensity = floatValue;
+                    SaveFloat("bloomIntensity", floatValue);
+                    break;
+                case "bloomThreshold":
+                    profile.postFX.bloomThreshold = floatValue;
+                    SaveFloat("bloomThreshold", floatValue);
+                    break;
+                case "bloomScatter":
+                    profile.postFX.bloomScatter = Mathf.Clamp01(floatValue);
+                    SaveFloat("bloomScatter", profile.postFX.bloomScatter);
+                    break;
+                case "vignetteEnabled":
+                    profile.postFX.vignetteEnabled = boolValue;
+                    SaveBool("vignetteEnabled", boolValue);
+                    break;
+                case "vignetteIntensity":
+                    profile.postFX.vignetteIntensity = Mathf.Clamp01(floatValue);
+                    SaveFloat("vignetteIntensity", profile.postFX.vignetteIntensity);
+                    break;
+                case "vignetteSmoothness":
+                    profile.postFX.vignetteSmoothness = Mathf.Clamp(floatValue, 0.01f, 1f);
+                    SaveFloat("vignetteSmoothness", profile.postFX.vignetteSmoothness);
+                    break;
+                case "chromaticEnabled":
+                    profile.postFX.chromaticAberrationEnabled = boolValue;
+                    SaveBool("chromaticEnabled", boolValue);
+                    break;
+                case "chromaticIntensity":
+                    profile.postFX.chromaticAberrationIntensity = Mathf.Clamp01(floatValue);
+                    SaveFloat("chromaticIntensity", profile.postFX.chromaticAberrationIntensity);
+                    break;
+                case "lensDistEnabled":
+                    profile.postFX.lensDistortionEnabled = boolValue;
+                    SaveBool("lensDistEnabled", boolValue);
+                    break;
+                case "lensDistIntensity":
+                    profile.postFX.lensDistortionIntensity = Mathf.Clamp(floatValue, -1f, 1f);
+                    SaveFloat("lensDistIntensity", profile.postFX.lensDistortionIntensity);
+                    break;
+                case "dofEnabled":
+                    profile.postFX.depthOfFieldEnabled = boolValue;
+                    SaveBool("dofEnabled", boolValue);
+                    break;
+                case "focusDistance":
+                    profile.postFX.focusDistance = Mathf.Clamp(floatValue, 0.1f, 300f);
+                    SaveFloat("focusDistance", profile.postFX.focusDistance);
+                    break;
+                case "aperture":
+                    profile.postFX.aperture = Mathf.Clamp(floatValue, 0.05f, 32f);
+                    SaveFloat("aperture", profile.postFX.aperture);
+                    break;
+                case "focalLength":
+                    profile.postFX.focalLength = Mathf.Clamp(floatValue, 1f, 300f);
+                    SaveFloat("focalLength", profile.postFX.focalLength);
+                    break;
+                case "motionBlurEnabled":
+                    profile.postFX.motionBlurEnabled = boolValue;
+                    SaveBool("motionBlurEnabled", boolValue);
+                    break;
+                case "motionBlurIntensity":
+                    profile.postFX.motionBlurIntensity = Mathf.Clamp01(floatValue);
+                    SaveFloat("motionBlurIntensity", profile.postFX.motionBlurIntensity);
+                    break;
+                case "filmGrainEnabled":
+                    profile.postFX.filmGrainEnabled = boolValue;
+                    SaveBool("filmGrainEnabled", boolValue);
+                    break;
+                case "filmGrainIntensity":
+                    profile.postFX.filmGrainIntensity = Mathf.Clamp01(floatValue);
+                    SaveFloat("filmGrainIntensity", profile.postFX.filmGrainIntensity);
+                    break;
+                case "godPositionY":
+                    profile.camera.godPositionY = floatValue;
+                    SaveFloat("godPositionY", floatValue);
+                    ApplyCameraProfile();
+                    break;
+                case "godPositionZ":
+                    profile.camera.godPositionZ = floatValue;
+                    SaveFloat("godPositionZ", floatValue);
+                    ApplyCameraProfile();
+                    break;
+                case "godRotationX":
+                    profile.camera.godRotationX = floatValue;
+                    SaveFloat("godRotationX", floatValue);
+                    ApplyCameraProfile();
+                    break;
+                case "farClipPlane":
+                    profile.camera.farClipPlane = Mathf.Max(50f, floatValue);
+                    SaveFloat("farClipPlane", profile.camera.farClipPlane);
+                    break;
+                case "auroraEnabled":
+                    profile.sky.auroraEnabled = boolValue;
+                    SaveBool("auroraEnabled", boolValue);
+                    break;
+                case "auroraIntensity":
+                    profile.sky.auroraIntensity = floatValue;
+                    SaveFloat("auroraIntensity", floatValue);
+                    break;
+                case "auroraHeight":
+                    profile.sky.auroraHeight = floatValue;
+                    SaveFloat("auroraHeight", floatValue);
+                    break;
+                case "auroraDistance":
+                    profile.sky.auroraDistance = floatValue;
+                    SaveFloat("auroraDistance", floatValue);
+                    break;
+                case "auroraWidth":
+                    profile.sky.auroraWidth = floatValue;
+                    SaveFloat("auroraWidth", floatValue);
+                    break;
+                case "auroraVerticalSize":
+                    profile.sky.auroraVerticalSize = floatValue;
+                    SaveFloat("auroraVerticalSize", floatValue);
+                    break;
+                case "auroraDriftSpeed":
+                    profile.sky.auroraDriftSpeed = floatValue;
+                    SaveFloat("auroraDriftSpeed", floatValue);
+                    break;
+            }
+        }
+
+        switch (key)
+        {
+            case "beamDistanceLabels":
+                SignalBeamBridge.SetDistanceLabelsVisible(boolValue);
+                break;
+            case "beamDebug":
+                ProfileEditorModal.SetBeamDebugVisible(boolValue);
+                break;
+            case "perfOverlay":
+                ProfileEditorModal.SetPerfOverlayVisible(boolValue);
+                break;
+            case "showStoryStrip":
+                StoriesStripVisibility.SetStoryStripVisible(boolValue);
+                break;
+            case "panelMapBrightness":
+                SetPanelMapBrightness(floatValue);
+                break;
+            case "manualHour":
+                KiloWorld.Rendering.Systems.RenderManager.ManualHour = Mathf.Repeat(floatValue, 24f);
+                PlayerPrefs.SetFloat("k1lo_manualHour", KiloWorld.Rendering.Systems.RenderManager.ManualHour);
+                KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
+                break;
+            case "manualWeather":
+                int weatherIndex = Mathf.Clamp(Mathf.RoundToInt(floatValue), 0, ManualWeatherGlyphs.Length - 1);
+                KiloWorld.Rendering.Systems.RenderManager.ManualWeatherGlyph = ManualWeatherGlyphs[weatherIndex];
+                PlayerPrefs.SetFloat("k1lo_manualWeather", weatherIndex);
+                PlayerPrefs.SetString("k1lo_manualWeatherGlyph", ManualWeatherGlyphs[weatherIndex]);
+                KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
+                break;
+            case "ambientMinStepsToSpawn":
+                SetSignalFloat("k1lo_ambientMinStepsToSpawn", Mathf.Clamp(floatValue, 0f, 2000f));
+                break;
+            case "momentumSessionGraceMinutes":
+                SetSignalFloat("k1lo_momentumSessionGraceMinutes", Mathf.Clamp(floatValue, 1f, 30f));
+                break;
+            case "ambientBeamTtlMinutes":
+                SetSignalFloat("k1lo_ambientBeamTtlMinutes", Mathf.Clamp(floatValue, 1f, 240f));
+                break;
+            case "ambientCollectRadiusMeters":
+                SetSignalFloat("k1lo_ambientCollectRadiusMeters", Mathf.Clamp(floatValue, 1f, 100f));
+                break;
+        }
+
+        PlayerPrefs.Save();
+        rm?.Apply();
+        Debug.Log($"[K1L0HUD] Native setting {key}={value}");
+    }
+
+    private static void SaveFloat(string key, float value)
+    {
+        PlayerPrefs.SetFloat("k1lo_" + key, value);
+    }
+
+    private static void SaveBool(string key, bool value)
+    {
+        PlayerPrefs.SetFloat("k1lo_" + key, value ? 1f : 0f);
+    }
+
+    private static void SetSignalFloat(string key, float value)
+    {
+        PlayerPrefs.SetFloat(key, value);
+        var director = FindFirstObjectByType<SignalDirectorV2>();
+        if (director == null) return;
+        if (key == "k1lo_ambientMinStepsToSpawn")
+            director.ambientMinStepsToSpawn = Mathf.RoundToInt(value);
+        else if (key == "k1lo_momentumSessionGraceMinutes")
+            director.momentumSessionGraceMinutes = value;
+        else if (key == "k1lo_ambientBeamTtlMinutes")
+            director.ambientBeamTtlMinutes = value;
+        else if (key == "k1lo_ambientCollectRadiusMeters")
+            director.ambientCollectRadiusMeters = value;
+    }
+
+    private static void ApplyCameraProfile()
+    {
+        var playerController = FindFirstObjectByType<KiloFirstPersonController>();
+        if (playerController != null)
+            playerController.ApplyCameraProfileNow();
     }
 
     void SetHudVisible(bool visible)

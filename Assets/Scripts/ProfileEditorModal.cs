@@ -24,6 +24,18 @@ public class ProfileEditorModal : MonoBehaviour
     public static bool ShowBeamDebug { get; private set; }
     public static event System.Action OnDebugTogglesChanged;
 
+    public static void SetPerfOverlayVisible(bool visible)
+    {
+        ShowPerfOverlay = visible;
+        OnDebugTogglesChanged?.Invoke();
+    }
+
+    public static void SetBeamDebugVisible(bool visible)
+    {
+        ShowBeamDebug = visible;
+        OnDebugTogglesChanged?.Invoke();
+    }
+
     private GameObject canvasGO;
     private GameObject modalOverlay;
     private InputField firstNameInput;

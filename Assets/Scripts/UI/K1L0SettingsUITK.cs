@@ -185,6 +185,8 @@ public class K1L0SettingsUITK : MonoBehaviour
         var director = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
         float minSteps = director != null ? director.ambientMinStepsToSpawn : PlayerPrefs.GetFloat("k1lo_ambientMinStepsToSpawn", 200f);
         float graceMinutes = director != null ? director.momentumSessionGraceMinutes : PlayerPrefs.GetFloat("k1lo_momentumSessionGraceMinutes", 1.5f);
+        float ttlMinutes = director != null ? director.ambientBeamTtlMinutes : PlayerPrefs.GetFloat("k1lo_ambientBeamTtlMinutes", 20f);
+        float collectRadius = director != null ? director.ambientCollectRadiusMeters : PlayerPrefs.GetFloat("k1lo_ambientCollectRadiusMeters", 10f);
         Header(body, "PORTAL SPAWN");
         Sliders(body, "MIN STEPS", "ambientMinStepsToSpawn", 0f, 1000f, minSteps, v =>
         {
@@ -196,6 +198,16 @@ public class K1L0SettingsUITK : MonoBehaviour
             var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
             if (d != null) d.momentumSessionGraceMinutes = Mathf.Clamp(v, 1f, 30f);
         });
+        Sliders(body, "EXPIRE MIN", "ambientBeamTtlMinutes", 1f, 240f, ttlMinutes, v =>
+        {
+            var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+            if (d != null) d.ambientBeamTtlMinutes = Mathf.Clamp(v, 1f, 240f);
+        }, true);
+        Sliders(body, "COLLECT RADIUS", "ambientCollectRadiusMeters", 1f, 100f, collectRadius, v =>
+        {
+            var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+            if (d != null) d.ambientCollectRadiusMeters = Mathf.Clamp(v, 1f, 100f);
+        }, true);
 
         var sky = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.sky;
         if (sky != null)
@@ -212,7 +224,11 @@ public class K1L0SettingsUITK : MonoBehaviour
             float manualHour = PlayerPrefs.GetFloat("k1lo_manualHour", 13f);
             KiloWorld.Rendering.Systems.RenderManager.ManualHour = manualHour;
             Sliders(body, "TIME OF DAY", "manualHour", 0f, 24f, manualHour,
-                v => KiloWorld.Rendering.Systems.RenderManager.ManualHour = v);
+                v =>
+                {
+                    KiloWorld.Rendering.Systems.RenderManager.ManualHour = v;
+                    KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
+                });
             WeatherRow(body);
         }
 
@@ -364,6 +380,7 @@ public class K1L0SettingsUITK : MonoBehaviour
             KiloWorld.Rendering.Systems.RenderManager.ManualWeatherGlyph = WeatherGlyphs[idx];
             PlayerPrefs.SetFloat("k1lo_manualWeather", idx);
             PlayerPrefs.SetString("k1lo_manualWeatherGlyph", WeatherGlyphs[idx]);
+            KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
             val.text = WeatherNames[idx];
         });
 

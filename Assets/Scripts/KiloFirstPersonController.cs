@@ -40,6 +40,12 @@ public class KiloFirstPersonController : MonoBehaviour
     public float directionConeLength = 2.4f;
     public float directionConeWidth = 1.1f;
     public Color directionConeColor = new Color(0.25f, 1f, 0.35f, 0.72f);
+
+    [Header("God View Player Marker")]
+    public bool snapCharacterToRoadInGodView = true;
+    public float godViewCharacterScale = 8f;
+    public float godViewRoadSnapRefreshSeconds = 0.5f;
+    public float godViewRoadYOffset = 0.15f;
     
     [Header("Animation Settings")]
     [SerializeField] private string speedParameter = "Speed";
@@ -73,6 +79,13 @@ public class KiloFirstPersonController : MonoBehaviour
     private KiloWorldMasterProfile profile;
     private GameObject directionConeObject;
     private Material directionConeMaterial;
+    private Transform playerVisualRoot;
+    private Vector3 playerVisualOriginalLocalPosition;
+    private Vector3 playerVisualOriginalLocalScale;
+    private bool playerVisualOriginalCached;
+    private float nextGodViewSnapTime;
+    private Vector3 lastGodViewRoadPosition;
+    private bool hasGodViewRoadPosition;
 
     private bool isGodViewActive = false; // Toggles between default and God View
     public bool IsGodView => isGodViewActive;
@@ -206,6 +219,7 @@ public class KiloFirstPersonController : MonoBehaviour
 
         ReplaceHelmet();
         EnsureDirectionCone();
+        CachePlayerVisualRoot();
     }
 
     void ReplaceHelmet()
@@ -314,6 +328,7 @@ public class KiloFirstPersonController : MonoBehaviour
 
     void LateUpdate()
     {
+        UpdateGodViewPlayerMarker();
         ApplyCameraRotation();
     }
 
@@ -643,6 +658,7 @@ public class KiloFirstPersonController : MonoBehaviour
             {
                 isGodViewActive = false;
                 currentCameraTransitionTime = 0f; // Reset transition time
+                RestorePlayerVisualRoot();
                 Debug.Log($"[Camera] Starting transition to FIRST PERSON - transitionTime: {profile?.camera.transitionTime ?? 0}s");
             }
         }
@@ -652,7 +668,18 @@ public class KiloFirstPersonController : MonoBehaviour
     {
         isGodViewActive = !isGodViewActive;
         currentCameraTransitionTime = 0f;
+        if (!isGodViewActive) RestorePlayerVisualRoot();
         Debug.Log($"[Camera] Toggled to {(isGodViewActive ? "GOD VIEW" : "FIRST PERSON")}\n{UnityEngine.StackTraceUtility.ExtractStackTrace()}");
+    }
+
+    public void SetMapModalCameraActive(bool active)
+    {
+        if (!active) return;
+
+        isGodViewActive = true;
+        currentCameraTransitionTime = 1f;
+        ApplyCameraRotation();
+        Debug.Log($"[Camera] Map modal forced GOD VIEW camera pos={cameraTransform?.position} rot={cameraTransform?.rotation.eulerAngles}");
     }
 
     private void ApplyCameraRotation()
@@ -698,6 +725,130 @@ public class KiloFirstPersonController : MonoBehaviour
         var cameraComponent = cameraTransform != null ? cameraTransform.GetComponent<Camera>() : Camera.main;
         if (cameraComponent != null)
             cameraComponent.farClipPlane = profile.camera.farClipPlane;
+    }
+
+    private void CachePlayerVisualRoot()
+    {
+        if (playerVisualRoot != null) return;
+
+        Transform toonSoldier = transform.Find("ToonSoldierModel");
+        if (toonSoldier != null)
+        {
+            playerVisualRoot = toonSoldier;
+        }
+        else if (animator != null && animator.transform != transform && animator.GetComponentInChildren<Camera>(true) == null)
+        {
+            playerVisualRoot = animator.transform;
+        }
+        else
+        {
+            foreach (Transform child in transform)
+            {
+                if (child.GetComponentInChildren<Camera>(true) != null) continue;
+                if (child.GetComponentInChildren<Renderer>(true) == null) continue;
+                playerVisualRoot = child;
+                break;
+            }
+        }
+
+        if (playerVisualRoot == null)
+        {
+            Debug.LogWarning("[KiloFirstPersonController] No separate player visual root found for god-view road marker.");
+            return;
+        }
+
+        playerVisualOriginalLocalPosition = playerVisualRoot.localPosition;
+        playerVisualOriginalLocalScale = playerVisualRoot.localScale;
+        playerVisualOriginalCached = true;
+        Debug.Log($"[KiloFirstPersonController] God-view visual root: {playerVisualRoot.name}");
+    }
+
+    private void UpdateGodViewPlayerMarker()
+    {
+        if (!snapCharacterToRoadInGodView || !isGodViewActive)
+        {
+            RestorePlayerVisualRoot();
+            return;
+        }
+
+        CachePlayerVisualRoot();
+        if (playerVisualRoot == null || !playerVisualOriginalCached) return;
+
+        if (Time.unscaledTime >= nextGodViewSnapTime)
+        {
+            nextGodViewSnapTime = Time.unscaledTime + Mathf.Max(0.1f, godViewRoadSnapRefreshSeconds);
+            hasGodViewRoadPosition = TryFindNearestRoadWorldPoint(transform.position, out lastGodViewRoadPosition);
+        }
+
+        Vector3 markerWorldPosition = hasGodViewRoadPosition ? lastGodViewRoadPosition : transform.position;
+        markerWorldPosition.y += godViewRoadYOffset;
+        playerVisualRoot.localPosition = transform.InverseTransformPoint(markerWorldPosition);
+        playerVisualRoot.localScale = playerVisualOriginalLocalScale * Mathf.Max(1f, godViewCharacterScale);
+    }
+
+    private void RestorePlayerVisualRoot()
+    {
+        if (playerVisualRoot == null || !playerVisualOriginalCached) return;
+        if (playerVisualRoot.localPosition == playerVisualOriginalLocalPosition &&
+            playerVisualRoot.localScale == playerVisualOriginalLocalScale)
+            return;
+
+        playerVisualRoot.localPosition = playerVisualOriginalLocalPosition;
+        playerVisualRoot.localScale = playerVisualOriginalLocalScale;
+    }
+
+    private bool TryFindNearestRoadWorldPoint(Vector3 origin, out Vector3 nearest)
+    {
+        nearest = origin;
+
+        Transform roadLayerFolder = null;
+        var runtimeRoot = GameObject.Find("RuntimeObjectsRoot");
+        if (runtimeRoot != null)
+            roadLayerFolder = runtimeRoot.transform.Find("road layer objects");
+        if (roadLayerFolder == null)
+        {
+            var roadObj = GameObject.Find("road layer objects");
+            if (roadObj != null) roadLayerFolder = roadObj.transform;
+        }
+        if (roadLayerFolder == null) return false;
+
+        MeshFilter[] meshes = roadLayerFolder.GetComponentsInChildren<MeshFilter>(false);
+        float bestSq = float.MaxValue;
+        bool found = false;
+
+        for (int mi = 0; mi < meshes.Length; mi++)
+        {
+            MeshFilter meshFilter = meshes[mi];
+            Mesh mesh = meshFilter.sharedMesh;
+            if (mesh == null) continue;
+
+            Vector3[] vertices = mesh.vertices;
+            Transform meshTransform = meshFilter.transform;
+            for (int vi = 0; vi < vertices.Length; vi += 2)
+            {
+                Vector3 worldPoint;
+                if (vi + 1 < vertices.Length)
+                {
+                    Vector3 left = meshTransform.TransformPoint(vertices[vi]);
+                    Vector3 right = meshTransform.TransformPoint(vertices[vi + 1]);
+                    worldPoint = (left + right) * 0.5f;
+                }
+                else
+                {
+                    worldPoint = meshTransform.TransformPoint(vertices[vi]);
+                }
+
+                Vector3 flatDelta = worldPoint - origin;
+                flatDelta.y = 0f;
+                float sq = flatDelta.sqrMagnitude;
+                if (sq >= bestSq) continue;
+                bestSq = sq;
+                nearest = worldPoint;
+                found = true;
+            }
+        }
+
+        return found;
     }
 
     public void ApplyCameraProfileNow()
