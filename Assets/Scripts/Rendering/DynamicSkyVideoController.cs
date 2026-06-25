@@ -73,6 +73,13 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
         videoMaterial = new Material(shader) { name = "K1L0 Video Weather Sky Plane" };
         videoMaterial.renderQueue = 1000;
+        // Render both sides of the cylinder triangles — guarantees visibility
+        // regardless of how winding ends up resolving on URP Unlit. Disable
+        // ZWrite so the band sits behind the world (terrain/buildings paint on
+        // top). URP Unlit exposes _Cull as float (0=Off, 1=Front, 2=Back) and
+        // _ZWrite (0=Off, 1=On). Falls through silently on unsupported keys.
+        if (videoMaterial.HasProperty("_Cull")) videoMaterial.SetFloat("_Cull", 0f);
+        if (videoMaterial.HasProperty("_ZWrite")) videoMaterial.SetFloat("_ZWrite", 0f);
         SetVideoTexture(videoMaterial, renderTexture);
         EnsureSkyPlane();
         ApplyVideoSurface(forceGi: true);
@@ -246,10 +253,12 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     // below eye-line so the bottom edge lines up roughly with the horizon
     // (the rest of the band fills the sky above).
     private const float SkyCylinderHorizonOffset = -40f;
-    // How many times the video repeats around the cylinder. 1 = one wrap,
-    // 2 = two side-by-side copies. The repeat hides the seam by making the
-    // content read as a tiled pattern instead of one stretched mural.
-    private const float SkyCylinderTileCount = 2f;
+    // How many times the video repeats around the cylinder. 1 = one wrap
+    // (full unique content per direction — turning the camera reveals new
+    // sky). 2+ = tiled which hides the seam but also makes 180° turns look
+    // identical, which reads as "the sky is following me" even though it
+    // isn't. Keep at 1.0 unless the seam is too obvious for your content.
+    private const float SkyCylinderTileCount = 1f;
 
     private void EnsureSkyPlane()
     {
@@ -278,7 +287,18 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         skyPlane.rotation = Quaternion.identity;
         skyPlane.localScale = Vector3.one;
         skyPlane.gameObject.SetActive(true);
+
+        // One-shot sanity log so we can verify on-device that the cylinder is
+        // tracking position but NOT rotation. If yaw ever leaks in, world rot
+        // would diverge from identity and we'd see it here.
+        if (!loggedAnchorOnce)
+        {
+            loggedAnchorOnce = true;
+            Debug.Log($"[DynamicSkyVideo] Anchor sanity: camYaw={cam.transform.eulerAngles.y:F1}° skyRot={skyPlane.eulerAngles.y:F1}° skyPos={skyPlane.position} camPos={camPos}");
+        }
     }
+
+    private bool loggedAnchorOnce;
 
     // Procedural cylinder side-band, triangles wound to face INWARD so the
     // camera sees the video on the inside surface. UVs wrap the texture
