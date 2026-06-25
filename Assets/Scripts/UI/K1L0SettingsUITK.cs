@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Text;
+using System.Collections;
 using UnityEngine;
+using UnityEngine.Networking;
 using UnityEngine.Profiling;
 using UnityEngine.UIElements;
 using KiloWorld.UI.Stories;
@@ -176,6 +178,11 @@ public class K1L0SettingsUITK : MonoBehaviour
         beamLabel.style.whiteSpace = WhiteSpace.Normal;
         beamLabel.style.marginBottom = 6;
         body.Add(beamLabel);
+
+        // Face section first — it's the user-identity surface and most likely
+        // to be touched. Pulls the current faceUrl from /api/user/face on
+        // mount, lets the user randomize via /api/admin/random-selfie.
+        BuildFaceSection(body);
 
         Header(body, "DEBUG");
         Toggle(body, "PORTAL DIST", "showBeamDistanceLabels", SignalBeamBridge.ShowDistanceLabels, SignalBeamBridge.SetDistanceLabelsVisible);
@@ -609,4 +616,180 @@ public class K1L0SettingsUITK : MonoBehaviour
     {
         if (panelSettings != null) Destroy(panelSettings);
     }
+
+    // ── Face section ────────────────────────────────────────────────────────
+    // The user's identity face. Persists via POST /api/user/face — the
+    // transmit-v2 engine reads it back as the identity ref on every send, so
+    // changing it here propagates instantly to the next transmission.
+    Image faceImage;
+    Label faceUrlLabel;
+    Button faceRandomBtn;
+    Button faceClearBtn;
+    string currentFaceUrl;
+
+    void BuildFaceSection(VisualElement parent)
+    {
+        Header(parent, "FACE");
+
+        var row = new VisualElement();
+        row.style.flexDirection = FlexDirection.Row;
+        row.style.alignItems = Align.Center;
+        row.style.marginBottom = 8;
+
+        faceImage = new Image();
+        faceImage.style.width = 72;
+        faceImage.style.height = 72;
+        faceImage.style.borderTopLeftRadius = 36;
+        faceImage.style.borderTopRightRadius = 36;
+        faceImage.style.borderBottomLeftRadius = 36;
+        faceImage.style.borderBottomRightRadius = 36;
+        faceImage.style.backgroundColor = new Color(0.05f, 0.10f, 0.05f, 1f);
+        faceImage.scaleMode = ScaleMode.ScaleAndCrop;
+        row.Add(faceImage);
+
+        var col = new VisualElement();
+        col.style.flexGrow = 1;
+        col.style.flexDirection = FlexDirection.Column;
+        col.style.marginLeft = 10;
+
+        faceUrlLabel = new Label("(no face set)");
+        faceUrlLabel.style.fontSize = 9;
+        faceUrlLabel.style.color = GreenDim;
+        faceUrlLabel.style.whiteSpace = WhiteSpace.NoWrap;
+        faceUrlLabel.style.overflow = Overflow.Hidden;
+        faceUrlLabel.style.textOverflow = TextOverflow.Ellipsis;
+        col.Add(faceUrlLabel);
+
+        var btnRow = new VisualElement();
+        btnRow.style.flexDirection = FlexDirection.Row;
+        btnRow.style.marginTop = 6;
+
+        faceRandomBtn = new Button(OnRandomFaceClicked) { text = "🎲 RANDOMIZE" };
+        StyleFlatButton(faceRandomBtn);
+        faceRandomBtn.style.flexGrow = 1;
+        faceRandomBtn.style.height = 26;
+        faceRandomBtn.style.marginRight = 4;
+        btnRow.Add(faceRandomBtn);
+
+        faceClearBtn = new Button(OnClearFaceClicked) { text = "CLEAR" };
+        StyleFlatButton(faceClearBtn);
+        faceClearBtn.style.width = 70;
+        faceClearBtn.style.height = 26;
+        btnRow.Add(faceClearBtn);
+
+        col.Add(btnRow);
+        row.Add(col);
+        parent.Add(row);
+
+        StartCoroutine(LoadCurrentFace());
+    }
+
+    string CurrentUserId() => DeviceIDManager.Instance != null ? DeviceIDManager.Instance.GetCurrentUserId() : "";
+
+    IEnumerator LoadCurrentFace()
+    {
+        string uid = CurrentUserId();
+        if (string.IsNullOrEmpty(uid) || APIManager.Instance == null) yield break;
+        yield return APIManager.Instance.Get($"/api/user/face?userId={UnityWebRequest.EscapeURL(uid)}", (ok, resp) =>
+        {
+            if (!ok) return;
+            string url = ExtractField(resp, "faceUrl");
+            ApplyFace(url);
+        });
+    }
+
+    void OnRandomFaceClicked()
+    {
+        if (faceRandomBtn != null) faceRandomBtn.SetEnabled(false);
+        StartCoroutine(RandomizeFace());
+    }
+
+    IEnumerator RandomizeFace()
+    {
+        string uid = CurrentUserId();
+        if (string.IsNullOrEmpty(uid) || APIManager.Instance == null)
+        {
+            if (faceRandomBtn != null) faceRandomBtn.SetEnabled(true);
+            yield break;
+        }
+        // 1) Pull a fresh AI face URL.
+        string newUrl = null;
+        yield return APIManager.Instance.Get("/api/admin/random-selfie", (ok, resp) =>
+        {
+            if (ok) newUrl = ExtractField(resp, "url");
+        });
+        if (string.IsNullOrEmpty(newUrl))
+        {
+            if (faceRandomBtn != null) faceRandomBtn.SetEnabled(true);
+            yield break;
+        }
+        // 2) Persist it on the user record.
+        string payload = "{\"userId\":\"" + EscapeJson(uid) + "\",\"faceUrl\":\"" + EscapeJson(newUrl) + "\"}";
+        yield return APIManager.Instance.Post("/api/user/face", payload, (ok, _) =>
+        {
+            if (ok) ApplyFace(newUrl);
+        });
+        if (faceRandomBtn != null) faceRandomBtn.SetEnabled(true);
+    }
+
+    void OnClearFaceClicked()
+    {
+        if (faceClearBtn != null) faceClearBtn.SetEnabled(false);
+        StartCoroutine(ClearFace());
+    }
+
+    IEnumerator ClearFace()
+    {
+        string uid = CurrentUserId();
+        if (string.IsNullOrEmpty(uid) || APIManager.Instance == null)
+        {
+            if (faceClearBtn != null) faceClearBtn.SetEnabled(true);
+            yield break;
+        }
+        string payload = "{\"userId\":\"" + EscapeJson(uid) + "\",\"faceUrl\":\"\"}";
+        yield return APIManager.Instance.Post("/api/user/face", payload, (ok, _) =>
+        {
+            if (ok) ApplyFace(null);
+        });
+        if (faceClearBtn != null) faceClearBtn.SetEnabled(true);
+    }
+
+    void ApplyFace(string url)
+    {
+        currentFaceUrl = url;
+        if (faceUrlLabel != null)
+            faceUrlLabel.text = string.IsNullOrEmpty(url) ? "(no face set)" : url;
+        if (faceImage != null && !string.IsNullOrEmpty(url))
+            StartCoroutine(DownloadFaceTexture(url));
+        else if (faceImage != null)
+            faceImage.image = null;
+    }
+
+    IEnumerator DownloadFaceTexture(string url)
+    {
+        using (var req = UnityWebRequestTexture.GetTexture(url))
+        {
+            yield return req.SendWebRequest();
+            if (req.result == UnityWebRequest.Result.Success && faceImage != null)
+                faceImage.image = ((DownloadHandlerTexture)req.downloadHandler).texture;
+        }
+    }
+
+    // Minimal JSON field extractor (avoids pulling a full parser into this file).
+    static string ExtractField(string json, string fieldName)
+    {
+        if (string.IsNullOrEmpty(json)) return null;
+        string key = "\"" + fieldName + "\"";
+        int idx = json.IndexOf(key);
+        if (idx < 0) return null;
+        int colon = json.IndexOf(':', idx);
+        if (colon < 0) return null;
+        int qStart = json.IndexOf('"', colon + 1);
+        if (qStart < 0) return null;
+        int qEnd = json.IndexOf('"', qStart + 1);
+        if (qEnd < 0) return null;
+        return json.Substring(qStart + 1, qEnd - qStart - 1);
+    }
+
+    static string EscapeJson(string s) => string.IsNullOrEmpty(s) ? "" : s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 }

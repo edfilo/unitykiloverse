@@ -242,23 +242,24 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             var collider = plane.GetComponent<Collider>();
             if (collider != null) Destroy(collider);
             skyPlane = plane.transform;
-            skyPlane.SetParent(cam.transform, false);
             skyPlaneRenderer = plane.GetComponent<MeshRenderer>();
             skyPlaneRenderer.sharedMaterial = videoMaterial;
             skyPlaneRenderer.shadowCastingMode = ShadowCastingMode.Off;
             skyPlaneRenderer.receiveShadows = false;
-            Debug.Log("[DynamicSkyVideo] Created camera-following video sky plane.");
-        }
-        else if (skyPlane.parent != cam.transform)
-        {
-            skyPlane.SetParent(cam.transform, false);
+            Debug.Log("[DynamicSkyVideo] Created horizon-anchored video sky plane.");
         }
 
         float distance = Mathf.Max(30f, Mathf.Min(cam.farClipPlane * 0.82f, 900f));
-        float height = 2f * distance * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad) * 1.18f;
-        float width = height * cam.aspect;
-        skyPlane.localPosition = new Vector3(0f, 0f, distance);
-        skyPlane.localRotation = Quaternion.identity;
+        float viewHeight = 2f * distance * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
+        float height = viewHeight * 1.9f;
+        float width = height * cam.aspect * 1.35f;
+        Quaternion yawOnly = Quaternion.Euler(0f, cam.transform.eulerAngles.y, 0f);
+        Vector3 forward = yawOnly * Vector3.forward;
+        float horizonBottomY = cam.transform.position.y - 1.5f;
+
+        skyPlane.SetParent(null, true);
+        skyPlane.position = cam.transform.position + forward * distance + Vector3.up * (horizonBottomY - cam.transform.position.y + height * 0.5f);
+        skyPlane.rotation = yawOnly;
         skyPlane.localScale = new Vector3(width, height, 1f);
         skyPlane.gameObject.SetActive(true);
     }
