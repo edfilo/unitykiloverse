@@ -42,7 +42,10 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         renderTexture = new RenderTexture(TextureWidth, TextureHeight, 0, RenderTextureFormat.ARGB32)
         {
             name = "K1L0 Weather Sky Video",
-            wrapMode = TextureWrapMode.Clamp,
+            // Repeat horizontally so the cylindrical band's seam at u=0/u=1
+            // tiles cleanly. Vertical stays clamped (band has finite height).
+            wrapModeU = TextureWrapMode.Repeat,
+            wrapModeV = TextureWrapMode.Clamp,
             filterMode = FilterMode.Bilinear,
             useMipMap = false
         };
@@ -230,6 +233,24 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         return "file://" + fullPath;
     }
 
+    // ── Horizon-anchored cylindrical sky band ──────────────────────────────
+    // Camera sits inside a procedural cylinder whose side band is mapped with
+    // the video RenderTexture. The cylinder NEVER rotates with the camera —
+    // it only follows the player's XZ so it stays centered. As the player
+    // turns, they sweep across different angular slices of the band → the
+    // video reads as world-space sky instead of a glued billboard.
+    private const int SkyCylinderSegments = 48;
+    private const float SkyCylinderRadius = 600f;
+    private const float SkyCylinderHeight = 480f;
+    // How far below the camera the band's bottom sits. Negative drops it
+    // below eye-line so the bottom edge lines up roughly with the horizon
+    // (the rest of the band fills the sky above).
+    private const float SkyCylinderHorizonOffset = -40f;
+    // How many times the video repeats around the cylinder. 1 = one wrap,
+    // 2 = two side-by-side copies. The repeat hides the seam by making the
+    // content read as a tiled pattern instead of one stretched mural.
+    private const float SkyCylinderTileCount = 2f;
+
     private void EnsureSkyPlane()
     {
         Camera cam = Camera.main;
@@ -237,31 +258,80 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
         if (skyPlane == null)
         {
-            var plane = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            plane.name = "K1L0 Video Sky Plane";
-            var collider = plane.GetComponent<Collider>();
-            if (collider != null) Destroy(collider);
-            skyPlane = plane.transform;
-            skyPlaneRenderer = plane.GetComponent<MeshRenderer>();
+            var dome = new GameObject("K1L0 Video Sky Cylinder");
+            var mf = dome.AddComponent<MeshFilter>();
+            mf.sharedMesh = BuildInsideOutCylinderBand(
+                SkyCylinderSegments, SkyCylinderRadius, SkyCylinderHeight, SkyCylinderTileCount);
+            skyPlaneRenderer = dome.AddComponent<MeshRenderer>();
             skyPlaneRenderer.sharedMaterial = videoMaterial;
             skyPlaneRenderer.shadowCastingMode = ShadowCastingMode.Off;
             skyPlaneRenderer.receiveShadows = false;
-            Debug.Log("[DynamicSkyVideo] Created horizon-anchored video sky plane.");
+            skyPlane = dome.transform;
+            Debug.Log($"[DynamicSkyVideo] Built horizon-anchored cylinder: r={SkyCylinderRadius} h={SkyCylinderHeight} segs={SkyCylinderSegments} tiles={SkyCylinderTileCount}");
         }
 
-        float distance = Mathf.Max(30f, Mathf.Min(cam.farClipPlane * 0.82f, 900f));
-        float viewHeight = 2f * distance * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
-        float height = viewHeight * 1.9f;
-        float width = height * cam.aspect * 1.35f;
-        Quaternion yawOnly = Quaternion.Euler(0f, cam.transform.eulerAngles.y, 0f);
-        Vector3 forward = yawOnly * Vector3.forward;
-        float horizonBottomY = cam.transform.position.y - 1.5f;
-
+        // World-anchored — follow player horizontally, sit at horizon, never
+        // inherit yaw. The video stays put in world space as the camera turns.
+        Vector3 camPos = cam.transform.position;
         skyPlane.SetParent(null, true);
-        skyPlane.position = cam.transform.position + forward * distance + Vector3.up * (horizonBottomY - cam.transform.position.y + height * 0.5f);
-        skyPlane.rotation = yawOnly;
-        skyPlane.localScale = new Vector3(width, height, 1f);
+        skyPlane.position = new Vector3(camPos.x, camPos.y + SkyCylinderHorizonOffset, camPos.z);
+        skyPlane.rotation = Quaternion.identity;
+        skyPlane.localScale = Vector3.one;
         skyPlane.gameObject.SetActive(true);
+    }
+
+    // Procedural cylinder side-band, triangles wound to face INWARD so the
+    // camera sees the video on the inside surface. UVs wrap the texture
+    // `tileCount` times around the circumference, full-height vertically.
+    private static Mesh BuildInsideOutCylinderBand(int segments, float radius, float height, float tileCount)
+    {
+        var mesh = new Mesh { name = "K1L0 Sky Cylinder Band" };
+        int ringVerts = segments + 1; // +1 so the seam has matching UV at u=tileCount
+        var verts = new Vector3[ringVerts * 2];
+        var uvs = new Vector2[verts.Length];
+        var tris = new int[segments * 6];
+
+        for (int i = 0; i <= segments; i++)
+        {
+            float t = (float)i / segments;
+            float a = t * Mathf.PI * 2f;
+            float x = Mathf.Cos(a) * radius;
+            float z = Mathf.Sin(a) * radius;
+            int bottom = i * 2;
+            int top = i * 2 + 1;
+            verts[bottom] = new Vector3(x, 0f, z);
+            verts[top]    = new Vector3(x, height, z);
+            uvs[bottom]   = new Vector2(t * tileCount, 0f);
+            uvs[top]      = new Vector2(t * tileCount, 1f);
+        }
+
+        // Inward-facing winding (reverse of standard cylinder so the inside
+        // surface renders to the camera that lives at the centre).
+        for (int i = 0; i < segments; i++)
+        {
+            int v0 = i * 2;
+            int v1 = i * 2 + 1;
+            int v2 = (i + 1) * 2;
+            int v3 = (i + 1) * 2 + 1;
+            int o = i * 6;
+            tris[o + 0] = v0;
+            tris[o + 1] = v2;
+            tris[o + 2] = v1;
+            tris[o + 3] = v1;
+            tris[o + 4] = v2;
+            tris[o + 5] = v3;
+        }
+
+        mesh.vertices = verts;
+        mesh.uv = uvs;
+        mesh.triangles = tris;
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+        // Big bounds so frustum culling never accidentally hides the band
+        // (the procedural triangles' computed bounds are correct, but a
+        // large explicit bound is bulletproof for camera-anchored geometry).
+        mesh.bounds = new Bounds(new Vector3(0f, height * 0.5f, 0f), Vector3.one * radius * 4f);
+        return mesh;
     }
 
     private static void SetVideoTexture(Material material, Texture texture)
