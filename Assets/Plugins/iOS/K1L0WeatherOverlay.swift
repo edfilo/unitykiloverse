@@ -145,9 +145,11 @@ final class K1L0TransmissionResultStore: ObservableObject {
         let responseOptions = (root["responseOptions"] as? [String] ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        let isFailure = status.lowercased().contains("error") || status.lowercased().contains("failed")
+        let isProgress = status.lowercased() == "queued" || status.lowercased().contains("building")
 
         // Drop pure-progress pings with no media at all so we only present once anything is ready to show.
-        guard !status.isEmpty, imageURL != nil || videoURL != nil || audioURL != nil || !lyrics.isEmpty else { return }
+        guard !status.isEmpty, isFailure || isProgress || imageURL != nil || videoURL != nil || audioURL != nil || !lyrics.isEmpty else { return }
         let result = K1L0TransmissionResult(status: status, imageURL: imageURL, videoURL: videoURL, audioURL: audioURL, lyrics: lyrics, responsePlot: responsePlot, responseOptions: responseOptions)
         K1L0ActiveTransmissionStore.shared.apply(result)
         if !K1L0ActiveTransmissionStore.shared.snapshot.active {
@@ -167,6 +169,8 @@ private struct K1L0ActiveTransmissionSnapshot: Codable {
     var responsePlot: String = ""
     var imageUrl: String = ""
     var videoUrl: String = ""
+    var status: String = ""
+    var error: String = ""
 }
 
 private final class K1L0ActiveTransmissionStore: ObservableObject {
@@ -193,16 +197,22 @@ private final class K1L0ActiveTransmissionStore: ObservableObject {
             mood: mood,
             responsePlot: "",
             imageUrl: "",
-            videoUrl: ""
+            videoUrl: "",
+            status: "building",
+            error: ""
         )
         persist()
     }
 
     func apply(_ result: K1L0TransmissionResult) {
         guard snapshot.active else { return }
+        snapshot.status = result.status
         snapshot.responsePlot = result.responsePlot
         snapshot.imageUrl = result.imageURL?.absoluteString ?? snapshot.imageUrl
         snapshot.videoUrl = result.videoURL?.absoluteString ?? snapshot.videoUrl
+        if result.status.lowercased().contains("error") || result.status.lowercased().contains("failed") {
+            snapshot.error = result.responsePlot.isEmpty ? result.status : result.responsePlot
+        }
         persist()
     }
 
@@ -547,7 +557,7 @@ private struct K1L0WeatherOverlayRoot: View {
             }
 
             if showingTransmission {
-                NativeTransmissionPanel(elements: data.elements) {
+                NativeTransmissionPanel(data: data, elements: data.elements) {
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                         showingTransmission = false
                     }
@@ -1222,6 +1232,8 @@ private struct NativeUserEditorPanel: View {
                         .padding(.top, 24)
                         .padding(.bottom, 38)
                     }
+                    .keyboardAdaptive()
+                    .scrollDismissesKeyboardCompat()
 
                     Button(action: onClose) {
                         Image(systemName: "xmark")
@@ -1240,7 +1252,9 @@ private struct NativeUserEditorPanel: View {
                 .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .shadow(color: .black.opacity(0.55), radius: 24, x: 0, y: -10)
             }
-            .ignoresSafeArea(edges: .bottom)
+            // .bottom keyboard inset is what SwiftUI uses to push content up
+            // when the keyboard appears. Leaving this with the default lets
+            // both panels' fixed-height containers lift above the keyboard.
         }
 #if canImport(UIKit)
         .sheet(isPresented: $showingSelfiePicker) {
@@ -1598,6 +1612,7 @@ private struct NativeUserEditorPanel: View {
 }
 
 private struct NativeTransmissionPanel: View {
+    @ObservedObject var data: K1L0OverlayDataModel
     let elements: [OverlayElement]
     let onClose: () -> Void
     @ObservedObject private var activeTransmission = K1L0ActiveTransmissionStore.shared
@@ -1621,6 +1636,11 @@ private struct NativeTransmissionPanel: View {
                 Color.black.opacity(0.34).ignoresSafeArea()
 
                 ZStack(alignment: .topTrailing) {
+                    // ScrollView so SwiftUI's automatic keyboard-avoidance can
+                    // inset content (push the message field above the keyboard
+                    // when it slides in). Without a scroll container the field
+                    // sits behind the keyboard.
+                    ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 10) {
                             if activeTransmission.snapshot.active {
                                 ActiveTransmissionTerminal(
@@ -1735,6 +1755,14 @@ private struct NativeTransmissionPanel: View {
                     // the heading 16pt below the X).
                     .padding(.top, 8)
                         .padding(.bottom, 38)
+                    }
+                    // Belt + suspenders: even with ScrollView's auto inset,
+                    // the keyboard observer pads the bottom by the keyboard
+                    // height so the field is never tucked under it.
+                    .keyboardAdaptive()
+                    // Tap-outside-the-keyboard to dismiss feels right for a
+                    // single-field panel; user can also drag to dismiss.
+                    .scrollDismissesKeyboardCompat()
 
                     Button(action: onClose) {
                         Image(systemName: "xmark")
@@ -1761,7 +1789,9 @@ private struct NativeTransmissionPanel: View {
                         }
                 )
             }
-            .ignoresSafeArea(edges: .bottom)
+            // ignoresSafeArea(edges: .bottom) was here — it disables the
+            // keyboard inset and hides the message field behind the keyboard.
+            // Let the default safe-area behavior push the panel up.
         }
 #if canImport(UIKit)
         .sheet(isPresented: $showingPhotoPicker) {
@@ -1849,21 +1879,11 @@ private struct NativeTransmissionPanel: View {
             status = "answer what you are doing."
             return
         }
-        let payload: [String: String] = [
-            "element": "",
-            "message": cleanMessage,
-            "photoPath": selectedPhotoPath,
-            "mood": selectedMood
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let json = String(data: data, encoding: .utf8)
-        else {
-            status = "transmission payload failed."
-            return
-        }
         K1L0ActiveTransmissionStore.shared.start(photoPath: selectedPhotoPath, message: cleanMessage, mood: selectedMood)
-        K1L0WeatherOverlayInstaller.beginNativeTransmission(json)
         status = "transmitting..."
+        data.submitNativeTransmission(photoPath: selectedPhotoPath, message: cleanMessage, mood: selectedMood) { nextStatus in
+            status = nextStatus
+        }
     }
 }
 
@@ -1873,9 +1893,9 @@ private struct ActiveTransmissionTerminal: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(snapshot.videoUrl.isEmpty ? "building transmission" : "TRANSMITTING")
+            Text(titleText)
                 .font(.system(size: 30, weight: .black))
-                .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
+                .foregroundStyle(snapshot.error.isEmpty ? Color(red: 0.66, green: 1.0, blue: 0.76) : .red)
 
             ZStack {
                 if snapshot.videoUrl.isEmpty {
@@ -1893,6 +1913,18 @@ private struct ActiveTransmissionTerminal: View {
             .clipped()
             .overlay(Rectangle().stroke(Color.green.opacity(0.50), lineWidth: 1.4))
 
+            if !snapshot.error.isEmpty {
+                Text(snapshot.error)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            } else if !snapshot.responsePlot.isEmpty {
+                Text(snapshot.responsePlot)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .textSelection(.enabled)
+            }
+
             Button(action: onStop) {
                 Text(snapshot.videoUrl.isEmpty ? "Cancel" : "[ STOP TRANSMISSION ]")
                     .font(.system(size: 17, weight: .black))
@@ -1902,6 +1934,11 @@ private struct ActiveTransmissionTerminal: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    private var titleText: String {
+        if !snapshot.error.isEmpty { return "transmission failed" }
+        return snapshot.videoUrl.isEmpty ? "building transmission" : "TRANSMITTING"
     }
 }
 
@@ -2761,6 +2798,190 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         }.resume()
     }
 
+    func submitNativeTransmission(photoPath: String, message: String, mood: String, status: @escaping (String) -> Void) {
+        let userId = currentUserIdForInventory() ?? "anon"
+        resolveAPIBase { [weak self] apiBase in
+            guard let self else { return }
+            DispatchQueue.main.async { status("uploading photo...") }
+            self.uploadTransmissionPhoto(photoPath: photoPath, apiBase: apiBase, userId: userId) { result in
+                switch result {
+                case .failure(let error):
+                    DispatchQueue.main.async {
+                        K1L0ActiveTransmissionStore.shared.apply(K1L0TransmissionResult(status: "error", imageURL: nil, videoURL: nil, audioURL: nil, lyrics: "", responsePlot: error.localizedDescription, responseOptions: []))
+                        status("photo upload failed: \(error.localizedDescription)")
+                    }
+                case .success(let imageUrl):
+                    DispatchQueue.main.async { status("creating transmission...") }
+                    self.createTransmissionJob(apiBase: apiBase, userId: userId, imageUrl: imageUrl, message: message, mood: mood, status: status)
+                }
+            }
+        }
+    }
+
+    private func uploadTransmissionPhoto(photoPath: String, apiBase: String, userId: String, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let url = URL(string: "\(apiBase)/api/k1l0/upload-image") ?? URL(string: "\(apiBase)/k1l0/upload-image") else {
+            completion(.failure(NSError(domain: "K1L0", code: 0, userInfo: [NSLocalizedDescriptionKey: "invalid upload URL"])))
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let fileUrl = URL(fileURLWithPath: photoPath)
+                let data = try Data(contentsOf: fileUrl)
+                let ext = fileUrl.pathExtension.lowercased()
+                let contentType = ext == "png" ? "image/png" : "image/jpeg"
+                var request = URLRequest(url: url, timeoutInterval: 45)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "userId": userId,
+                    "filename": fileUrl.lastPathComponent,
+                    "contentType": contentType,
+                    "imageBase64": data.base64EncodedString()
+                ])
+                URLSession.shared.dataTask(with: request) { data, response, error in
+                    if let error {
+                        completion(.failure(error))
+                        return
+                    }
+                    guard let data,
+                          let http = response as? HTTPURLResponse,
+                          (200...299).contains(http.statusCode),
+                          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let ok = root["ok"] as? Bool,
+                          ok,
+                          let imageUrl = root["url"] as? String,
+                          !imageUrl.isEmpty
+                    else {
+                        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        let body = data.flatMap { String(data: $0.prefix(160), encoding: .utf8) } ?? ""
+                        completion(.failure(NSError(domain: "K1L0", code: code, userInfo: [NSLocalizedDescriptionKey: "upload failed \(code) \(body)"])))
+                        return
+                    }
+                    completion(.success(imageUrl))
+                }.resume()
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private func createTransmissionJob(apiBase: String, userId: String, imageUrl: String, message: String, mood: String, status: @escaping (String) -> Void) {
+        guard let url = URL(string: "\(apiBase)/api/k1l0/v2/transmit") ?? URL(string: "\(apiBase)/k1l0/v2/transmit") else {
+            status("invalid transmit URL")
+            return
+        }
+        var locationPayload: [String: Any] = [
+            "city": cityText.isEmpty ? "Cranberry Township, PA" : cityText,
+            "name": places.first?.name ?? "",
+        ]
+        if let currentLocation {
+            locationPayload["lat"] = currentLocation.coordinate.latitude
+            locationPayload["lng"] = currentLocation.coordinate.longitude
+        }
+        var request = URLRequest(url: url, timeoutInterval: 45)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "userId": userId,
+            "image": imageUrl,
+            "message": message,
+            "mood": mood,
+            "activity": [
+                "type": "walk",
+                "timestamp": ISO8601DateFormatter().string(from: Date()),
+                "location": locationPayload,
+                "stats": ["steps": liveSteps],
+                "mood_prompt": message
+            ]
+        ])
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            if let error {
+                DispatchQueue.main.async {
+                    K1L0ActiveTransmissionStore.shared.apply(K1L0TransmissionResult(status: "error", imageURL: nil, videoURL: nil, audioURL: nil, lyrics: "", responsePlot: error.localizedDescription, responseOptions: []))
+                    status("transmit failed: \(error.localizedDescription)")
+                }
+                return
+            }
+            guard let data,
+                  let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ok = root["ok"] as? Bool,
+                  ok,
+                  let jobId = root["jobId"] as? String
+            else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                let body = data.flatMap { String(data: $0.prefix(160), encoding: .utf8) } ?? ""
+                DispatchQueue.main.async {
+                    K1L0ActiveTransmissionStore.shared.apply(K1L0TransmissionResult(status: "error", imageURL: nil, videoURL: nil, audioURL: nil, lyrics: "", responsePlot: "transmit failed \(code) \(body)", responseOptions: []))
+                    status("transmit failed \(code)")
+                }
+                return
+            }
+            DispatchQueue.main.async { status("queued \(jobId)") }
+            self?.pollTransmissionJob(apiBase: apiBase, userId: userId, jobId: jobId, status: status)
+        }.resume()
+    }
+
+    private func pollTransmissionJob(apiBase: String, userId: String, jobId: String, status: @escaping (String) -> Void, attempt: Int = 0) {
+        guard attempt < 90 else {
+            DispatchQueue.main.async {
+                K1L0ActiveTransmissionStore.shared.apply(K1L0TransmissionResult(status: "error", imageURL: nil, videoURL: nil, audioURL: nil, lyrics: "", responsePlot: "transmission timed out", responseOptions: []))
+                status("transmission timed out")
+            }
+            return
+        }
+        guard let url = URL(string: "\(apiBase)/api/k1l0/v2/transmit/\(jobId)?userId=\(userId)") ?? URL(string: "\(apiBase)/k1l0/v2/transmit/\(jobId)?userId=\(userId)") else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data,
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                    self?.pollTransmissionJob(apiBase: apiBase, userId: userId, jobId: jobId, status: status, attempt: attempt + 1)
+                }
+                return
+            }
+            let jobStatus = (root["status"] as? String) ?? ""
+            if jobStatus == "ready" || jobStatus == "complete" {
+                let finalUrl = (root["finalUrl"] as? String) ?? ""
+                let imageUrl = (root["stillUrl"] as? String) ?? (root["nbUrl"] as? String) ?? ""
+                let musicVariants = root["musicVariants"] as? [[String: Any]]
+                let audioUrl = (musicVariants?.first?["url"] as? String) ?? ""
+                let responsePlot = (root["responsePlot"] as? String) ?? ""
+                let responseOptions = (root["responseOptions"] as? [String]) ?? []
+                let payload: [String: Any] = [
+                    "status": jobStatus,
+                    "imageUrl": imageUrl,
+                    "videoUrl": finalUrl,
+                    "audioUrl": audioUrl,
+                    "lyrics": "",
+                    "responsePlot": responsePlot,
+                    "responseOptions": responseOptions
+                ]
+                if let payloadData = try? JSONSerialization.data(withJSONObject: payload),
+                   let json = String(data: payloadData, encoding: .utf8) {
+                    DispatchQueue.main.async {
+                        K1L0TransmissionResultStore.shared.handle(json)
+                        status("transmission ready")
+                    }
+                }
+                return
+            }
+            if jobStatus == "error" {
+                let error = (root["error"] as? String) ?? "transmission failed"
+                DispatchQueue.main.async {
+                    K1L0ActiveTransmissionStore.shared.apply(K1L0TransmissionResult(status: "error", imageURL: nil, videoURL: nil, audioURL: nil, lyrics: "", responsePlot: error, responseOptions: []))
+                    status(error)
+                }
+                return
+            }
+            DispatchQueue.main.async { status(jobStatus.isEmpty ? "building transmission..." : jobStatus) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                self?.pollTransmissionJob(apiBase: apiBase, userId: userId, jobId: jobId, status: status, attempt: attempt + 1)
+            }
+        }.resume()
+    }
+
     private func collectRadiusMeters() -> Double {
         let stored = UserDefaults.standard.double(forKey: "k1lo_native_ambientCollectRadiusMeters")
         return stored > 0 ? min(100, max(1, stored)) : 10
@@ -3023,3 +3244,68 @@ private struct WeatherGlassCard<Content: View>: View {
             )
     }
 }
+
+// MARK: - Keyboard helpers
+//
+// Panels that contain TextField/TextEditor live inside fixed-height containers
+// pinned to the screen edge. SwiftUI's automatic keyboard avoidance handles
+// MOST cases, but our panels were aggressively calling .ignoresSafeArea, which
+// nuked the keyboard inset and left the field tucked under the keyboard.
+// These helpers belt-and-suspender it: pad the bottom by the live keyboard
+// height (UIKit only — macOS keyboards aren't modal), and wrap the new
+// .scrollDismissesKeyboard API behind a polyfill for older SDKs.
+
+#if canImport(UIKit)
+private struct KeyboardAdaptiveModifier: ViewModifier {
+    @State private var keyboardHeight: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.bottom, keyboardHeight)
+            .animation(.easeOut(duration: 0.22), value: keyboardHeight)
+            .onReceive(
+                NotificationCenter.default
+                    .publisher(for: UIResponder.keyboardWillChangeFrameNotification)
+            ) { note in
+                guard let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+                let screen = UIScreen.main.bounds.height
+                // Keyboard.origin.y is the screen-space top of the keyboard.
+                // When it's off-screen (hiding), origin.y == screen height,
+                // giving us 0 padding. When it's up, the visible height is
+                // (screen - origin.y), which is exactly the inset we need.
+                keyboardHeight = max(0, screen - endFrame.origin.y)
+            }
+            .onReceive(
+                NotificationCenter.default
+                    .publisher(for: UIResponder.keyboardWillHideNotification)
+            ) { _ in
+                keyboardHeight = 0
+            }
+    }
+}
+
+extension View {
+    /// Pads the bottom of this view by the live keyboard height so input
+    /// fields aren't tucked under the keyboard inside panels that disable
+    /// SwiftUI's default safe-area handling.
+    func keyboardAdaptive() -> some View {
+        modifier(KeyboardAdaptiveModifier())
+    }
+
+    /// Compat shim for `.scrollDismissesKeyboard(.interactively)` — only
+    /// available on iOS 16+. On older OS this is a no-op.
+    @ViewBuilder
+    func scrollDismissesKeyboardCompat() -> some View {
+        if #available(iOS 16.0, *) {
+            scrollDismissesKeyboard(.interactively)
+        } else {
+            self
+        }
+    }
+}
+#else
+extension View {
+    func keyboardAdaptive() -> some View { self }
+    func scrollDismissesKeyboardCompat() -> some View { self }
+}
+#endif
