@@ -2,6 +2,12 @@ import AVKit
 import CoreLocation
 import Foundation
 import SwiftUI
+#if canImport(FirebaseCore)
+import FirebaseCore
+#endif
+#if canImport(FirebaseAuth)
+import FirebaseAuth
+#endif
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -216,15 +222,130 @@ private final class K1L0ActiveTransmissionStore: ObservableObject {
         persist()
     }
 
+    func showLatest(message: String, mood: String, responsePlot: String, imageUrl: String, videoUrl: String, status: String) {
+        snapshot = K1L0ActiveTransmissionSnapshot(
+            active: true,
+            startedAt: Date().timeIntervalSince1970,
+            photoPath: "",
+            message: message,
+            mood: mood,
+            responsePlot: responsePlot,
+            imageUrl: imageUrl,
+            videoUrl: videoUrl,
+            status: status,
+            error: ""
+        )
+        persist()
+    }
+
     func stop() {
         snapshot = K1L0ActiveTransmissionSnapshot()
         persist()
+    }
+
+    func clearCached() {
+        snapshot = K1L0ActiveTransmissionSnapshot()
+        UserDefaults.standard.removeObject(forKey: key)
+    }
+
+    func clearFinishedCached() {
+        if snapshot.active && !snapshot.videoUrl.isEmpty {
+            clearCached()
+        }
     }
 
     private func persist() {
         if let data = try? JSONEncoder().encode(snapshot) {
             UserDefaults.standard.set(data, forKey: key)
         }
+    }
+}
+
+private final class K1L0RadioPlayer: ObservableObject {
+    static let shared = K1L0RadioPlayer()
+
+    private var player: AVPlayer?
+    private var enabled = false
+    private var suppressed = false
+    private var apiBase: String?
+    private var loading = false
+
+    func setEnabled(_ value: Bool, apiBase: String?) {
+        enabled = value
+        if let apiBase { self.apiBase = apiBase }
+        if value { startIfNeeded() } else { stop() }
+    }
+
+    func setSuppressed(_ value: Bool) {
+        suppressed = value
+        if value {
+            player?.pause()
+        } else if enabled {
+            startIfNeeded()
+        }
+    }
+
+    private func startIfNeeded() {
+        guard enabled, !suppressed else { return }
+        configureAudioSession()
+        if let player {
+            player.play()
+            return
+        }
+        loadNextTrack()
+    }
+
+    private func stop() {
+        player?.pause()
+        player = nil
+    }
+
+    private func loadNextTrack() {
+        guard enabled, !suppressed, !loading else { return }
+        loading = true
+        let base = apiBase ?? "https://api-tunnel.kilo.gallery"
+        guard let url = URL(string: "\(base)/api/k1l0/v2/transmit/radio") else {
+            loading = false
+            return
+        }
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let self else { return }
+            defer { self.loading = false }
+            guard let data,
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ok = root["ok"] as? Bool,
+                  ok,
+                  let track = root["track"] as? [String: Any],
+                  let raw = (track["musicUrl"] as? String) ?? (track["instrumentalUrl"] as? String) ?? (track["audioUrl"] as? String),
+                  let audioURL = URL(string: raw)
+            else { return }
+            DispatchQueue.main.async {
+                guard self.enabled, !self.suppressed else { return }
+                let item = AVPlayerItem(url: audioURL)
+                self.player = AVPlayer(playerItem: item)
+                self.player?.volume = 0.42
+                NotificationCenter.default.addObserver(
+                    forName: .AVPlayerItemDidPlayToEndTime,
+                    object: item,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.player = nil
+                    self?.loadNextTrack()
+                }
+                self.player?.play()
+            }
+        }.resume()
+    }
+
+    private func configureAudioSession() {
+#if os(iOS)
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            print("[K1L0Radio] audio session failed: \(error.localizedDescription)")
+        }
+#endif
     }
 }
 
@@ -392,6 +513,16 @@ private final class K1L0WeatherOverlayInstaller {
         }
     }
 
+    static func setNativePanelOpen(_ open: Bool) {
+        "K1L0HUD".withCString { objectName in
+            "SetNativePanelOpen".withCString { methodName in
+                (open ? "1" : "0").withCString { message in
+                    UnitySendMessage(objectName, methodName, message)
+                }
+            }
+        }
+    }
+
     static func playBeamCollectSound() {
         "K1L0HUD".withCString { objectName in
             "PlayNativeBeamCollectSound".withCString { methodName in
@@ -436,30 +567,67 @@ private final class K1L0WeatherOverlayInstaller {
 private struct K1L0WeatherOverlayRoot: View {
     @StateObject private var data = K1L0OverlayDataModel()
     @ObservedObject private var transmissionResults = K1L0TransmissionResultStore.shared
+    @ObservedObject private var activeTransmission = K1L0ActiveTransmissionStore.shared
     @State private var hudVisible = true
     @State private var showingSettings = false
     @State private var showingTransmission = false
     @State private var showingUserEditor = false
     @State private var selectedDropFilter = "all"
     @State private var liveDropLimit = 5
+    @AppStorage("k1lo_native_musicRadioEnabled") private var musicRadioEnabled = false
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var anyPanelOpen: Bool {
+        hudVisible || showingSettings || showingTransmission || showingUserEditor
+    }
 
     var body: some View {
         ZStack {
-            VStack {
+            VStack(spacing: 8) {
                 FixedTopStatusHUD(data: data)
                     .padding(.horizontal, 18)
                     .padding(.top, -2)
                     .allowsHitTesting(false)
+                // Settings gear sits directly under the weather chip (top-left)
+                // so it lives in the same eye zone as the always-visible status
+                // bar. Frees the bottom HStack to be just the three "do
+                // something" buttons.
+                HStack {
+                    Button {
+                        K1L0WeatherOverlayInstaller.keepOverlayInFront()
+                        let willOpen = !showingSettings
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                            showingSettings = willOpen
+                            hudVisible = false
+                            showingTransmission = false
+                            showingUserEditor = false
+                        }
+                        K1L0WeatherOverlayInstaller.setNativeMapVisible(true)
+                        K1L0WeatherOverlayInstaller.suppressUnityHud()
+                        K1L0WeatherOverlayInstaller.setNativePanelOpen(willOpen)
+                    } label: {
+                        Image(systemName: showingSettings ? "xmark" : "gearshape.fill")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 46, height: 46)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.24), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.28), radius: 12, y: 6)
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+                .padding(.leading, 18)
                 Spacer()
             }
             .zIndex(4)
 
-            if hudVisible && !showingSettings {
+            if hudVisible && !showingSettings && !showingTransmission && !showingUserEditor {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 8) {
                         WeatherGlassCard {
                             VStack(alignment: .leading, spacing: 12) {
-                                Text("Live Drops")
+                                Text("Nearby")
                                     .font(.system(size: 25, weight: .bold))
                                 Text("walk to collect")
                                     .font(.system(size: 12, weight: .semibold))
@@ -496,6 +664,31 @@ private struct K1L0WeatherOverlayRoot: View {
                                             .padding(.top, 2)
                                     }
                                     .buttonStyle(.plain)
+                                }
+                            }
+                        }
+
+                        WeatherGlassCard {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Nearby Users")
+                                    .font(.system(size: 25, weight: .bold))
+                                if data.nearbyUsers.isEmpty {
+                                    Text(data.nearbyUsersStatus)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.70))
+                                } else {
+                                    ForEach(data.nearbyUsers.prefix(12)) { user in
+                                        HStack(spacing: 10) {
+                                            Text(user.displayName)
+                                                .font(.system(size: 15, weight: .semibold))
+                                                .lineLimit(1)
+                                            Spacer()
+                                            Text(data.userLocationText(user))
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundStyle(.white.opacity(0.72))
+                                                .lineLimit(1)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -540,6 +733,7 @@ private struct K1L0WeatherOverlayRoot: View {
                     showingSettings = false
                     K1L0WeatherOverlayInstaller.setNativeMapVisible(true)
                     K1L0WeatherOverlayInstaller.suppressUnityHud()
+                    K1L0WeatherOverlayInstaller.setNativePanelOpen(false)
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
@@ -551,6 +745,7 @@ private struct K1L0WeatherOverlayRoot: View {
                     }
                     K1L0WeatherOverlayInstaller.setNativeMapVisible(true)
                     K1L0WeatherOverlayInstaller.suppressUnityHud()
+                    K1L0WeatherOverlayInstaller.setNativePanelOpen(false)
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(20)
@@ -563,6 +758,7 @@ private struct K1L0WeatherOverlayRoot: View {
                     }
                     K1L0WeatherOverlayInstaller.setNativeMapVisible(true)
                     K1L0WeatherOverlayInstaller.suppressUnityHud()
+                    K1L0WeatherOverlayInstaller.setNativePanelOpen(false)
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .zIndex(20)
@@ -573,14 +769,18 @@ private struct K1L0WeatherOverlayRoot: View {
                 HStack {
                     Button {
                         K1L0WeatherOverlayInstaller.keepOverlayInFront()
-                        hudVisible.toggle()
-                        showingSettings = false
-                        showingTransmission = false
-                        showingUserEditor = false
+                        let willOpen = !hudVisible
+                        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
+                            hudVisible = willOpen
+                            showingSettings = false
+                            showingTransmission = false
+                            showingUserEditor = false
+                        }
                         K1L0WeatherOverlayInstaller.suppressUnityHud()
                         K1L0WeatherOverlayInstaller.setNativeMapVisible(true)
+                        K1L0WeatherOverlayInstaller.setNativePanelOpen(willOpen)
                     } label: {
-                        Image(systemName: hudVisible ? "eye.fill" : "eye.slash.fill")
+                        Image(systemName: hudVisible ? "newspaper.fill" : "newspaper")
                             .font(.system(size: 20, weight: .bold))
                             .foregroundStyle(.white)
                             .frame(width: 58, height: 58)
@@ -592,13 +792,19 @@ private struct K1L0WeatherOverlayRoot: View {
                     Spacer()
                     Button {
                         K1L0WeatherOverlayInstaller.keepOverlayInFront()
+                        let willOpen = !showingTransmission
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                            showingTransmission.toggle()
+                            showingTransmission = willOpen
+                            hudVisible = false
                             showingSettings = false
                             showingUserEditor = false
                         }
+                        if willOpen {
+                            data.refreshTransmissionState()
+                        }
                         K1L0WeatherOverlayInstaller.setNativeMapVisible(true)
                         K1L0WeatherOverlayInstaller.suppressUnityHud()
+                        K1L0WeatherOverlayInstaller.setNativePanelOpen(willOpen)
                     } label: {
                         Image(systemName: showingTransmission ? "xmark" : "antenna.radiowaves.left.and.right")
                             .font(.system(size: 22, weight: .bold))
@@ -610,38 +816,24 @@ private struct K1L0WeatherOverlayRoot: View {
                     }
                     .buttonStyle(.plain)
                     Spacer()
+                    // User profile button now anchors the right end of the
+                    // bottom HUD row. Settings gear moved up to live under
+                    // the weather chip (see top-left block above).
                     Button {
                         K1L0WeatherOverlayInstaller.keepOverlayInFront()
+                        let willOpen = !showingUserEditor
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                            showingUserEditor.toggle()
+                            showingUserEditor = willOpen
+                            hudVisible = false
                             showingSettings = false
                             showingTransmission = false
                         }
                         K1L0WeatherOverlayInstaller.setNativeMapVisible(true)
                         K1L0WeatherOverlayInstaller.suppressUnityHud()
+                        K1L0WeatherOverlayInstaller.setNativePanelOpen(willOpen)
                     } label: {
                         Image(systemName: showingUserEditor ? "xmark" : "person.crop.circle.fill")
                             .font(.system(size: 21, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 58, height: 58)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .overlay(Circle().stroke(.white.opacity(0.24), lineWidth: 1))
-                            .shadow(color: .black.opacity(0.28), radius: 16, y: 8)
-                    }
-                    .buttonStyle(.plain)
-                    Spacer()
-                    Button {
-                        K1L0WeatherOverlayInstaller.keepOverlayInFront()
-                        withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
-                            showingSettings.toggle()
-                            showingTransmission = false
-                            showingUserEditor = false
-                        }
-                        K1L0WeatherOverlayInstaller.setNativeMapVisible(true)
-                        K1L0WeatherOverlayInstaller.suppressUnityHud()
-                    } label: {
-                        Image(systemName: showingSettings ? "xmark" : "gearshape.fill")
-                            .font(.system(size: 20, weight: .bold))
                             .foregroundStyle(.white)
                             .frame(width: 58, height: 58)
                             .background(.ultraThinMaterial, in: Circle())
@@ -655,10 +847,33 @@ private struct K1L0WeatherOverlayRoot: View {
             }
         }
         .onAppear {
+            if UserDefaults.standard.object(forKey: "k1lo_native_musicRadioEnabled") == nil {
+                musicRadioEnabled = true
+            }
             data.start()
+            data.refreshTransmissionState(clearStaleCache: true)
+            K1L0RadioPlayer.shared.setEnabled(musicRadioEnabled, apiBase: data.activeAPIBase)
+            K1L0RadioPlayer.shared.setSuppressed(activeTransmission.snapshot.active && !activeTransmission.snapshot.videoUrl.isEmpty)
         }
         .onChange(of: selectedDropFilter) { _ in
             liveDropLimit = 5
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                data.refreshTransmissionState(clearStaleCache: true)
+            }
+        }
+        .onChange(of: musicRadioEnabled) { enabled in
+            K1L0RadioPlayer.shared.setEnabled(enabled, apiBase: data.activeAPIBase)
+        }
+        .onChange(of: anyPanelOpen) { open in
+            K1L0WeatherOverlayInstaller.setNativePanelOpen(open)
+        }
+        .onChange(of: activeTransmission.snapshot.active) { active in
+            K1L0RadioPlayer.shared.setSuppressed(active && !activeTransmission.snapshot.videoUrl.isEmpty)
+        }
+        .onChange(of: activeTransmission.snapshot.videoUrl) { videoUrl in
+            K1L0RadioPlayer.shared.setSuppressed(activeTransmission.snapshot.active && !videoUrl.isEmpty)
         }
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: showingTransmission)
         .animation(.spring(response: 0.34, dampingFraction: 0.88), value: showingUserEditor)
@@ -857,6 +1072,14 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_godPositionZ") private var godPositionZ = 100.0
     @AppStorage("k1lo_native_godRotationX") private var godRotationX = 55.0
     @AppStorage("k1lo_native_farClipPlane") private var farClipPlane = 250.0
+    @AppStorage("k1lo_native_moonlightIntensity") private var moonlightIntensity = 1.67
+    @AppStorage("k1lo_native_ambientIntensity") private var ambientIntensity = 1.87
+    @AppStorage("k1lo_native_shadowStrength") private var shadowStrength = 1.0
+    @AppStorage("k1lo_native_shadowDistance") private var shadowDistance = 150.0
+    @AppStorage("k1lo_native_spotlightIntensity") private var spotlightIntensity = 0.0
+    @AppStorage("k1lo_native_experimentalPointIntensity") private var experimentalPointIntensity = 8.32
+    @AppStorage("k1lo_native_experimentalPointRange") private var experimentalPointRange = 55.6
+    @AppStorage("k1lo_native_reflectionIntensity") private var reflectionIntensity = 1.0
     @AppStorage("k1lo_native_auroraEnabled") private var auroraEnabled = true
     @AppStorage("k1lo_native_auroraIntensity") private var auroraIntensity = 0.75
     @AppStorage("k1lo_native_auroraHeight") private var auroraHeight = 115.0
@@ -876,6 +1099,7 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_momentumSessionGraceMinutes") private var momentumSessionGraceMinutes = 1.5
     @AppStorage("k1lo_native_ambientBeamTtlMinutes") private var ambientBeamTtlMinutes = 20.0
     @AppStorage("k1lo_native_ambientCollectRadiusMeters") private var ambientCollectRadiusMeters = 10.0
+    @AppStorage("k1lo_native_musicRadioEnabled") private var musicRadioEnabled = false
 
     var body: some View {
         ZStack {
@@ -900,6 +1124,24 @@ private struct NativeSettingsPanel: View {
                         .buttonStyle(.plain)
                     }
                     .padding(.top, 18)
+
+                    SettingsSection(title: "God Camera") {
+                        SettingSliderRow(title: "Height", value: $godPositionY, range: 10...500, step: 1, key: "godPositionY")
+                        SettingSliderRow(title: "Distance", value: $godPositionZ, range: 10...500, step: 1, key: "godPositionZ")
+                        SettingSliderRow(title: "Pitch", value: $godRotationX, range: -90...90, step: 1, key: "godRotationX")
+                        SettingSliderRow(title: "Far Clip", value: $farClipPlane, range: 100...5000, step: 10, key: "farClipPlane")
+                    }
+
+                    SettingsSection(title: "Lighting") {
+                        SettingSliderRow(title: "Moonlight", value: $moonlightIntensity, range: 0...3, step: 0.01, key: "moonlightIntensity")
+                        SettingSliderRow(title: "Ambient", value: $ambientIntensity, range: 0...3, step: 0.01, key: "ambientIntensity")
+                        SettingSliderRow(title: "Shadow Strength", value: $shadowStrength, range: 0...1, step: 0.01, key: "shadowStrength")
+                        SettingSliderRow(title: "Shadow Distance", value: $shadowDistance, range: 0...500, step: 1, key: "shadowDistance")
+                        SettingSliderRow(title: "Spotlight", value: $spotlightIntensity, range: 0...3, step: 0.01, key: "spotlightIntensity")
+                        SettingSliderRow(title: "Point Light", value: $experimentalPointIntensity, range: 0...12, step: 0.01, key: "experimentalPointIntensity")
+                        SettingSliderRow(title: "Point Range", value: $experimentalPointRange, range: 0...120, step: 1, key: "experimentalPointRange")
+                        SettingSliderRow(title: "Reflections", value: $reflectionIntensity, range: 0...2, step: 0.01, key: "reflectionIntensity")
+                    }
 
                     SettingsSection(title: "Map Color") {
                         SettingSliderRow(title: "Saturation", value: $saturation, range: -100...100, step: 1, key: "saturation")
@@ -938,13 +1180,6 @@ private struct NativeSettingsPanel: View {
                         SettingSliderRow(title: "Film Grain Intensity", value: $filmGrainIntensity, range: 0...1, step: 0.01, key: "filmGrainIntensity")
                     }
 
-                    SettingsSection(title: "God Camera") {
-                        SettingSliderRow(title: "Height", value: $godPositionY, range: 10...500, step: 1, key: "godPositionY")
-                        SettingSliderRow(title: "Distance", value: $godPositionZ, range: 10...500, step: 1, key: "godPositionZ")
-                        SettingSliderRow(title: "Pitch", value: $godRotationX, range: -90...90, step: 1, key: "godRotationX")
-                        SettingSliderRow(title: "Far Clip", value: $farClipPlane, range: 100...5000, step: 10, key: "farClipPlane")
-                    }
-
                     SettingsSection(title: "Aurora") {
                         SettingToggleRow(title: "Aurora", value: $auroraEnabled, key: "auroraEnabled")
                         SettingSliderRow(title: "Intensity", value: $auroraIntensity, range: 0...2, step: 0.05, key: "auroraIntensity")
@@ -956,6 +1191,7 @@ private struct NativeSettingsPanel: View {
                     }
 
                     SettingsSection(title: "Signals") {
+                        SettingToggleRow(title: "Music Radio", value: $musicRadioEnabled, key: "musicRadioEnabled")
                         SettingSliderRow(title: "Min Steps Gate", value: $ambientMinStepsToSpawn, range: 0...2000, step: 10, key: "ambientMinStepsToSpawn")
                         SettingSliderRow(title: "Reset Grace Min", value: $momentumSessionGraceMinutes, range: 1...30, step: 0.5, key: "momentumSessionGraceMinutes")
                         SettingSliderRow(title: "Portal Expire Min", value: $ambientBeamTtlMinutes, range: 1...240, step: 1, key: "ambientBeamTtlMinutes")
@@ -1232,7 +1468,6 @@ private struct NativeUserEditorPanel: View {
                         .padding(.top, 24)
                         .padding(.bottom, 38)
                     }
-                    .keyboardAdaptive()
                     .scrollDismissesKeyboardCompat()
 
                     Button(action: onClose) {
@@ -1633,7 +1868,7 @@ private struct NativeTransmissionPanel: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
-                Color.black.opacity(0.34).ignoresSafeArea()
+                Color.clear.ignoresSafeArea()
 
                 ZStack(alignment: .topTrailing) {
                     // ScrollView so SwiftUI's automatic keyboard-avoidance can
@@ -1754,12 +1989,8 @@ private struct NativeTransmissionPanel: View {
                     // baseline (was 24 for content / 8 for X, which dropped
                     // the heading 16pt below the X).
                     .padding(.top, 8)
-                        .padding(.bottom, 38)
+                    .padding(.bottom, activeTransmission.snapshot.active ? 8 : 38)
                     }
-                    // Belt + suspenders: even with ScrollView's auto inset,
-                    // the keyboard observer pads the bottom by the keyboard
-                    // height so the field is never tucked under it.
-                    .keyboardAdaptive()
                     // Tap-outside-the-keyboard to dismiss feels right for a
                     // single-field panel; user can also drag to dismiss.
                     .scrollDismissesKeyboardCompat()
@@ -1777,9 +2008,13 @@ private struct NativeTransmissionPanel: View {
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: min(geometry.size.height - 18, max(560, geometry.size.height * 0.82)))
-                .background(Color.black)
+                .background(Color.black.opacity(0.22))
                 .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .shadow(color: .black.opacity(0.55), radius: 24, x: 0, y: -10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.32), radius: 20, x: 0, y: -8)
                 .gesture(
                     DragGesture(minimumDistance: 18)
                         .onEnded { value in
@@ -1792,6 +2027,9 @@ private struct NativeTransmissionPanel: View {
             // ignoresSafeArea(edges: .bottom) was here — it disables the
             // keyboard inset and hides the message field behind the keyboard.
             // Let the default safe-area behavior push the panel up.
+        }
+        .onAppear {
+            data.refreshTransmissionState(clearStaleCache: true)
         }
 #if canImport(UIKit)
         .sheet(isPresented: $showingPhotoPicker) {
@@ -1892,26 +2130,34 @@ private struct ActiveTransmissionTerminal: View {
     let onStop: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(titleText)
                 .font(.system(size: 30, weight: .black))
                 .foregroundStyle(snapshot.error.isEmpty ? Color(red: 0.66, green: 1.0, blue: 0.76) : .red)
 
-            ZStack {
-                if snapshot.videoUrl.isEmpty {
-                    WarblyStaticView()
-                } else {
-                    InlineTransmissionVideoPlayer(urlString: snapshot.videoUrl)
-                    WarblyStaticView()
-                        .opacity(0.14)
-                        .allowsHitTesting(false)
+            GeometryReader { proxy in
+                let height = min(CGFloat(330), proxy.size.width * 16 / 9)
+                let width = height * 9 / 16
+                HStack {
+                    Spacer(minLength: 0)
+                    ZStack {
+                        if snapshot.videoUrl.isEmpty {
+                            WarblyStaticView()
+                        } else {
+                            InlineTransmissionVideoPlayer(urlString: snapshot.videoUrl)
+                            WarblyStaticView()
+                                .opacity(0.14)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .frame(width: width, height: height)
+                    .background(Color.black.opacity(0.86))
+                    .clipped()
+                    .overlay(Rectangle().stroke(Color.green.opacity(0.50), lineWidth: 1.4))
+                    Spacer(minLength: 0)
                 }
             }
-            .frame(maxWidth: .infinity)
             .frame(height: 330)
-            .background(Color.black.opacity(0.86))
-            .clipped()
-            .overlay(Rectangle().stroke(Color.green.opacity(0.50), lineWidth: 1.4))
 
             if !snapshot.error.isEmpty {
                 Text(snapshot.error)
@@ -2060,10 +2306,10 @@ private struct FixedTopStatusHUD: View {
                     .font(.system(size: 48, weight: .bold, design: .default))
                     .foregroundStyle(.white)
                     .monospacedDigit()
-                Text("live steps")
-                    .font(.system(size: 12, weight: .medium))
+                Text("steps")
+                    .font(.system(size: 20, weight: .black))
                     .foregroundStyle(.white.opacity(0.72))
-                    .padding(.top, -4)
+                    .padding(.top, -8)
                 Text("24h \(data.steps24h)   7d \(data.steps7d)")
                     .font(.system(size: 12, weight: .medium))
                     .monospacedDigit()
@@ -2077,21 +2323,25 @@ private struct WeatherPill: View {
     @ObservedObject var model: K1L0OverlayDataModel
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: model.weatherGlyph)
-                .font(.system(size: 17, weight: .semibold))
+        VStack(alignment: .leading, spacing: 2) {
             if !model.cityText.isEmpty {
                 Text(model.cityText)
-                    .font(.system(size: 17, weight: .semibold))
-                    .lineLimit(1)
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text(model.weatherText)
-                .font(.system(size: 17, weight: .semibold))
+            HStack(spacing: 7) {
+                Image(systemName: model.weatherGlyph)
+                    .font(.system(size: 16, weight: .semibold))
+                Text(model.weatherText)
+                    .font(.system(size: 16, weight: .semibold))
+            }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 13)
-        .padding(.vertical, 9)
-        .background(.black.opacity(0.28), in: Capsule())
+        .padding(.vertical, 10)
+        .frame(maxWidth: 220, alignment: .leading)
+        .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -2175,9 +2425,11 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
     @Published var places: [OverlayPlace] = []
     @Published var beams: [OverlayBeam] = []
     @Published var elements: [OverlayElement] = []
+    @Published var nearbyUsers: [OverlayUser] = []
     @Published var locationStatus = "loading nearby places…"
     @Published var beamStatus = "scanning transmissions…"
     @Published var elementsStatus = "loading elements…"
+    @Published var nearbyUsersStatus = "loading users…"
     @Published var apiStatus = "api resolving…"
     @Published private var now = Date()
     @Published private var headingDegrees = 0.0
@@ -2190,7 +2442,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
     private var didFetchNearby = false
     private var nearbyRefreshTimer: Timer?
     private var clockTimer: Timer?
-    private var activeAPIBase: String?
+    private(set) var activeAPIBase: String?
     private var isResolvingAPI = false
     private var lastWeatherFetchAt = Date.distantPast
     private var lastWeatherFetchLocation: CLLocation?
@@ -2325,6 +2577,12 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         formatDistance(distanceMeters(to: beam))
     }
 
+    func userLocationText(_ user: OverlayUser) -> String {
+        guard let lat = user.lat, let lng = user.lng else { return "no live location" }
+        guard let currentLocation else { return "live" }
+        return formatDistance(currentLocation.distance(from: CLLocation(latitude: lat, longitude: lng)))
+    }
+
     func relativeBearingDegrees(to place: OverlayPlace) -> Double {
         guard let currentLocation else { return 0 }
         return Self.bearingDegrees(
@@ -2433,6 +2691,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
             guard let self else { return }
             self.fetchPlaces(latitude: latitude, longitude: longitude, apiBase: apiBase)
             self.fetchBeams(latitude: latitude, longitude: longitude, apiBase: apiBase)
+            self.fetchNearbyUsers(apiBase: apiBase)
             self.fetchInventory()
         }
     }
@@ -2442,6 +2701,59 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         nearbyRefreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             guard let self, let location = self.currentLocation else { return }
             self.fetchNearby(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
+        }
+    }
+
+    func refreshTransmissionState(clearStaleCache: Bool = false) {
+        if clearStaleCache {
+            K1L0ActiveTransmissionStore.shared.clearFinishedCached()
+        }
+        fetchInventory()
+        fetchLatestTransmission(clearStaleCache: clearStaleCache)
+        if let location = currentLocation {
+            fetchNearby(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
+        }
+    }
+
+    private func fetchLatestTransmission(clearStaleCache: Bool = false) {
+        guard let userId = currentUserIdForInventory(), !userId.isEmpty else { return }
+        resolveAPIBase { apiBase in
+            let safeUser = userId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? userId
+            guard let url = URL(string: "\(apiBase)/api/k1l0/v2/transmit/latest?userId=\(safeUser)") else { return }
+            URLSession.shared.dataTask(with: url) { data, _, _ in
+                guard let data,
+                      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let ok = root["ok"] as? Bool,
+                      ok
+                else { return }
+                guard let transmission = root["transmission"] as? [String: Any],
+                      let finalUrl = transmission["finalUrl"] as? String,
+                      !finalUrl.isEmpty
+                else {
+                    if clearStaleCache {
+                        DispatchQueue.main.async {
+                            K1L0ActiveTransmissionStore.shared.clearCached()
+                        }
+                    }
+                    return
+                }
+                let input = transmission["input"] as? [String: Any]
+                let message = (input?["message"] as? String) ?? ""
+                let mood = (input?["mood"] as? String) ?? "wired"
+                let responsePlot = (transmission["responsePlot"] as? String) ?? ""
+                let imageUrl = (transmission["stillUrl"] as? String) ?? (transmission["nbUrl"] as? String) ?? ""
+                let status = (transmission["status"] as? String) ?? "ready"
+                DispatchQueue.main.async {
+                    K1L0ActiveTransmissionStore.shared.showLatest(
+                        message: message,
+                        mood: mood,
+                        responsePlot: responsePlot,
+                        imageUrl: imageUrl,
+                        videoUrl: finalUrl,
+                        status: status
+                    )
+                }
+            }.resume()
         }
     }
 
@@ -2574,6 +2886,29 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
                 self?.beamStatus = activeBeams.isEmpty ? "no nearby transmissions" : "\(activeBeams.count) nearby"
                 self?.updateBeamApproachState()
                 self?.checkForBeamCollection()
+            }
+        }.resume()
+    }
+
+    private func fetchNearbyUsers(apiBase: String) {
+        guard let url = URL(string: "\(apiBase)/api/k1l0/users/nearby?limit=50") else { return }
+        URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+            guard let data else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                DispatchQueue.main.async { self?.nearbyUsersStatus = "users unavailable \(code)" }
+                if let error { print("[K1L0Overlay] users fetch error: \(error.localizedDescription)") }
+                return
+            }
+            do {
+                let decoded = try JSONDecoder().decode(OverlayUsersResponse.self, from: data)
+                DispatchQueue.main.async {
+                    self?.nearbyUsers = decoded.users
+                    self?.nearbyUsersStatus = decoded.users.isEmpty ? "no users found" : "\(decoded.users.count) users"
+                }
+            } catch {
+                let snippet = String(data: data.prefix(180), encoding: .utf8) ?? "non-utf8"
+                DispatchQueue.main.async { self?.nearbyUsersStatus = "users decode error" }
+                print("[K1L0Overlay] users decode error: \(error) body=\(snippet)")
             }
         }.resume()
     }
@@ -3020,6 +3355,14 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
 
     private func currentUserIdForInventory() -> String? {
         let defaults = UserDefaults.standard
+#if canImport(FirebaseAuth) && canImport(FirebaseCore)
+        if FirebaseApp.app() != nil,
+           let uid = Auth.auth().currentUser?.uid.trimmingCharacters(in: .whitespacesAndNewlines),
+           !uid.isEmpty {
+            defaults.set(uid, forKey: "FirebaseUserId")
+            return uid
+        }
+#endif
         for key in ["FirebaseUserId", "K1L0UserId", "DeviceID", "deviceID"] {
             let value = defaults.string(forKey: key) ?? ""
             if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -3156,6 +3499,31 @@ private struct OverlayBeamsResponse: Decodable {
     let beams: [OverlayBeam]
 }
 
+private struct OverlayUsersResponse: Decodable {
+    let users: [OverlayUser]
+}
+
+private struct OverlayUser: Decodable, Identifiable {
+    let userId: String
+    let name: String?
+    let callsign: String?
+    let avatarUrl: String?
+    let faceUrl: String?
+    let lat: Double?
+    let lng: Double?
+    let lastActive: Double?
+
+    var id: String { userId }
+
+    var displayName: String {
+        let call = (callsign ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !call.isEmpty { return call }
+        let realName = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !realName.isEmpty { return realName }
+        return String(userId.prefix(10))
+    }
+}
+
 private struct OverlayBeam: Decodable, Identifiable {
     let id: String
     let lat: Double
@@ -3247,51 +3615,12 @@ private struct WeatherGlassCard<Content: View>: View {
 
 // MARK: - Keyboard helpers
 //
-// Panels that contain TextField/TextEditor live inside fixed-height containers
-// pinned to the screen edge. SwiftUI's automatic keyboard avoidance handles
-// MOST cases, but our panels were aggressively calling .ignoresSafeArea, which
-// nuked the keyboard inset and left the field tucked under the keyboard.
-// These helpers belt-and-suspender it: pad the bottom by the live keyboard
-// height (UIKit only — macOS keyboards aren't modal), and wrap the new
-// .scrollDismissesKeyboard API behind a polyfill for older SDKs.
+// Panels use ScrollView plus SwiftUI's native keyboard safe-area behavior.
+// Do not add manual keyboard-height padding here; on bottom-pinned sheets it
+// creates a giant spacer instead of simply lifting the active field.
 
 #if canImport(UIKit)
-private struct KeyboardAdaptiveModifier: ViewModifier {
-    @State private var keyboardHeight: CGFloat = 0
-
-    func body(content: Content) -> some View {
-        content
-            .padding(.bottom, keyboardHeight)
-            .animation(.easeOut(duration: 0.22), value: keyboardHeight)
-            .onReceive(
-                NotificationCenter.default
-                    .publisher(for: UIResponder.keyboardWillChangeFrameNotification)
-            ) { note in
-                guard let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-                let screen = UIScreen.main.bounds.height
-                // Keyboard.origin.y is the screen-space top of the keyboard.
-                // When it's off-screen (hiding), origin.y == screen height,
-                // giving us 0 padding. When it's up, the visible height is
-                // (screen - origin.y), which is exactly the inset we need.
-                keyboardHeight = max(0, screen - endFrame.origin.y)
-            }
-            .onReceive(
-                NotificationCenter.default
-                    .publisher(for: UIResponder.keyboardWillHideNotification)
-            ) { _ in
-                keyboardHeight = 0
-            }
-    }
-}
-
 extension View {
-    /// Pads the bottom of this view by the live keyboard height so input
-    /// fields aren't tucked under the keyboard inside panels that disable
-    /// SwiftUI's default safe-area handling.
-    func keyboardAdaptive() -> some View {
-        modifier(KeyboardAdaptiveModifier())
-    }
-
     /// Compat shim for `.scrollDismissesKeyboard(.interactively)` — only
     /// available on iOS 16+. On older OS this is a no-op.
     @ViewBuilder
