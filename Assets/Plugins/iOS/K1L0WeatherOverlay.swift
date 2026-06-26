@@ -1129,45 +1129,18 @@ private struct NativeUserEditorPanel: View {
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.68))
 
-                            // Hero header: full-aspect selfie on the left, name +
-                            // callsign on the right — the identity-defining bits
-                            // live up here above the fold; design/render fields
-                            // sit in their own sections below.
+                            // Hero header: rendered cloak/helmet avatar on the
+                            // left (this is the user's K1L0 identity, not the
+                            // raw selfie), name + callsign on the right. The
+                            // raw selfie has its own card further down.
                             WeatherGlassCard {
                                 HStack(alignment: .top, spacing: 14) {
-                                    selfieHero
+                                    renderedHero
                                     VStack(alignment: .leading, spacing: 10) {
                                         profileTextField("Name", text: $draft.name)
                                         profileTextField("Callsign", text: $draft.callsign)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }
-
-                            WeatherGlassCard {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text("Selfie")
-                                        .font(.system(size: 19, weight: .bold))
-#if canImport(UIKit)
-                                    HStack(spacing: 10) {
-                                        selfieButton("TAKE SELFIE", source: .camera)
-                                        selfieButton("SELECT", source: .photoLibrary)
-                                    }
-#elseif canImport(AppKit)
-                                    Button {
-                                        macSelectSelfie()
-                                    } label: {
-                                        Text("[ SELECT SELFIE ]")
-                                            .font(.system(size: 13, weight: .black))
-                                            .foregroundStyle(.white)
-                                            .frame(maxWidth: .infinity, minHeight: 42)
-                                            .overlay(Rectangle().stroke(Color.white.opacity(0.40), lineWidth: 1))
-                                    }
-                                    .buttonStyle(.plain)
-#endif
-                                    Text(draft.selfiePath.isEmpty && draft.selfieUrl.isEmpty ? "no selfie attached" : "selfie attached")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(draft.selfiePath.isEmpty && draft.selfieUrl.isEmpty ? .white.opacity(0.54) : Color(red: 0.66, green: 1.0, blue: 0.76))
                                 }
                             }
 
@@ -1185,12 +1158,48 @@ private struct NativeUserEditorPanel: View {
                                 }
                             }
 
+                            // Design comes BEFORE Selfie — the user types their
+                            // prompts first, then attaches the selfie that gets
+                            // rendered against them on save.
                             WeatherGlassCard {
                                 VStack(alignment: .leading, spacing: 10) {
                                     Text("Design")
                                         .font(.system(size: 19, weight: .bold))
                                     profileTextField("Cloak design", text: $draft.cloakDesign)
                                     profileTextField("Helmet design", text: $draft.helmetDesign)
+                                }
+                            }
+
+                            WeatherGlassCard {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("Selfie")
+                                        .font(.system(size: 19, weight: .bold))
+                                    HStack(alignment: .top, spacing: 12) {
+                                        selfiePreview
+                                        VStack(alignment: .leading, spacing: 8) {
+#if canImport(UIKit)
+                                            HStack(spacing: 10) {
+                                                selfieButton("TAKE SELFIE", source: .camera)
+                                                selfieButton("SELECT", source: .photoLibrary)
+                                            }
+#elseif canImport(AppKit)
+                                            Button {
+                                                macSelectSelfie()
+                                            } label: {
+                                                Text("[ SELECT SELFIE ]")
+                                                    .font(.system(size: 13, weight: .black))
+                                                    .foregroundStyle(.white)
+                                                    .frame(maxWidth: .infinity, minHeight: 42)
+                                                    .overlay(Rectangle().stroke(Color.white.opacity(0.40), lineWidth: 1))
+                                            }
+                                            .buttonStyle(.plain)
+#endif
+                                            Text(draft.selfiePath.isEmpty && draft.selfieUrl.isEmpty ? "no selfie attached" : "selfie attached")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(draft.selfiePath.isEmpty && draft.selfieUrl.isEmpty ? .white.opacity(0.54) : Color(red: 0.66, green: 1.0, blue: 0.76))
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
                                 }
                             }
 
@@ -1432,6 +1441,49 @@ private struct NativeUserEditorPanel: View {
                 .font(.system(size: 38, weight: .light))
                 .foregroundStyle(.white.opacity(0.32))
             Text("no selfie")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white.opacity(0.42))
+        }
+        .frame(width: width, height: width * 4 / 3)
+        .background(Color.white.opacity(0.06))
+    }
+
+    // Rendered K1L0 identity (cloak+helmet) for the hero header. Prefers
+    // cloakUrl since that's the full character render; falls back to avatarUrl.
+    // Placeholder shows a helmet glyph until the user saves and the pipeline
+    // produces a render.
+    @ViewBuilder
+    private var renderedHero: some View {
+        let heroWidth: CGFloat = 132
+        let heroMaxHeight: CGFloat = 180
+        let renderedUrl = draft.cloakUrl.isEmpty ? draft.avatarUrl : draft.cloakUrl
+        ZStack {
+            if let url = URL(string: renderedUrl), !renderedUrl.isEmpty {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFit()
+                    case .failure:
+                        Color.red.opacity(0.18)
+                    default:
+                        ProgressView().progressViewStyle(.circular)
+                    }
+                }
+                .frame(maxWidth: heroWidth, maxHeight: heroMaxHeight)
+            } else {
+                placeholderRenderedHero(width: heroWidth)
+            }
+        }
+        .frame(width: heroWidth)
+        .overlay(Rectangle().stroke(Color.green.opacity(renderedUrl.isEmpty ? 0.24 : 0.85), lineWidth: 1.5))
+    }
+
+    private func placeholderRenderedHero(width: CGFloat) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: "person.crop.square.filled.and.at.rectangle")
+                .font(.system(size: 38, weight: .light))
+                .foregroundStyle(.white.opacity(0.32))
+            Text("renders on save")
                 .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(.white.opacity(0.42))
         }
