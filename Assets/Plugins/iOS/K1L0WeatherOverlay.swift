@@ -1729,7 +1729,11 @@ private struct NativeTransmissionPanel: View {
                             }
                     }
                     .padding(.horizontal, 20)
-                    .padding(.top, 24)
+                    // Heading "Transmission" and the X close button both top
+                    // out at 8pt from the panel edge so they sit on the same
+                    // baseline (was 24 for content / 8 for X, which dropped
+                    // the heading 16pt below the X).
+                    .padding(.top, 8)
                         .padding(.bottom, 38)
 
                     Button(action: onClose) {
