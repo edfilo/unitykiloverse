@@ -1,9 +1,13 @@
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
+using System;
 using System.Collections;
+using System.IO;
+using System.Runtime.InteropServices;
 using UnityEngine.EventSystems;
 using System.Collections.Generic;
+using Firebase.Database;
 using KiloWorld.Rendering.Systems;
 using KiloWorld.UI.Stories;
 
@@ -81,6 +85,109 @@ public class K1L0HUD : MonoBehaviour
         Instance = this;
         if (gameObject.name != "K1L0HUD")
             gameObject.name = "K1L0HUD";
+        SubscribeNativeTransmissionResults();
+    }
+
+    void OnDestroy()
+    {
+        UnsubscribeNativeTransmissionResults();
+    }
+
+    // ---- Native transmission-result bridge -----------------------------------------------
+    // Forward TransmissionManager.OnTransmissionReady to the native Swift overlay so the
+    // mobile user sees image+music+lyrics inside the K1L0 HUD without leaving native UI.
+    // The Swift entry point K1L0DeliverTransmissionResult is defined in K1L0WeatherOverlay.swift.
+
+#if UNITY_IOS && !UNITY_EDITOR
+    [DllImport("__Internal")] private static extern void K1L0DeliverTransmissionResult(string json);
+    [DllImport("__Internal")] private static extern void K1L0DeliverUserMetadataSaveResult(string json);
+#elif UNITY_STANDALONE_OSX && !UNITY_EDITOR
+    [DllImport("K1L0Overlay")] private static extern void K1L0DeliverTransmissionResult(string json);
+    [DllImport("K1L0Overlay")] private static extern void K1L0DeliverUserMetadataSaveResult(string json);
+#else
+    private static void K1L0DeliverTransmissionResult(string json) { /* no-op in editor */ }
+    private static void K1L0DeliverUserMetadataSaveResult(string json) { /* no-op in editor */ }
+#endif
+
+    private bool nativeTransmissionSubscribed;
+
+    private void SubscribeNativeTransmissionResults()
+    {
+        if (nativeTransmissionSubscribed) return;
+        if (TransmissionManager.Instance == null)
+        {
+            StartCoroutine(WaitForTransmissionManager());
+            return;
+        }
+        TransmissionManager.Instance.OnTransmissionReady += HandleTransmissionReady;
+        nativeTransmissionSubscribed = true;
+    }
+
+    private IEnumerator WaitForTransmissionManager()
+    {
+        while (TransmissionManager.Instance == null) yield return null;
+        if (!nativeTransmissionSubscribed)
+        {
+            TransmissionManager.Instance.OnTransmissionReady += HandleTransmissionReady;
+            nativeTransmissionSubscribed = true;
+        }
+    }
+
+    private void UnsubscribeNativeTransmissionResults()
+    {
+        if (!nativeTransmissionSubscribed) return;
+        if (TransmissionManager.Instance != null)
+            TransmissionManager.Instance.OnTransmissionReady -= HandleTransmissionReady;
+        nativeTransmissionSubscribed = false;
+    }
+
+    [Serializable]
+    private struct NativeTransmissionResultPayload
+    {
+        public string status;
+        public string imageUrl;
+        public string videoUrl;
+        public string audioUrl;
+        public string lyrics;
+        public string responsePlot;
+        public string[] responseOptions;
+    }
+
+    private void HandleTransmissionReady(TransmissionData data)
+    {
+        if (data == null) return;
+        var payload = new NativeTransmissionResultPayload
+        {
+            status = data.hasVideo ? "video_ready" : (data.hasImage ? "image_ready" : "received"),
+            imageUrl = data.imageUrl ?? "",
+            videoUrl = data.videoUrl ?? "",
+            audioUrl = data.audioUrl ?? "",
+            // Forwards-compatible: TransmissionData.lyrics will surface here once the backend
+            // populates it. Until then this field is empty and the Swift sheet shows a placeholder.
+            lyrics = TryReadLyrics(data),
+            responsePlot = data.responsePlot ?? "",
+            responseOptions = data.responseOptions ?? Array.Empty<string>(),
+        };
+        try
+        {
+            string json = JsonUtility.ToJson(payload);
+            K1L0DeliverTransmissionResult(json);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[K1L0HUD] native transmission deliver failed: {e.Message}");
+        }
+    }
+
+    private static string TryReadLyrics(TransmissionData data)
+    {
+        // Read via reflection so this compiles cleanly whether or not TransmissionData has a
+        // `lyrics` field yet — when the backend starts returning lyrics and TransmissionData
+        // exposes them, this picks them up with no code change here.
+        var field = data.GetType().GetField("lyrics");
+        if (field != null && field.FieldType == typeof(string))
+            return (field.GetValue(data) as string) ?? "";
+        return "";
     }
 
     public static void SetPanelMapBrightness(float value)
@@ -606,6 +713,331 @@ public class K1L0HUD : MonoBehaviour
     {
         bool visible = enabled == "1" || string.Equals(enabled, "true", System.StringComparison.OrdinalIgnoreCase);
         SetMapVisible(visible);
+    }
+
+    public void PlayNativeBeamCollectSound(string _)
+    {
+        var director = SignalDirectorV2.Instance;
+        if (director != null)
+            director.PlayAmbientPortalCollectSound();
+    }
+
+    public void BeginNativeTransmission(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return;
+        NativeTransmissionPayload parsed = null;
+        try { parsed = JsonUtility.FromJson<NativeTransmissionPayload>(payload); }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[K1L0HUD] Native transmission payload parse failed: {ex.Message}");
+            return;
+        }
+
+        if (parsed == null)
+        {
+            Debug.LogWarning("[K1L0HUD] Native transmission payload missing");
+            return;
+        }
+
+        StartCoroutine(BeginNativeTransmissionCoroutine(parsed));
+    }
+
+    public void SaveNativeUserMetadata(string payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return;
+        NativeUserMetadataPayload parsed = null;
+        try { parsed = JsonUtility.FromJson<NativeUserMetadataPayload>(payload); }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[K1L0HUD] Native user metadata parse failed: {ex.Message}");
+            return;
+        }
+
+        if (parsed == null)
+        {
+            Debug.LogWarning("[K1L0HUD] Native user metadata missing");
+            return;
+        }
+
+        StartCoroutine(SaveNativeUserMetadataCoroutine(parsed));
+    }
+
+    public void LoadNativeUserMetadata(string unused)
+    {
+        StartCoroutine(LoadNativeUserMetadataCoroutine());
+    }
+
+    private IEnumerator LoadNativeUserMetadataCoroutine()
+    {
+        var tm = TransmissionManager.Instance ?? FindFirstObjectByType<TransmissionManager>();
+        string userId = tm != null ? tm.GetUserIdForClient() : null;
+        if (string.IsNullOrWhiteSpace(userId) && FirebaseAuthManager.Instance != null)
+            userId = FirebaseAuthManager.Instance.GetUserId();
+        if (string.IsNullOrWhiteSpace(userId)) userId = "anon";
+
+        bool firebaseReady = FirebaseBootstrap.IsReady;
+        if (!firebaseReady)
+        {
+            FirebaseBootstrap.WhenReady(() => firebaseReady = true);
+            float start = Time.realtimeSinceStartup;
+            while (!firebaseReady && Time.realtimeSinceStartup - start < 10f)
+                yield return null;
+        }
+        if (!firebaseReady)
+        {
+            DeliverUserMetadataSaveResult(false, "firebase not ready");
+            yield break;
+        }
+
+        string safeUser = SanitizeFirebaseKey(userId);
+        var metadataTask = FirebaseDatabase.DefaultInstance.GetReference($"users/{safeUser}/metadata").GetValueAsync();
+        while (!metadataTask.IsCompleted) yield return null;
+
+        if (metadataTask.IsFaulted)
+        {
+            DeliverUserMetadataSaveResult(false, metadataTask.Exception != null ? metadataTask.Exception.GetBaseException().Message : "metadata load failed");
+            yield break;
+        }
+
+        var result = new NativeUserMetadataSaveResultPayload { ok = true, status = "user metadata loaded." };
+        if (metadataTask.Result != null && metadataTask.Result.Exists)
+        {
+            var m = metadataTask.Result;
+            result.name = m.Child("name").Value?.ToString() ?? "";
+            result.callsign = m.Child("callsign").Value?.ToString() ?? "";
+            result.cloakDesign = m.Child("cloakDesign").Value?.ToString() ?? "";
+            result.helmetDesign = m.Child("helmetDesign").Value?.ToString() ?? "";
+            result.selfieUrl = m.Child("selfieUrl").Value?.ToString() ?? "";
+            result.helmetUrl = m.Child("helmetUrl").Value?.ToString() ?? "";
+            result.cloakUrl = m.Child("cloakUrl").Value?.ToString() ?? "";
+            result.avatarUrl = m.Child("avatarUrl").Value?.ToString() ?? "";
+        }
+        DeliverUserMetadataSaveResult(result);
+    }
+
+    private IEnumerator SaveNativeUserMetadataCoroutine(NativeUserMetadataPayload payload)
+    {
+        string selfieUrl = "";
+        if (!string.IsNullOrWhiteSpace(payload.selfiePath))
+            yield return UploadNativeTransmissionPhoto(payload.selfiePath, url => selfieUrl = url);
+
+        var tm = TransmissionManager.Instance ?? FindFirstObjectByType<TransmissionManager>();
+        string userId = tm != null ? tm.GetUserIdForClient() : null;
+        if (string.IsNullOrWhiteSpace(userId) && FirebaseAuthManager.Instance != null)
+            userId = FirebaseAuthManager.Instance.GetUserId();
+        if (string.IsNullOrWhiteSpace(userId)) userId = "anon";
+
+        bool firebaseReady = FirebaseBootstrap.IsReady;
+        if (!firebaseReady)
+        {
+            FirebaseBootstrap.WhenReady(() => firebaseReady = true);
+            float start = Time.realtimeSinceStartup;
+            while (!firebaseReady && Time.realtimeSinceStartup - start < 10f)
+                yield return null;
+        }
+
+        if (!firebaseReady)
+        {
+            Debug.LogWarning("[K1L0HUD] Native user metadata save failed: Firebase not ready");
+            DeliverUserMetadataSaveResult(false, "firebase not ready");
+            yield break;
+        }
+
+        var metadata = new Dictionary<string, object>
+        {
+            { "name", payload.name ?? "" },
+            { "callsign", payload.callsign ?? "" },
+            { "cloakDesign", payload.cloakDesign ?? "" },
+            { "helmetDesign", payload.helmetDesign ?? "" },
+            { "updatedAt", ServerValue.Timestamp }
+        };
+        if (!string.IsNullOrWhiteSpace(selfieUrl))
+            metadata["selfieUrl"] = selfieUrl;
+
+        string path = $"users/{SanitizeFirebaseKey(userId)}/metadata";
+        var task = FirebaseDatabase.DefaultInstance.GetReference(path).UpdateChildrenAsync(metadata);
+        while (!task.IsCompleted) yield return null;
+
+        if (task.IsFaulted)
+        {
+            Debug.LogWarning($"[K1L0HUD] Native user metadata save failed: {task.Exception}");
+            DeliverUserMetadataSaveResult(false, task.Exception != null ? task.Exception.GetBaseException().Message : "firebase write failed");
+        }
+        else
+        {
+            Debug.Log($"[K1L0HUD] Native user metadata saved path={path} selfie={(string.IsNullOrWhiteSpace(selfieUrl) ? "none" : "yes")}");
+
+            // Re-render identity on EVERY save (not just when a new selfie is
+            // attached). Prompt-only edits to cloak/helmet design were
+            // silently skipping the render endpoint, so the avatar never
+            // refreshed. Fall back to the existing persisted selfieUrl when
+            // the user didn't attach a fresh one.
+            string effectiveSelfieUrl = selfieUrl;
+            if (string.IsNullOrWhiteSpace(effectiveSelfieUrl))
+            {
+                var existingTask = FirebaseDatabase.DefaultInstance
+                    .GetReference($"{path}/selfieUrl").GetValueAsync();
+                while (!existingTask.IsCompleted) yield return null;
+                if (!existingTask.IsFaulted && existingTask.Result != null && existingTask.Result.Exists)
+                    effectiveSelfieUrl = existingTask.Result.Value?.ToString() ?? "";
+            }
+
+            DeliverUserMetadataSaveResult(true, "", effectiveSelfieUrl);
+            if (!string.IsNullOrWhiteSpace(effectiveSelfieUrl))
+                StartCoroutine(RenderNativeUserIdentityCoroutine(userId, payload, effectiveSelfieUrl));
+            else
+                Debug.LogWarning("[K1L0HUD] Skipping identity render — no selfie attached or stored.");
+        }
+    }
+
+    private IEnumerator RenderNativeUserIdentityCoroutine(string userId, NativeUserMetadataPayload payload, string selfieUrl)
+    {
+        DeliverUserMetadataSaveResult(true, "", selfieUrl, "", "", "", "building identity...");
+        var req = new NativeUserIdentityRenderRequest
+        {
+            userId = userId,
+            selfieUrl = selfieUrl,
+            name = payload.name ?? "",
+            callsign = payload.callsign ?? "",
+            cloakDesign = payload.cloakDesign ?? "",
+            helmetDesign = payload.helmetDesign ?? ""
+        };
+
+        bool ok = false;
+        string response = null;
+        yield return APIManager.Instance.Post("/api/k1l0/user/identity/render", JsonUtility.ToJson(req), (success, resp) =>
+        {
+            ok = success;
+            response = resp;
+        });
+
+        if (!ok || string.IsNullOrWhiteSpace(response))
+        {
+            DeliverUserMetadataSaveResult(false, "identity render failed", selfieUrl);
+            yield break;
+        }
+
+        NativeUserIdentityRenderResponse parsed = null;
+        try { parsed = JsonUtility.FromJson<NativeUserIdentityRenderResponse>(response); }
+        catch { parsed = null; }
+
+        if (parsed == null || !parsed.ok)
+        {
+            DeliverUserMetadataSaveResult(false, parsed != null ? parsed.error : "identity render parse failed", selfieUrl);
+            yield break;
+        }
+
+            DeliverUserMetadataSaveResult(true, "", selfieUrl, parsed.helmetUrl, parsed.cloakUrl, parsed.avatarUrl, "identity rendered.");
+    }
+
+    private IEnumerator BeginNativeTransmissionCoroutine(NativeTransmissionPayload payload)
+    {
+        string imageUrl = "";
+        if (!string.IsNullOrWhiteSpace(payload.photoPath))
+        {
+            yield return UploadNativeTransmissionPhoto(payload.photoPath, url => imageUrl = url);
+            if (string.IsNullOrWhiteSpace(imageUrl))
+            {
+                Debug.LogWarning($"[K1L0HUD] Native transmission photo upload failed path={payload.photoPath}");
+                yield break;
+            }
+        }
+
+        var tm = TransmissionManager.Instance ?? FindFirstObjectByType<TransmissionManager>();
+        if (tm == null)
+        {
+            Debug.LogWarning("[K1L0HUD] Native transmission failed: TransmissionManager missing");
+            yield break;
+        }
+
+        string message = string.IsNullOrWhiteSpace(payload.message) ? "transmit this signal" : payload.message.Trim();
+        string mood = string.IsNullOrWhiteSpace(payload.mood) ? "wired" : payload.mood.Trim();
+        string element = string.IsNullOrWhiteSpace(payload.element) ? "" : payload.element.Trim();
+        Debug.Log($"[K1L0HUD] Native transmission start mood='{mood}' image={(string.IsNullOrWhiteSpace(imageUrl) ? "none" : "yes")}");
+        tm.StartTransmitterInteraction(null, element, message, imageUrl, mood);
+    }
+
+    private IEnumerator UploadNativeTransmissionPhoto(string path, System.Action<string> done)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            done?.Invoke(null);
+            yield break;
+        }
+
+        byte[] bytes;
+        try { bytes = File.ReadAllBytes(path); }
+        catch
+        {
+            done?.Invoke(null);
+            yield break;
+        }
+
+        var tm = TransmissionManager.Instance ?? FindFirstObjectByType<TransmissionManager>();
+        var req = new NativeImageUploadRequest
+        {
+            userId = tm != null ? tm.GetUserIdForClient() : "anon",
+            filename = Path.GetFileName(path),
+            contentType = path.ToLowerInvariant().EndsWith(".png") ? "image/png" : "image/jpeg",
+            imageBase64 = Convert.ToBase64String(bytes)
+        };
+
+        bool ok = false;
+        string response = null;
+        yield return APIManager.Instance.Post("/api/k1l0/upload-image", JsonUtility.ToJson(req), (success, resp) =>
+        {
+            ok = success;
+            response = resp;
+        });
+
+        if (!ok || string.IsNullOrWhiteSpace(response))
+        {
+            done?.Invoke(null);
+            yield break;
+        }
+
+        var parsed = JsonUtility.FromJson<NativeImageUploadResponse>(response);
+        done?.Invoke(parsed != null && parsed.ok ? parsed.url : null);
+    }
+
+    private static string SanitizeFirebaseKey(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return "anon";
+        return value
+            .Replace(".", "_")
+            .Replace("#", "_")
+            .Replace("$", "_")
+            .Replace("[", "_")
+            .Replace("]", "_")
+            .Replace("/", "_");
+    }
+
+    private static void DeliverUserMetadataSaveResult(bool ok, string error, string selfieUrl = "", string helmetUrl = "", string cloakUrl = "", string avatarUrl = "", string status = "")
+    {
+        try
+        {
+            var payload = new NativeUserMetadataSaveResultPayload
+            {
+                ok = ok,
+                error = error ?? "",
+                selfieUrl = selfieUrl ?? "",
+                helmetUrl = helmetUrl ?? "",
+                cloakUrl = cloakUrl ?? "",
+                avatarUrl = avatarUrl ?? "",
+                status = status ?? ""
+            };
+            K1L0DeliverUserMetadataSaveResult(JsonUtility.ToJson(payload));
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[K1L0HUD] native metadata save result deliver failed: {ex.Message}");
+        }
+    }
+
+    private static void DeliverUserMetadataSaveResult(NativeUserMetadataSaveResultPayload payload)
+    {
+        try { K1L0DeliverUserMetadataSaveResult(JsonUtility.ToJson(payload)); }
+        catch (Exception ex) { Debug.LogWarning($"[K1L0HUD] native metadata save result deliver failed: {ex.Message}"); }
     }
 
     public void SetNativeSetting(string payload)
@@ -1315,4 +1747,77 @@ public class K1L0HUD : MonoBehaviour
         }
     }
 #endif
+}
+
+[Serializable]
+class NativeTransmissionPayload
+{
+    public string element;
+    public string message;
+    public string photoPath;
+    public string mood;
+}
+
+[Serializable]
+class NativeUserMetadataPayload
+{
+    public string name;
+    public string callsign;
+    public string cloakDesign;
+    public string helmetDesign;
+    public string selfiePath;
+}
+
+[Serializable]
+class NativeUserMetadataSaveResultPayload
+{
+    public bool ok;
+    public string error;
+    public string name;
+    public string callsign;
+    public string cloakDesign;
+    public string helmetDesign;
+    public string selfieUrl;
+    public string helmetUrl;
+    public string cloakUrl;
+    public string avatarUrl;
+    public string status;
+}
+
+[Serializable]
+class NativeUserIdentityRenderRequest
+{
+    public string userId;
+    public string selfieUrl;
+    public string name;
+    public string callsign;
+    public string cloakDesign;
+    public string helmetDesign;
+}
+
+[Serializable]
+class NativeUserIdentityRenderResponse
+{
+    public bool ok;
+    public string error;
+    public string helmetUrl;
+    public string cloakUrl;
+    public string avatarUrl;
+}
+
+[Serializable]
+class NativeImageUploadRequest
+{
+    public string userId;
+    public string filename;
+    public string contentType;
+    public string imageBase64;
+}
+
+[Serializable]
+class NativeImageUploadResponse
+{
+    public bool ok;
+    public string url;
+    public string error;
 }
