@@ -1,7 +1,6 @@
 using UnityEngine;
 using System.Collections.Generic;
 using TMPro;
-using UnityEngine.UI;
 
 // ─────────────────────────────────────────────────────────────────
 // SignalBeamBridge  –  Visual layer for SignalDirectorV2
@@ -27,7 +26,6 @@ public class SignalBeamBridge : MonoBehaviour
     public static void SetHudSuppressed(bool suppressed)
     {
         hudSuppressed = suppressed;
-        if (suppressed && Instance != null) Instance.HideAllDistanceLabels();
     }
 
     private SignalDirectorV2 director;
@@ -41,6 +39,8 @@ public class SignalBeamBridge : MonoBehaviour
     private KiloWorld.Rendering.KiloWorldMasterProfile profile;
     private Canvas uiCanvas;
     private Camera mainCamera;
+    private KiloFirstPersonController playerController;
+    private float nextLabelDebugAt;
 
     private class BeamLabelEntry
     {
@@ -298,46 +298,44 @@ public class SignalBeamBridge : MonoBehaviour
     private void EnsureLabel(string signalId)
     {
         if (labelsBySignalId.ContainsKey(signalId)) return;
+        RectTransform labelParent = K1L0CanvasRoot.World;
         if (uiCanvas == null) uiCanvas = K1L0CanvasRoot.WorldCanvas;
 
         var go = new GameObject($"BeamMeters_{signalId}", typeof(RectTransform));
-        go.transform.SetParent(uiCanvas != null ? uiCanvas.transform : transform, false);
+        go.transform.SetParent(labelParent != null ? labelParent : transform, false);
 
         var rt = go.GetComponent<RectTransform>();
-        rt.sizeDelta = new Vector2(140f, 44f);
+        rt.sizeDelta = new Vector2(92f, 18f);
         rt.pivot = new Vector2(0.5f, 0f);
-
-        // Solid black backing plate for readability (debug)
-        var bg = go.AddComponent<Image>();
-        bg.color = new Color(0f, 0f, 0f, 0.72f);
-        bg.raycastTarget = false;
 
         var textGO = new GameObject("Text", typeof(RectTransform));
         textGO.transform.SetParent(go.transform, false);
         var textRt = textGO.GetComponent<RectTransform>();
         textRt.anchorMin = Vector2.zero;
         textRt.anchorMax = Vector2.one;
-        textRt.offsetMin = new Vector2(6f, 4f);
-        textRt.offsetMax = new Vector2(-6f, -4f);
+        textRt.offsetMin = Vector2.zero;
+        textRt.offsetMax = Vector2.zero;
 
         var tmp = textGO.AddComponent<TextMeshProUGUI>();
         tmp.text = "";
-        tmp.fontSize = 16f;
-        tmp.color = new Color(1f, 1f, 1f, 0.95f);
+        tmp.fontSize = 9f;
+        tmp.color = new Color(1f, 1f, 1f, 0.82f);
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.textWrappingMode = TextWrappingModes.NoWrap;
         tmp.overflowMode = TextOverflowModes.Overflow;
         tmp.raycastTarget = false;
-        tmp.fontStyle = FontStyles.Bold;
-        tmp.outlineWidth = 0.55f;
-        tmp.outlineColor = new Color32(0, 0, 0, 220);
+        tmp.fontStyle = FontStyles.Normal;
+        tmp.outlineWidth = 0f;
 
         labelsBySignalId[signalId] = new BeamLabelEntry { go = go, rt = rt, tmp = tmp };
     }
 
     private void UpdateBeamDistanceLabels(IReadOnlyList<Signal> signals)
     {
-        if (hudSuppressed || !ShowDistanceLabels)
+        if (playerController == null) playerController = FindFirstObjectByType<KiloFirstPersonController>();
+        bool godModeLabelsAllowed = playerController != null && playerController.IsGodView && !KiloFirstPersonController.IsNativePanelOpen;
+
+        if (!ShowDistanceLabels || !godModeLabelsAllowed)
         {
             HideAllDistanceLabels();
             return;
@@ -364,21 +362,23 @@ public class SignalBeamBridge : MonoBehaviour
             }
 
             Vector3 baseWorld = director.SignalToWorldPos(sig);
-            // Sit the label ~65m above the beam base so it floats clearly
-            // above the orb/beam height without crowding the camera frame.
-            Vector3 worldPos = baseWorld + Vector3.up * 65f;
+            // Sit the label high above the beam base so it reads as attached
+            // to the laser column rather than the ground orb.
+            Vector3 worldPos = baseWorld + Vector3.up * 145f;
             Vector3 screenPos = mainCamera.WorldToScreenPoint(worldPos);
 
             bool onScreen = screenPos.z > 0 &&
-                            screenPos.x > 0 && screenPos.x < Screen.width &&
-                            screenPos.y > 0 && screenPos.y < Screen.height;
+                            screenPos.x > -120f && screenPos.x < Screen.width + 120f &&
+                            screenPos.y > -120f && screenPos.y < Screen.height + 120f;
 
             if (onScreen != lbl.go.activeSelf) lbl.go.SetActive(onScreen);
             if (!onScreen) continue;
+            screenPos.x = Mathf.Clamp(screenPos.x, 16f, Screen.width - 16f);
+            screenPos.y = Mathf.Clamp(screenPos.y, 16f, Screen.height - 58f);
 
             float distM = director.DistanceToSignal(sig);
-            float w = lbl.rt != null ? lbl.rt.sizeDelta.x : 140f;
-            float h = lbl.rt != null ? lbl.rt.sizeDelta.y : 44f;
+            float w = lbl.rt != null ? lbl.rt.sizeDelta.x : 92f;
+            float h = lbl.rt != null ? lbl.rt.sizeDelta.y : 18f;
             var rect = new Rect(screenPos.x - w * 0.5f, screenPos.y, w, h);
             candidates.Add(new BeamLabelCandidate
             {
@@ -392,52 +392,99 @@ public class SignalBeamBridge : MonoBehaviour
 
         candidates.Sort((a, b) => a.distanceMeters.CompareTo(b.distanceMeters));
 
-        var occupied = new List<Rect>();
+        // Column-stacking overlap arbitration. Closest label keeps its
+        // natural screen position. Each subsequent label, if it would
+        // collide with one already placed, snaps its X to the colliding
+        // label's center (joining that column) and moves Y just above the
+        // tallest rect already occupying that X range. Up to STACK_TRIES
+        // iterations to clear; if still colliding, place anyway (last
+        // resort — better than a missing label).
+        const float STACK_GAP = 4f;
+        const int STACK_TRIES = 8;
+        var occupied = new List<Rect>(candidates.Count);
+
+        int visibleCount = 0;
         for (int i = 0; i < candidates.Count; i++)
         {
             var c = candidates[i];
-            bool overlaps = false;
-            for (int j = 0; j < occupied.Count; j++)
-            {
-                if (c.screenRect.Overlaps(occupied[j]))
-                {
-                    overlaps = true;
-                    break;
-                }
-            }
-
-            if (overlaps)
+            if (visibleCount >= 16)
             {
                 if (c.label.go.activeSelf) c.label.go.SetActive(false);
                 continue;
             }
 
-            if (!c.label.go.activeSelf) c.label.go.SetActive(true);
-            occupied.Add(c.screenRect);
-
+            // Set text + width BEFORE collision testing so the rect we
+            // measure is the rect we'll actually draw.
             if (c.label.tmp != null)
             {
-                // Prefer the human-readable place name on location beams (the
-                // whole point of bringing these back); fall back to distance
-                // for ambient/artifact beams that don't have a location name.
                 string txt = !string.IsNullOrEmpty(c.signal?.locationName)
                     ? c.signal.locationName
-                    : $"{Mathf.RoundToInt(c.distanceMeters)}m";
+                    : (!string.IsNullOrEmpty(c.signal?.teaser) ? c.signal.teaser : $"{Mathf.RoundToInt(c.distanceMeters)}m");
                 c.label.tmp.text = txt;
             }
+            if (c.label.tmp != null && c.label.rt != null)
+            {
+                float preferred = c.label.tmp.GetPreferredValues().x + 4f;
+                float w = Mathf.Clamp(preferred, 42f, 180f);
+                c.label.rt.sizeDelta = new Vector2(w, c.label.rt.sizeDelta.y);
+            }
+
+            // Build the rect from the just-updated size (rather than the
+            // stale c.screenRect, which was sampled with last frame's width).
+            Vector2 size = c.label.rt != null
+                ? c.label.rt.sizeDelta
+                : new Vector2(c.screenRect.width, c.screenRect.height);
+            // Pivot is (0.5, 0): rect.y is the BOTTOM in screen space.
+            Rect rect = new Rect(c.screenPos.x - size.x * 0.5f, c.screenPos.y, size.x, size.y);
+
+            // Iteratively resolve collisions by joining a column + stacking.
+            for (int t = 0; t < STACK_TRIES; t++)
+            {
+                int hitIdx = -1;
+                for (int j = 0; j < occupied.Count; j++)
+                {
+                    if (rect.Overlaps(occupied[j])) { hitIdx = j; break; }
+                }
+                if (hitIdx < 0) break;
+
+                // Adopt the offender's X column (anchored on the closer
+                // label that's already placed — closer wins X).
+                float anchorCx = occupied[hitIdx].center.x;
+                rect = new Rect(anchorCx - rect.width * 0.5f, rect.y, rect.width, rect.height);
+
+                // Stack above whichever already-placed rect's X range
+                // overlaps ours and has the highest top edge.
+                float topY = rect.y;
+                for (int k = 0; k < occupied.Count; k++)
+                {
+                    var o = occupied[k];
+                    if (o.xMax > rect.xMin && o.xMin < rect.xMax && o.yMax > topY)
+                        topY = o.yMax;
+                }
+                rect = new Rect(rect.x, topY + STACK_GAP, rect.width, rect.height);
+            }
+
+            if (!c.label.go.activeSelf) c.label.go.SetActive(true);
+            occupied.Add(rect);
+            visibleCount++;
+
+            // Final placement — pivot (0.5, 0) so the GO sits at
+            // (centerX, bottomY) of the resolved rect.
             if (c.label.rt != null)
             {
-                // Auto-fit the pill width to the rendered text so "Recon
-                // Brewing at Meeder" doesn't get clipped at the old 140px
-                // fixed width. Min 90, max 320, +24 horizontal padding.
-                if (c.label.tmp != null)
-                {
-                    float preferred = c.label.tmp.GetPreferredValues().x + 24f;
-                    float w = Mathf.Clamp(preferred, 90f, 320f);
-                    c.label.rt.sizeDelta = new Vector2(w, c.label.rt.sizeDelta.y);
-                }
-                c.label.rt.position = new Vector3(c.screenPos.x, c.screenPos.y, 0f);
+                Vector2 finalScreen = new Vector2(rect.center.x, rect.yMin);
+                var parent = c.label.rt.parent as RectTransform;
+                if (parent != null && RectTransformUtility.ScreenPointToLocalPointInRectangle(parent, finalScreen, null, out var localPoint))
+                    c.label.rt.anchoredPosition = localPoint;
+                else
+                    c.label.rt.position = new Vector3(finalScreen.x, finalScreen.y, 0f);
             }
+        }
+
+        if (Time.unscaledTime >= nextLabelDebugAt)
+        {
+            nextLabelDebugAt = Time.unscaledTime + 5f;
+            Debug.Log($"[SignalBeamBridge] labels visible={visibleCount} candidates={candidates.Count} signals={signals.Count} pref={ShowDistanceLabels}");
         }
     }
 
