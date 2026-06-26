@@ -52,6 +52,7 @@ public class SignalBeamBridge : MonoBehaviour
     private class BeamLabelCandidate
     {
         public BeamLabelEntry label;
+        public Signal signal;          // needed for locationName lookup in update pass
         public Vector3 screenPos;
         public float distanceMeters;
         public Rect screenRect;
@@ -363,7 +364,9 @@ public class SignalBeamBridge : MonoBehaviour
             }
 
             Vector3 baseWorld = director.SignalToWorldPos(sig);
-            Vector3 worldPos = baseWorld + Vector3.up * 120f; // higher above the beam base for debugging
+            // Sit the label ~65m above the beam base so it floats clearly
+            // above the orb/beam height without crowding the camera frame.
+            Vector3 worldPos = baseWorld + Vector3.up * 65f;
             Vector3 screenPos = mainCamera.WorldToScreenPoint(worldPos);
 
             bool onScreen = screenPos.z > 0 &&
@@ -380,6 +383,7 @@ public class SignalBeamBridge : MonoBehaviour
             candidates.Add(new BeamLabelCandidate
             {
                 label = lbl,
+                signal = sig,
                 screenPos = screenPos,
                 distanceMeters = distM,
                 screenRect = rect
@@ -412,9 +416,28 @@ public class SignalBeamBridge : MonoBehaviour
             occupied.Add(c.screenRect);
 
             if (c.label.tmp != null)
-                c.label.tmp.text = $"{Mathf.RoundToInt(c.distanceMeters)}m";
+            {
+                // Prefer the human-readable place name on location beams (the
+                // whole point of bringing these back); fall back to distance
+                // for ambient/artifact beams that don't have a location name.
+                string txt = !string.IsNullOrEmpty(c.signal?.locationName)
+                    ? c.signal.locationName
+                    : $"{Mathf.RoundToInt(c.distanceMeters)}m";
+                c.label.tmp.text = txt;
+            }
             if (c.label.rt != null)
+            {
+                // Auto-fit the pill width to the rendered text so "Recon
+                // Brewing at Meeder" doesn't get clipped at the old 140px
+                // fixed width. Min 90, max 320, +24 horizontal padding.
+                if (c.label.tmp != null)
+                {
+                    float preferred = c.label.tmp.GetPreferredValues().x + 24f;
+                    float w = Mathf.Clamp(preferred, 90f, 320f);
+                    c.label.rt.sizeDelta = new Vector2(w, c.label.rt.sizeDelta.y);
+                }
                 c.label.rt.position = new Vector3(c.screenPos.x, c.screenPos.y, 0f);
+            }
         }
     }
 
