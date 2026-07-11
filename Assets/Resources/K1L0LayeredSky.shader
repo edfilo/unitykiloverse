@@ -10,6 +10,11 @@ Shader "K1L0/Experimental Layered Sky"
         _CloudScale ("Cloud Scale", Range(0.5,8)) = 2.2
         _CloudContrast ("Cloud Contrast", Range(0.1,4)) = 1.5
         _CloudTex ("Photoreal Cloud Density", 2D) = "gray" {}
+        _SunUV ("Sun Position", Vector) = (.5,.65,0,0)
+        _SunVisibility ("Sun Visibility", Range(0,1)) = 1
+        _MoonUV ("Moon Position", Vector) = (.5,.55,0,0)
+        _MoonVisibility ("Moon Visibility", Range(0,1)) = 0
+        _StarsVisibility ("Stars Visibility", Range(0,1)) = 0
     }
     SubShader
     {
@@ -26,6 +31,8 @@ Shader "K1L0/Experimental Layered Sky"
             CBUFFER_START(UnityPerMaterial)
             half4 _TopColor, _HorizonColor, _CloudColor;
             float _CloudOpacity, _CloudSpeed, _CloudScale, _CloudContrast;
+            float4 _SunUV, _MoonUV;
+            float _SunVisibility, _MoonVisibility, _StarsVisibility;
             CBUFFER_END
             TEXTURE2D(_CloudTex); SAMPLER(sampler_CloudTex);
             Varyings vert(Attributes i) { Varyings o; o.positionHCS = TransformObjectToHClip(i.positionOS.xyz); o.uv=i.uv; return o; }
@@ -36,14 +43,17 @@ Shader "K1L0/Experimental Layered Sky"
             {
                 float y=saturate(i.uv.y);
                 half3 sky=lerp(_HorizonColor.rgb,_TopColor.rgb,smoothstep(0.02,0.92,y));
-                float2 p=float2(i.uv.x*2.2,i.uv.y)*_CloudScale;
-                p.x += _Time.y*_CloudSpeed;
+                // Portrait correction: repeat the square cloud domain along Y
+                // rather than stretching one texture over the tall sky plane.
+                float2 p=float2(i.uv.x*2.2,i.uv.y*2.2)*_CloudScale;
+                float slowTime=_Time.y*_CloudSpeed*.025;
+                p.x += slowTime;
                 float farDensity=fbm(p*.58+fbm(p*.31+31.0)*1.8);
                 farDensity=saturate((farDensity-.43)*(_CloudContrast*.8));
                 // Mirror-repeat the authored density plate so opposite edges
                 // always meet without a visible seam. A slow procedural warp
                 // prevents the photographic layer from reading as a flat card.
-                float2 nearUV=p*float2(.48,.64)+float2(_Time.y*_CloudSpeed*1.7, -.08);
+                float2 nearUV=p*float2(.48,.48)+float2(slowTime*1.7, -.08);
                 nearUV += float2(fbm(p*.42+7.1),fbm(p*.39+19.7))*.075;
                 nearUV=abs(frac(nearUV*.5)*2.0-1.0);
                 float nearDensity=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,nearUV).r;
@@ -52,6 +62,19 @@ Shader "K1L0/Experimental Layered Sky"
                 // Bring cloud bodies down to the horizon; the previous .30
                 // lower fade made them visible mainly when the camera looked up.
                 density*=smoothstep(.0,.075,y)*smoothstep(1.05,.78,y);
+                // Celestial layer sits behind cloud density.
+                float2 starCell=floor(i.uv*float2(620,920));
+                float starHash=hash21(starCell);
+                float star=step(.9965,starHash)*(0.45+0.55*hash21(starCell+17.3))*_StarsVisibility;
+                sky += half3(.72,.82,1.0)*half(star);
+                float sunD=length((i.uv-_SunUV.xy)*float2(1.0,1.45));
+                float sunDisc=1.0-smoothstep(.018,.024,sunD);
+                float sunGlow=1.0-smoothstep(.025,.14,sunD);
+                sky += half3(1.0,.72,.38)*half((sunDisc*1.4+sunGlow*.28)*_SunVisibility);
+                float moonD=length((i.uv-_MoonUV.xy)*float2(1.0,1.45));
+                float moonDisc=1.0-smoothstep(.017,.023,moonD);
+                float moonGlow=1.0-smoothstep(.023,.10,moonD);
+                sky += half3(.68,.78,1.0)*half((moonDisc*.95+moonGlow*.18)*_MoonVisibility);
                 half3 litCloud=lerp(_CloudColor.rgb*.45,_CloudColor.rgb,saturate(y*.75+density*.4));
                 return half4(lerp(sky,litCloud,density*_CloudOpacity),1);
             }

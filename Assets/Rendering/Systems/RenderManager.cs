@@ -872,12 +872,14 @@ namespace KiloWorld.Rendering.Systems
         // from GPS + UTC time, floored by the backend isDay clamp. Exposed so
         // the sky-video picker can fall back to it when the API is silent.
         public static float LiveSunAltitudeDeg = 30f;
+        public static Vector3 LiveSunDirection = new Vector3(0f, .5f, .866f);
 
         private void DriveSunLight(Light light)
         {
             Vector3 toSun = CurrentSunDirection(out float alt);
             _sunAlt = alt;
             LiveSunAltitudeDeg = alt;
+            LiveSunDirection = toSun;
 
             WeatherFactors(out float cloud, out float wet, out bool snow);
 

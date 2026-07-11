@@ -177,6 +177,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     private void LateUpdate()
     {
         ApplyVideoSurface(forceGi: false);
+        if (ExperimentalLayeredSky) UpdateCelestialParameters();
     }
 
     private void OnDestroy()
@@ -474,6 +475,27 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetFloat("_CloudSpeed", PlayerPrefs.GetFloat("k1lo_layeredCloudSpeed", .08f));
         layeredSkyMaterial.SetFloat("_CloudScale", PlayerPrefs.GetFloat("k1lo_layeredCloudScale", 2.2f));
         layeredSkyMaterial.SetFloat("_CloudContrast", PlayerPrefs.GetFloat("k1lo_layeredCloudContrast", 1.5f));
+    }
+
+    private void UpdateCelestialParameters()
+    {
+        if (layeredSkyMaterial == null || Camera.main == null) return;
+        Camera cam = Camera.main;
+        Vector3 sun = RenderManager.LiveSunDirection.normalized;
+        float sunAz = Mathf.Atan2(sun.x, sun.z) * Mathf.Rad2Deg;
+        float horizontalFov = 2f * Mathf.Atan(Mathf.Tan(cam.fieldOfView * .5f * Mathf.Deg2Rad) * cam.aspect) * Mathf.Rad2Deg;
+        float sunX = .5f + Mathf.DeltaAngle(cam.transform.eulerAngles.y, sunAz) / Mathf.Max(1f, horizontalFov);
+        float sunY = .08f + Mathf.Clamp(RenderManager.LiveSunAltitudeDeg, -8f, 90f) / 90f * .78f;
+        float sunVisible = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-4f, 2f, RenderManager.LiveSunAltitudeDeg));
+        layeredSkyMaterial.SetVector("_SunUV", new Vector4(sunX, sunY, 0, 0));
+        layeredSkyMaterial.SetFloat("_SunVisibility", sunVisible);
+
+        float moonAz = Mathf.Repeat(sunAz + 180f, 360f);
+        float moonX = .5f + Mathf.DeltaAngle(cam.transform.eulerAngles.y, moonAz) / Mathf.Max(1f, horizontalFov);
+        layeredSkyMaterial.SetVector("_MoonUV", new Vector4(moonX, .38f, 0, 0));
+        float night = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-2f, -10f, RenderManager.LiveSunAltitudeDeg));
+        layeredSkyMaterial.SetFloat("_MoonVisibility", night);
+        layeredSkyMaterial.SetFloat("_StarsVisibility", night);
     }
 
     private void ApplySkyTextureTransform(Camera cam)
