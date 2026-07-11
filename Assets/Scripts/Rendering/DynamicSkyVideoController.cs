@@ -17,7 +17,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     [SerializeField, Range(0.01f, 2f)] private float playbackSpeed = 0.1f;
 
     public static DynamicSkyVideoController Instance { get; private set; }
-    public static bool IsActive => Instance != null && Instance.enabled && Instance.videoMaterial != null;
+    public static bool IsActive => Instance != null && Instance.enabled && Instance.layeredSkyMaterial != null;
 
     public static float SkyTargetFps { get; private set; } = 30f;
     public static bool ExperimentalLayeredSky { get; private set; }
@@ -39,8 +39,10 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
     public static void SetExperimentalLayeredSky(bool enabled)
     {
-        ExperimentalLayeredSky = enabled;
-        PlayerPrefs.SetInt("k1lo_experimentalLayeredSky", enabled ? 1 : 0);
+        // The layered Metal sky is now the production sky. Keep this bridge
+        // method for older native settings builds, but never revive video.
+        ExperimentalLayeredSky = true;
+        PlayerPrefs.SetInt("k1lo_experimentalLayeredSky", 1);
         PlayerPrefs.Save();
         Instance?.ApplySkyRenderer();
     }
@@ -89,8 +91,11 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     {
         Instance = this;
         SkyTargetFps = PlayerPrefs.GetFloat("k1lo_skyTargetFps", 30f);
-        ExperimentalLayeredSky = PlayerPrefs.GetInt("k1lo_experimentalLayeredSky", 0) == 1;
+        ExperimentalLayeredSky = true;
+        PlayerPrefs.SetInt("k1lo_experimentalLayeredSky", 1);
 
+        /* Legacy weather-video layer retained for easy source archaeology.
+           It is no longer allocated or played; the layered sky is the default.
         renderTexture = new RenderTexture(TextureWidth, TextureHeight, 0, RenderTextureFormat.ARGB32)
         {
             name = "K1L0 Weather Sky Video",
@@ -113,17 +118,11 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         videoPlayer.audioOutputMode = VideoAudioOutputMode.None;
         videoPlayer.skipOnDrop = true;
         videoPlayer.waitForFirstFrame = false;
-        videoPlayer.source = VideoSource.Url;
+        videoPlayer.source = VideoSource.Url; */
 
+        /* Legacy video material disabled with the video player above.
         var shader = Shader.Find("Universal Render Pipeline/Unlit");
         if (shader == null) shader = Shader.Find("Unlit/Texture");
-        if (shader == null)
-        {
-            Debug.LogWarning("[DynamicSkyVideo] No unlit shader found for sky video plane.");
-            enabled = false;
-            return;
-        }
-
         videoMaterial = new Material(shader) { name = "K1L0 Video Weather Sky Plane" };
         videoMaterial.renderQueue = 1000;
         // Render both sides of the quad and keep it behind world geometry.
@@ -131,7 +130,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         // _ZWrite (0=Off, 1=On). Falls through silently on unsupported keys.
         if (videoMaterial.HasProperty("_Cull")) videoMaterial.SetFloat("_Cull", 0f);
         if (videoMaterial.HasProperty("_ZWrite")) videoMaterial.SetFloat("_ZWrite", 0f);
-        SetVideoTexture(videoMaterial, renderTexture);
+        SetVideoTexture(videoMaterial, renderTexture); */
         // A Resources reference keeps the experimental shader in device builds;
         // Shader.Find alone can be stripped when no serialized material uses it.
         var layeredShader = Resources.Load<Shader>("K1L0LayeredSky");
@@ -145,7 +144,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             var cloudDensity = Resources.Load<Texture2D>("K1L0CloudDensityNear");
             if (cloudDensity != null)
             {
-                cloudDensity.wrapMode = TextureWrapMode.Mirror;
+                cloudDensity.wrapMode = TextureWrapMode.Repeat;
                 cloudDensity.filterMode = FilterMode.Trilinear;
                 layeredSkyMaterial.SetTexture("_CloudTex", cloudDensity);
             }
@@ -154,7 +153,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         EnsureSkyPlane();
         ApplySkyRenderer();
         ApplyVideoSurface(forceGi: true);
-        SelectAndPlay(force: true);
+        // SelectAndPlay(force: true); // legacy weather-video path disabled
     }
 
     private void Update()
@@ -356,7 +355,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     private void ApplyVideoSurface(bool forceGi)
     {
         EnsureSkyPlane();
-        if (skyPlane == null || videoMaterial == null) return;
+        if (skyPlane == null) return;
 
         Camera cam = Camera.main;
         if (cam != null)
@@ -401,12 +400,12 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     private void EnsureSkyPlane()
     {
         Camera cam = Camera.main;
-        if (cam == null || videoMaterial == null) return;
+        if (cam == null || layeredSkyMaterial == null) return;
 
         if (skyPlane == null)
         {
             var plane = GameObject.CreatePrimitive(PrimitiveType.Quad);
-            plane.name = "K1L0 Video Sky Plane";
+            plane.name = "K1L0 Layered Sky Plane";
             var collider = plane.GetComponent<Collider>();
             if (collider != null) Destroy(collider);
             skyPlane = plane.transform;
@@ -414,7 +413,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             skyPlaneRenderer.sharedMaterial = ExperimentalLayeredSky && layeredSkyMaterial != null ? layeredSkyMaterial : videoMaterial;
             skyPlaneRenderer.shadowCastingMode = ShadowCastingMode.Off;
             skyPlaneRenderer.receiveShadows = false;
-            Debug.Log("[DynamicSkyVideo] Created horizon-anchored mirrored video sky plane.");
+            Debug.Log("[DynamicSkyVideo] Created horizon-anchored layered sky plane.");
         }
 
         float distance = Mathf.Max(30f, Mathf.Min(cam.farClipPlane * 0.82f, 900f));
@@ -475,27 +474,38 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetFloat("_CloudSpeed", PlayerPrefs.GetFloat("k1lo_layeredCloudSpeed", .08f));
         layeredSkyMaterial.SetFloat("_CloudScale", PlayerPrefs.GetFloat("k1lo_layeredCloudScale", 2.2f));
         layeredSkyMaterial.SetFloat("_CloudContrast", PlayerPrefs.GetFloat("k1lo_layeredCloudContrast", 1.5f));
+        layeredSkyMaterial.SetFloat("_RainStrength", PlayerPrefs.GetFloat("k1lo_layeredRain", 0f));
+        layeredSkyMaterial.SetFloat("_AuroraStrength", PlayerPrefs.GetFloat("k1lo_layeredAurora", 0f));
     }
 
     private void UpdateCelestialParameters()
     {
         if (layeredSkyMaterial == null || Camera.main == null) return;
         Camera cam = Camera.main;
+        bool bypass = PlayerPrefs.GetFloat("k1lo_layeredBypassWeather", 0f) > .5f;
         Vector3 sun = RenderManager.LiveSunDirection.normalized;
+        float altitude = RenderManager.LiveSunAltitudeDeg;
         float sunAz = Mathf.Atan2(sun.x, sun.z) * Mathf.Rad2Deg;
+        if (bypass)
+        {
+            float hour = PlayerPrefs.GetFloat("k1lo_manualHour", 13.25f);
+            altitude = Mathf.Sin((hour - 6f) / 24f * Mathf.PI * 2f) * 62f;
+            sunAz = Mathf.Repeat(hour / 24f * 360f + 90f, 360f);
+        }
         float horizontalFov = 2f * Mathf.Atan(Mathf.Tan(cam.fieldOfView * .5f * Mathf.Deg2Rad) * cam.aspect) * Mathf.Rad2Deg;
         float sunX = .5f + Mathf.DeltaAngle(cam.transform.eulerAngles.y, sunAz) / Mathf.Max(1f, horizontalFov);
-        float sunY = .08f + Mathf.Clamp(RenderManager.LiveSunAltitudeDeg, -8f, 90f) / 90f * .78f;
-        float sunVisible = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-4f, 2f, RenderManager.LiveSunAltitudeDeg));
+        float sunY = .08f + Mathf.Clamp(altitude, -8f, 90f) / 90f * .78f;
+        float sunVisible = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-4f, 2f, altitude));
         layeredSkyMaterial.SetVector("_SunUV", new Vector4(sunX, sunY, 0, 0));
         layeredSkyMaterial.SetFloat("_SunVisibility", sunVisible);
 
         float moonAz = Mathf.Repeat(sunAz + 180f, 360f);
         float moonX = .5f + Mathf.DeltaAngle(cam.transform.eulerAngles.y, moonAz) / Mathf.Max(1f, horizontalFov);
         layeredSkyMaterial.SetVector("_MoonUV", new Vector4(moonX, .38f, 0, 0));
-        float night = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-2f, -10f, RenderManager.LiveSunAltitudeDeg));
+        float night = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-2f, -10f, altitude));
         layeredSkyMaterial.SetFloat("_MoonVisibility", night);
         layeredSkyMaterial.SetFloat("_StarsVisibility", night);
+        layeredSkyMaterial.SetFloat("_NightAmount", night);
     }
 
     private void ApplySkyTextureTransform(Camera cam)

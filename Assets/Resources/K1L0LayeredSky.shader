@@ -15,6 +15,9 @@ Shader "K1L0/Experimental Layered Sky"
         _MoonUV ("Moon Position", Vector) = (.5,.55,0,0)
         _MoonVisibility ("Moon Visibility", Range(0,1)) = 0
         _StarsVisibility ("Stars Visibility", Range(0,1)) = 0
+        _NightAmount ("Night", Range(0,1)) = 0
+        _RainStrength ("Rain", Range(0,1)) = 0
+        _AuroraStrength ("Aurora", Range(0,1)) = 0
     }
     SubShader
     {
@@ -33,6 +36,7 @@ Shader "K1L0/Experimental Layered Sky"
             float _CloudOpacity, _CloudSpeed, _CloudScale, _CloudContrast;
             float4 _SunUV, _MoonUV;
             float _SunVisibility, _MoonVisibility, _StarsVisibility;
+            float _NightAmount, _RainStrength, _AuroraStrength;
             CBUFFER_END
             TEXTURE2D(_CloudTex); SAMPLER(sampler_CloudTex);
             Varyings vert(Attributes i) { Varyings o; o.positionHCS = TransformObjectToHClip(i.positionOS.xyz); o.uv=i.uv; return o; }
@@ -50,19 +54,24 @@ Shader "K1L0/Experimental Layered Sky"
                 p.x += slowTime;
                 float farDensity=fbm(p*.58+fbm(p*.31+31.0)*1.8);
                 farDensity=saturate((farDensity-.43)*(_CloudContrast*.8));
-                // Mirror-repeat the authored density plate so opposite edges
-                // always meet without a visible seam. A slow procedural warp
-                // prevents the photographic layer from reading as a flat card.
+                // Two asymmetric, offset plates remove the obvious bilateral
+                // reflection seam produced by the former mirror-repeat.
                 float2 nearUV=p*float2(.48,.48)+float2(slowTime*1.7, -.08);
                 nearUV += float2(fbm(p*.42+7.1),fbm(p*.39+19.7))*.075;
-                nearUV=abs(frac(nearUV*.5)*2.0-1.0);
-                float nearDensity=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,nearUV).r;
+                float plateA=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,frac(nearUV)).r;
+                float2 offsetUV=float2(nearUV.y*.83+0.371,-nearUV.x*1.07+0.619);
+                float plateB=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,frac(offsetUV)).r;
+                float nearDensity=lerp(plateA,plateB,.38+.18*fbm(p*.27+43.0));
                 nearDensity=saturate((nearDensity-.20)*(_CloudContrast*1.15));
                 float density=saturate(farDensity*.42+nearDensity*.82);
                 // Bring cloud bodies down to the horizon; the previous .30
                 // lower fade made them visible mainly when the camera looked up.
                 density*=smoothstep(.0,.075,y)*smoothstep(1.05,.78,y);
                 // Celestial layer sits behind cloud density.
+                sky=lerp(sky,sky*half3(.12,.18,.36),_NightAmount*.88);
+                float auroraBand=pow(saturate(1.0-abs(y-(.56+sin(i.uv.x*11.0+_Time.y*.09)*.055))/.24),2.2);
+                float auroraNoise=fbm(float2(i.uv.x*7.0+_Time.y*.025,y*3.0));
+                sky += lerp(half3(.05,1.0,.48),half3(.55,.16,1.0),saturate(sin(i.uv.x*5.0)*.5+.5)) * half(auroraBand*auroraNoise*_AuroraStrength*_NightAmount*.65);
                 float2 starCell=floor(i.uv*float2(620,920));
                 float starHash=hash21(starCell);
                 float star=step(.9965,starHash)*(0.45+0.55*hash21(starCell+17.3))*_StarsVisibility;
@@ -76,7 +85,13 @@ Shader "K1L0/Experimental Layered Sky"
                 float moonGlow=1.0-smoothstep(.023,.10,moonD);
                 sky += half3(.68,.78,1.0)*half((moonDisc*.95+moonGlow*.18)*_MoonVisibility);
                 half3 litCloud=lerp(_CloudColor.rgb*.45,_CloudColor.rgb,saturate(y*.75+density*.4));
-                return half4(lerp(sky,litCloud,density*_CloudOpacity),1);
+                half3 result=lerp(sky,litCloud,density*_CloudOpacity);
+                float2 rainUV=float2(i.uv.x+i.uv.y*.16,i.uv.y+_Time.y*.72);
+                float rainCell=hash21(floor(rainUV*float2(240,38)));
+                float rainLine=step(.965,rainCell)*smoothstep(.48,.02,abs(frac(rainUV.y*38)-.5));
+                result += half3(.48,.62,.78)*half(rainLine*_RainStrength*(.35+.65*_NightAmount));
+                result=lerp(result,result*half3(.62,.69,.78),_RainStrength*.22);
+                return half4(result,1);
             }
             ENDHLSL
         }

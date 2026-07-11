@@ -1788,6 +1788,9 @@ public class K1L0HUD : MonoBehaviour
             case "layeredCloudSpeed":
             case "layeredCloudScale":
             case "layeredCloudContrast":
+            case "layeredBypassWeather":
+            case "layeredRain":
+            case "layeredAurora":
                 DynamicSkyVideoController.SetExperimentalSkyFloat(key, floatValue);
                 break;
             case "testSkyOverride":
