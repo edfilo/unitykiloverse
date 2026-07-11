@@ -50,34 +50,34 @@ Shader "K1L0/Experimental Layered Sky"
             float hash21(float2 p) { p=frac(p*float2(123.34,456.21)); p+=dot(p,p+45.32); return frac(p.x*p.y); }
             float noise(float2 p) { float2 i=floor(p), f=frac(p); f=f*f*(3-2*f); return lerp(lerp(hash21(i),hash21(i+float2(1,0)),f.x),lerp(hash21(i+float2(0,1)),hash21(i+1),f.x),f.y); }
             float fbm(float2 p) { float v=0; v+=noise(p)*.52; p=p*2.03+17.1; v+=noise(p)*.27; p=p*2.01+9.7; v+=noise(p)*.14; p=p*2.04; v+=noise(p)*.07; return v; }
+            float cloudTriplanar(float3 d,float scale,float drift)
+            {
+                float3 w=pow(abs(d),4.0); w/=max(.001,w.x+w.y+w.z);
+                float a=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,frac(d.yz*scale+float2(drift,.17))).r;
+                float b=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,frac(d.xz*scale+float2(-.31,drift*.73))).r;
+                float c=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,frac(d.xy*scale+float2(drift*.41,.53))).r;
+                return a*w.x+b*w.y+c*w.z;
+            }
             half4 frag(Varyings i) : SV_Target
             {
                 float y=saturate(i.uv.y);
                 float3 viewDir=normalize(i.worldDir);
                 half3 lowerSky=lerp(_HorizonColor.rgb,_MidColor.rgb,smoothstep(0.02,0.46,y));
-                half3 sky=lerp(lowerSky,_TopColor.rgb,smoothstep(0.42,0.90,y));
+                half3 sky=lerp(lowerSky,_TopColor.rgb,smoothstep(0.24,0.68,y));
                 float horizonAir=pow(saturate(1.0-abs(viewDir.y)),3.0);
                 float sunMu=saturate(dot(viewDir,normalize(_SunDirection.xyz))*.5+.5);
                 sky += half3(.22,.34,.62)*half(horizonAir*(1.0-_NightAmount)*.28);
                 sky += half3(1.0,.48,.18)*half(pow(sunMu,18.0)*horizonAir*_SunVisibility*.16);
-                // Portrait correction: repeat the square cloud domain along Y
-                // rather than stretching one texture over the tall sky plane.
-                float2 p=float2(i.uv.x*2.2,i.uv.y*2.2)*_CloudScale;
                 float slowTime=_Time.y*_CloudSpeed*.025;
-                p.x += slowTime;
-                float farDensity=fbm(p*.58+fbm(p*.31+31.0)*1.8);
+                float3 weights=pow(abs(viewDir),4.0); weights/=max(.001,weights.x+weights.y+weights.z);
+                float farDensity=fbm(viewDir.yz*_CloudScale*.9+slowTime)*weights.x+
+                    fbm(viewDir.xz*_CloudScale*.9+float2(7.3,slowTime*.7))*weights.y+
+                    fbm(viewDir.xy*_CloudScale*.9+float2(slowTime*.4,13.1))*weights.z;
                 farDensity=saturate((farDensity-.43)*(_CloudContrast*.8));
-                // Two asymmetric, offset plates remove the obvious bilateral
-                // reflection seam produced by the former mirror-repeat.
-                float2 nearUV=p*float2(.48,.48)+float2(slowTime*1.7, -.08);
-                nearUV += float2(fbm(p*.42+7.1),fbm(p*.39+19.7))*.075;
-                float plateA=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,frac(nearUV)).r;
-                float2 offsetUV=float2(nearUV.y*.83+0.371,-nearUV.x*1.07+0.619);
-                float plateB=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,frac(offsetUV)).r;
-                float nearDensity=lerp(plateA,plateB,.38+.18*fbm(p*.27+43.0));
+                float nearDensity=cloudTriplanar(viewDir,_CloudScale*1.16,slowTime*1.7);
                 nearDensity=saturate((nearDensity-.20)*(_CloudContrast*1.15));
                 float density=saturate(farDensity*.42+nearDensity*.82);
-                float highCloud=saturate((fbm(p*.31+float2(-slowTime*.35,13.7))-.49)*(_CloudContrast*.7));
+                float highCloud=saturate((cloudTriplanar(viewDir,_CloudScale*.47,-slowTime*.35)-.49)*(_CloudContrast*.7));
                 density=saturate(density+highCloud*.32);
                 // Bring cloud bodies down to the horizon; the previous .30
                 // lower fade made them visible mainly when the camera looked up.
@@ -85,12 +85,17 @@ Shader "K1L0/Experimental Layered Sky"
                 // Celestial layer sits behind cloud density.
                 half3 nightSky=sky*lerp(half3(.18,.22,.38),half3(.008,.012,.025),_NightBlackness);
                 sky=lerp(sky,nightSky,_NightAmount*.94);
-                float auroraBand=pow(saturate(1.0-abs(y-(.56+sin(i.uv.x*11.0+_Time.y*.09)*.055))/.24),2.2);
-                float auroraNoise=fbm(float2(i.uv.x*7.0+_Time.y*.025,y*3.0));
-                sky += lerp(half3(.05,1.0,.48),half3(.55,.16,1.0),saturate(sin(i.uv.x*5.0)*.5+.5)) * half(auroraBand*auroraNoise*_AuroraStrength*_NightAmount*.65);
-                float2 starCell=floor(i.uv*float2(620,920));
+                float curtainCenter=.61+sin(i.uv.x*19.0+_Time.y*.11)*.035+sin(i.uv.x*43.0-_Time.y*.07)*.014;
+                float ribbonA=exp(-pow((y-curtainCenter)/.028,2.0));
+                float ribbonB=exp(-pow((y-curtainCenter+.075)/.045,2.0))*.48;
+                float folds=.28+.72*pow(saturate(sin(i.uv.x*71.0+fbm(float2(i.uv.x*8.0,_Time.y*.025))*5.0)*.5+.5),2.0);
+                float aurora=(ribbonA+ribbonB)*folds*_AuroraStrength*_NightAmount;
+                sky += lerp(half3(.04,1.0,.38),half3(.48,.12,1.0),saturate(sin(i.uv.x*9.0)*.5+.5))*half(aurora*.82);
+                float2 starGrid=i.uv*float2(1250,625);
+                float2 starCell=floor(starGrid);
                 float starHash=hash21(starCell);
-                float star=step(.9965,starHash)*(0.45+0.55*hash21(starCell+17.3))*_StarsVisibility;
+                float starDot=1.0-smoothstep(.035,.16,length(frac(starGrid)-.5));
+                float star=step(.9972,starHash)*starDot*(0.45+0.55*hash21(starCell+17.3))*_StarsVisibility;
                 sky += half3(.72,.82,1.0)*half(star);
                 float sunD=acos(clamp(dot(viewDir,normalize(_SunDirection.xyz)),-1,1));
                 float sunDisc=1.0-smoothstep(.008,.011,sunD);
