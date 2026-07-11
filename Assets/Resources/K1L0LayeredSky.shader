@@ -9,6 +9,7 @@ Shader "K1L0/Experimental Layered Sky"
         _CloudSpeed ("Cloud Speed", Range(-2,2)) = 0.08
         _CloudScale ("Cloud Scale", Range(0.5,8)) = 2.2
         _CloudContrast ("Cloud Contrast", Range(0.1,4)) = 1.5
+        _CloudTex ("Photoreal Cloud Density", 2D) = "gray" {}
     }
     SubShader
     {
@@ -26,6 +27,7 @@ Shader "K1L0/Experimental Layered Sky"
             half4 _TopColor, _HorizonColor, _CloudColor;
             float _CloudOpacity, _CloudSpeed, _CloudScale, _CloudContrast;
             CBUFFER_END
+            TEXTURE2D(_CloudTex); SAMPLER(sampler_CloudTex);
             Varyings vert(Attributes i) { Varyings o; o.positionHCS = TransformObjectToHClip(i.positionOS.xyz); o.uv=i.uv; return o; }
             float hash21(float2 p) { p=frac(p*float2(123.34,456.21)); p+=dot(p,p+45.32); return frac(p.x*p.y); }
             float noise(float2 p) { float2 i=floor(p), f=frac(p); f=f*f*(3-2*f); return lerp(lerp(hash21(i),hash21(i+float2(1,0)),f.x),lerp(hash21(i+float2(0,1)),hash21(i+1),f.x),f.y); }
@@ -36,8 +38,17 @@ Shader "K1L0/Experimental Layered Sky"
                 half3 sky=lerp(_HorizonColor.rgb,_TopColor.rgb,smoothstep(0.02,0.92,y));
                 float2 p=float2(i.uv.x*2.2,i.uv.y)*_CloudScale;
                 p.x += _Time.y*_CloudSpeed;
-                float density=fbm(p+fbm(p*.55+31.0)*1.8);
-                density=saturate((density-.42)*_CloudContrast);
+                float farDensity=fbm(p*.58+fbm(p*.31+31.0)*1.8);
+                farDensity=saturate((farDensity-.43)*(_CloudContrast*.8));
+                // Mirror-repeat the authored density plate so opposite edges
+                // always meet without a visible seam. A slow procedural warp
+                // prevents the photographic layer from reading as a flat card.
+                float2 nearUV=p*float2(.48,.64)+float2(_Time.y*_CloudSpeed*1.7, -.08);
+                nearUV += float2(fbm(p*.42+7.1),fbm(p*.39+19.7))*.075;
+                nearUV=abs(frac(nearUV*.5)*2.0-1.0);
+                float nearDensity=SAMPLE_TEXTURE2D(_CloudTex,sampler_CloudTex,nearUV).r;
+                nearDensity=saturate((nearDensity-.20)*(_CloudContrast*1.15));
+                float density=saturate(farDensity*.42+nearDensity*.82);
                 // Bring cloud bodies down to the horizon; the previous .30
                 // lower fade made them visible mainly when the camera looked up.
                 density*=smoothstep(.0,.075,y)*smoothstep(1.05,.78,y);

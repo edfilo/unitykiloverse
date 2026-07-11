@@ -140,6 +140,17 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             layeredSkyMaterial = new Material(layeredShader) { name = "K1L0 Experimental Layered Sky" };
         else
             Debug.LogError("[DynamicSkyVideo] Experimental layered sky shader missing from player build.");
+        if (layeredSkyMaterial != null)
+        {
+            var cloudDensity = Resources.Load<Texture2D>("K1L0CloudDensityNear");
+            if (cloudDensity != null)
+            {
+                cloudDensity.wrapMode = TextureWrapMode.Mirror;
+                cloudDensity.filterMode = FilterMode.Trilinear;
+                layeredSkyMaterial.SetTexture("_CloudTex", cloudDensity);
+            }
+            else Debug.LogError("[DynamicSkyVideo] Photoreal cloud density texture missing.");
+        }
         EnsureSkyPlane();
         ApplySkyRenderer();
         ApplyVideoSurface(forceGi: true);
