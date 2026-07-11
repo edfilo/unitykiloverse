@@ -60,10 +60,13 @@ Shader "K1L0/Experimental Layered Sky"
             }
             half4 frag(Varyings i) : SV_Target
             {
-                float y=saturate(i.uv.y);
                 float3 viewDir=normalize(i.worldDir);
-                half3 lowerSky=lerp(_HorizonColor.rgb,_MidColor.rgb,smoothstep(0.02,0.46,y));
-                half3 sky=lerp(lowerSky,_TopColor.rgb,smoothstep(0.24,0.68,y));
+                // True altitude above the dome equator: zero is the horizon,
+                // one is zenith. Spherical UV.y places the horizon at .5 and
+                // previously let mid/zenith color overpower it.
+                float y=saturate(viewDir.y);
+                half3 lowerSky=lerp(_HorizonColor.rgb,_MidColor.rgb,smoothstep(0.03,0.48,y));
+                half3 sky=lerp(lowerSky,_TopColor.rgb,smoothstep(0.38,0.84,y));
                 float horizonAir=pow(saturate(1.0-abs(viewDir.y)),3.0);
                 float sunMu=saturate(dot(viewDir,normalize(_SunDirection.xyz))*.5+.5);
                 sky += half3(.22,.34,.62)*half(horizonAir*(1.0-_NightAmount)*.28);
@@ -81,7 +84,7 @@ Shader "K1L0/Experimental Layered Sky"
                 density=saturate(density+highCloud*.32);
                 // Bring cloud bodies down to the horizon; the previous .30
                 // lower fade made them visible mainly when the camera looked up.
-                density*=smoothstep(.0,.075,y)*smoothstep(1.05,.78,y);
+                density*=smoothstep(.055,.19,y)*smoothstep(1.05,.82,y);
                 // Celestial layer sits behind cloud density.
                 half3 nightSky=sky*lerp(half3(.18,.22,.38),half3(.008,.012,.025),_NightBlackness);
                 sky=lerp(sky,nightSky,_NightAmount*.94);
