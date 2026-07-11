@@ -148,7 +148,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
     private void Update()
     {
-        if (Time.unscaledTime >= nextSelectionTime)
+        if (!ExperimentalLayeredSky && Time.unscaledTime >= nextSelectionTime)
         {
             nextSelectionTime = Time.unscaledTime + 8f;
             SelectAndPlay(force: false);
@@ -160,7 +160,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             SelectAndPlay(force: false);
         }
 
-        UpdatePingPongPlayback();
+        if (!ExperimentalLayeredSky) UpdatePingPongPlayback();
     }
 
     private void LateUpdate()
@@ -181,6 +181,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
     private void SelectAndPlay(bool force)
     {
+        if (ExperimentalLayeredSky) return;
         // If Swift sent us an explicit URL, use it directly and skip ChooseClipName().
         string overrideUrl = pendingOverrideUrl;
         if (!string.IsNullOrEmpty(overrideUrl))
@@ -229,6 +230,12 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
     private void HandlePrepared(VideoPlayer player)
     {
+        if (ExperimentalLayeredSky)
+        {
+            player.Stop();
+            player.enabled = false;
+            return;
+        }
         playingBackward = false;
         ApplyEffectivePlaybackSpeed();
         player.time = 0.0;
@@ -424,7 +431,22 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         if (skyPlaneRenderer == null) return;
         bool layered = ExperimentalLayeredSky && layeredSkyMaterial != null;
         skyPlaneRenderer.sharedMaterial = layered ? layeredSkyMaterial : videoMaterial;
-        if (videoPlayer != null) { if (layered) videoPlayer.Pause(); else if (videoPlayer.isPrepared) videoPlayer.Play(); }
+        if (videoPlayer != null)
+        {
+            if (layered)
+            {
+                videoPlayer.Stop();
+                videoPlayer.enabled = false;
+                if (renderTexture != null && renderTexture.IsCreated()) renderTexture.Release();
+            }
+            else
+            {
+                videoPlayer.enabled = true;
+                if (renderTexture != null && !renderTexture.IsCreated()) renderTexture.Create();
+                videoPlayer.targetTexture = renderTexture;
+                SelectAndPlay(force: true);
+            }
+        }
         ApplyExperimentalParameters();
         Debug.Log($"[DynamicSkyVideo] renderer={(layered ? "layered-metal" : "video")}");
     }
@@ -434,7 +456,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         if (layeredSkyMaterial == null) return;
         float topHue = PlayerPrefs.GetFloat("k1lo_layeredSkyTopHue", 0.62f);
         float horizonHue = PlayerPrefs.GetFloat("k1lo_layeredSkyHorizonHue", 0.94f);
-        layeredSkyMaterial.SetColor("_TopColor", Color.HSVToRGB(Mathf.Repeat(topHue, 1f), .72f, .42f));
+        layeredSkyMaterial.SetColor("_TopColor", Color.HSVToRGB(Mathf.Repeat(topHue, 1f), .82f, .78f));
         layeredSkyMaterial.SetColor("_HorizonColor", Color.HSVToRGB(Mathf.Repeat(horizonHue, 1f), .62f, .92f));
         layeredSkyMaterial.SetColor("_CloudColor", new Color(.96f,.93f,.90f,1f));
         layeredSkyMaterial.SetFloat("_CloudOpacity", PlayerPrefs.GetFloat("k1lo_layeredCloudOpacity", .72f));

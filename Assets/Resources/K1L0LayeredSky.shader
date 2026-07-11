@@ -38,7 +38,9 @@ Shader "K1L0/Experimental Layered Sky"
                 p.x += _Time.y*_CloudSpeed;
                 float density=fbm(p+fbm(p*.55+31.0)*1.8);
                 density=saturate((density-.42)*_CloudContrast);
-                density*=smoothstep(.04,.30,y)*smoothstep(1.05,.72,y);
+                // Bring cloud bodies down to the horizon; the previous .30
+                // lower fade made them visible mainly when the camera looked up.
+                density*=smoothstep(.0,.075,y)*smoothstep(1.05,.78,y);
                 half3 litCloud=lerp(_CloudColor.rgb*.45,_CloudColor.rgb,saturate(y*.75+density*.4));
                 return half4(lerp(sky,litCloud,density*_CloudOpacity),1);
             }
