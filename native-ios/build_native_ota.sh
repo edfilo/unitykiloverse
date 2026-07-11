@@ -8,6 +8,7 @@ PAYLOAD_DIR="$BUILD_ROOT/ota_payload"
 OTA_DIR="/tmp/tedfred_ota/k1l0/latest"
 BUILD_NUMBER="$(date +%Y%m%d%H%M%S)"
 VIDEOS_SRC="/tmp/k1l0_sky_video_refs/videos"
+FALLBACK_VIDEOS_SRC="$(cd "$ROOT/.." && pwd)/Assets/StreamingAssets/WeatherVideos"
 PROFILE="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/67f9ab53-0e20-4359-86f4-41dc044a69e0.mobileprovision"
 IDENTITY="Apple Development: Ed Filowat (CYE232ULMR)"
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
@@ -15,7 +16,13 @@ SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 rm -rf "$BUILD_ROOT"
 mkdir -p "$APP_DIR/WeatherVideos" "$OTA_DIR"
 
-cp "$VIDEOS_SRC"/*.mp4 "$APP_DIR/WeatherVideos/"
+if compgen -G "$VIDEOS_SRC/*.mp4" > /dev/null; then
+  cp "$VIDEOS_SRC"/*.mp4 "$APP_DIR/WeatherVideos/"
+elif compgen -G "$FALLBACK_VIDEOS_SRC/*.mp4" > /dev/null; then
+  cp "$FALLBACK_VIDEOS_SRC"/*.mp4 "$APP_DIR/WeatherVideos/"
+else
+  echo "warning: no sky video mp4s found in $VIDEOS_SRC or $FALLBACK_VIDEOS_SRC"
+fi
 
 cat > "$APP_DIR/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -24,7 +31,7 @@ cat > "$APP_DIR/Info.plist" <<'PLIST'
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>K1L0</string>
   <key>CFBundleExecutable</key><string>K1L0</string>
-  <key>CFBundleIdentifier</key><string>com.filowatt.k1lo</string>
+  <key>CFBundleIdentifier</key><string>com.filowatt.K1L0</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>K1L0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -56,7 +63,7 @@ cat > "$BUILD_ROOT/Entitlements.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>application-identifier</key><string>7R2746UPX7.com.filowatt.k1lo</string>
+  <key>application-identifier</key><string>7R2746UPX7.com.filowatt.K1L0</string>
   <key>com.apple.developer.team-identifier</key><string>7R2746UPX7</string>
   <key>get-task-allow</key><true/>
 </dict></plist>
@@ -96,7 +103,7 @@ cat > "$OTA_DIR/manifest.plist" <<'PLIST'
     <key>url</key><string>https://tunnel.kilo.gallery/ota/k1l0/latest/app.ipa</string>
   </dict></array>
   <key>metadata</key><dict>
-    <key>bundle-identifier</key><string>com.filowatt.k1lo</string>
+    <key>bundle-identifier</key><string>com.filowatt.K1L0</string>
     <key>bundle-version</key><string>__BUILD_NUMBER__</string>
     <key>kind</key><string>software</string>
     <key>title</key><string>K1L0</string>

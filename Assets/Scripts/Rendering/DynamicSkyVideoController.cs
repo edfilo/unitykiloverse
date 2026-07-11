@@ -9,11 +9,44 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 {
     private const int TextureWidth = 1080;
     private const int TextureHeight = 1920;
+    // The old flat sky swept the video rapidly as the map/compass turned and
+    // mirrored at each texture edge. Four mirrored cycles per compass turn
+    // keeps the pan responsive without racing ahead of the map gesture.
+    private const float SkyPanCyclesPerTurn = 4f;
 
     [SerializeField, Range(0.01f, 2f)] private float playbackSpeed = 0.1f;
 
     public static DynamicSkyVideoController Instance { get; private set; }
     public static bool IsActive => Instance != null && Instance.enabled && Instance.videoMaterial != null;
+
+    public static float SkyTargetFps { get; private set; } = 30f;
+    private static bool nativePanelOpen;
+
+    public static void SetNativePanelOpen(bool open)
+    {
+        nativePanelOpen = open;
+        Instance?.ApplyEffectivePlaybackSpeed();
+    }
+
+    public static void SetSkyFps(float fps)
+    {
+        SkyTargetFps = Mathf.Clamp(fps, 1f, 60f);
+        PlayerPrefs.SetFloat("k1lo_skyTargetFps", SkyTargetFps);
+        PlayerPrefs.Save();
+        Instance?.ApplyEffectivePlaybackSpeed();
+    }
+
+    // Swift sends us a full file:// URL via setUnitySetting("skyVideoUrl", …).
+    // When set, this overrides ChooseClipName() so Unity never needs a rebuild
+    // to change which file plays for a given weather condition.
+    private static string pendingOverrideUrl;
+    private string activeOverrideUrl;
+
+    public static void SetVideoUrl(string url)
+    {
+        pendingOverrideUrl = url ?? string.Empty;
+        Instance?.SelectAndPlay(force: true);
+    }
 
     private VideoPlayer videoPlayer;
     private RenderTexture renderTexture;
@@ -38,13 +71,15 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     private void Awake()
     {
         Instance = this;
+        SkyTargetFps = PlayerPrefs.GetFloat("k1lo_skyTargetFps", 30f);
 
         renderTexture = new RenderTexture(TextureWidth, TextureHeight, 0, RenderTextureFormat.ARGB32)
         {
             name = "K1L0 Weather Sky Video",
-            // Repeat horizontally so the cylindrical band's seam at u=0/u=1
-            // tiles cleanly. Vertical stays clamped (band has finite height).
-            wrapModeU = TextureWrapMode.Repeat,
+            // Mirror is the old ping-pong wrap: adjacent horizontal copies meet
+            // edge-to-edge instead of jumping from the right edge back to left.
+            // Vertical stays clamped so portrait sky videos do not smear.
+            wrapModeU = TextureWrapMode.Mirror,
             wrapModeV = TextureWrapMode.Clamp,
             filterMode = FilterMode.Bilinear,
             useMipMap = false
@@ -54,7 +89,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         videoPlayer = gameObject.AddComponent<VideoPlayer>();
         videoPlayer.playOnAwake = false;
         videoPlayer.isLooping = false;
-        videoPlayer.playbackSpeed = playbackSpeed;
+        videoPlayer.playbackSpeed = EffectivePlaybackSpeed();
         videoPlayer.renderMode = VideoRenderMode.RenderTexture;
         videoPlayer.targetTexture = renderTexture;
         videoPlayer.audioOutputMode = VideoAudioOutputMode.None;
@@ -73,10 +108,8 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
         videoMaterial = new Material(shader) { name = "K1L0 Video Weather Sky Plane" };
         videoMaterial.renderQueue = 1000;
-        // Render both sides of the cylinder triangles — guarantees visibility
-        // regardless of how winding ends up resolving on URP Unlit. Disable
-        // ZWrite so the band sits behind the world (terrain/buildings paint on
-        // top). URP Unlit exposes _Cull as float (0=Off, 1=Front, 2=Back) and
+        // Render both sides of the quad and keep it behind world geometry.
+        // URP Unlit exposes _Cull as float (0=Off, 1=Front, 2=Back) and
         // _ZWrite (0=Off, 1=On). Falls through silently on unsupported keys.
         if (videoMaterial.HasProperty("_Cull")) videoMaterial.SetFloat("_Cull", 0f);
         if (videoMaterial.HasProperty("_ZWrite")) videoMaterial.SetFloat("_ZWrite", 0f);
@@ -120,6 +153,27 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
     private void SelectAndPlay(bool force)
     {
+        // If Swift sent us an explicit URL, use it directly and skip ChooseClipName().
+        string overrideUrl = pendingOverrideUrl;
+        if (!string.IsNullOrEmpty(overrideUrl))
+        {
+            if (!force && string.Equals(activeOverrideUrl, overrideUrl, StringComparison.Ordinal)) return;
+            activeOverrideUrl = overrideUrl;
+            activeClipName = Path.GetFileName(overrideUrl);
+            playingBackward = false;
+            videoPlayer.prepareCompleted -= HandlePrepared;
+            videoPlayer.prepareCompleted += HandlePrepared;
+            videoPlayer.errorReceived -= HandleVideoError;
+            videoPlayer.errorReceived += HandleVideoError;
+            videoPlayer.loopPointReached -= HandleLoopPointReached;
+            videoPlayer.loopPointReached += HandleLoopPointReached;
+            videoPlayer.playbackSpeed = EffectivePlaybackSpeed();
+            videoPlayer.url = overrideUrl;
+            videoPlayer.Prepare();
+            Debug.Log($"[DynamicSkyVideo] Swift override → {activeClipName}");
+            return;
+        }
+
         string clipName = ChooseClipName();
         if (!force && string.Equals(activeClipName, clipName, StringComparison.OrdinalIgnoreCase)) return;
 
@@ -130,6 +184,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             return;
         }
 
+        activeOverrideUrl = null;
         activeClipName = clipName;
         playingBackward = false;
         videoPlayer.prepareCompleted -= HandlePrepared;
@@ -138,7 +193,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         videoPlayer.errorReceived += HandleVideoError;
         videoPlayer.loopPointReached -= HandleLoopPointReached;
         videoPlayer.loopPointReached += HandleLoopPointReached;
-        videoPlayer.playbackSpeed = playbackSpeed;
+        videoPlayer.playbackSpeed = EffectivePlaybackSpeed();
         videoPlayer.url = ToVideoUrl(fullPath);
         videoPlayer.Prepare();
         Debug.Log($"[DynamicSkyVideo] Preparing {clipName} at {videoPlayer.url}");
@@ -147,11 +202,11 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     private void HandlePrepared(VideoPlayer player)
     {
         playingBackward = false;
-        player.playbackSpeed = playbackSpeed;
+        ApplyEffectivePlaybackSpeed();
         player.time = 0.0;
         player.Play();
         ApplyVideoSurface(forceGi: true);
-        Debug.Log($"[DynamicSkyVideo] Playing {activeClipName} ping-pong speed={playbackSpeed:0.00}");
+        Debug.Log($"[DynamicSkyVideo] Playing {activeClipName} ping-pong speed={EffectivePlaybackSpeed():0.00} skyFps={SkyTargetFps:0}");
     }
 
     private void HandleLoopPointReached(VideoPlayer player)
@@ -166,14 +221,26 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
     private void UpdatePingPongPlayback()
     {
-        if (!playingBackward || videoPlayer == null || !videoPlayer.isPrepared) return;
+        if (videoPlayer == null || !videoPlayer.isPrepared) return;
 
-        double nextTime = videoPlayer.time - Time.unscaledDeltaTime * Math.Max(0.01f, playbackSpeed);
+        // Some iOS VideoPlayer builds stop on the final frame without reliably
+        // delivering loopPointReached. Detect that state too so every clip still
+        // reverses rather than visibly snapping back to frame zero.
+        if (!playingBackward && videoPlayer.length > 0.0 &&
+            (videoPlayer.time >= videoPlayer.length - 0.05 ||
+             (!videoPlayer.isPlaying && videoPlayer.time >= videoPlayer.length - 0.10)))
+        {
+            HandleLoopPointReached(videoPlayer);
+        }
+
+        if (!playingBackward) return;
+
+        double nextTime = videoPlayer.time - Time.unscaledDeltaTime * EffectivePlaybackSpeed();
         if (nextTime <= 0.02)
         {
             playingBackward = false;
             videoPlayer.time = 0.0;
-            videoPlayer.playbackSpeed = playbackSpeed;
+            ApplyEffectivePlaybackSpeed();
             videoPlayer.Play();
             return;
         }
@@ -184,6 +251,18 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     private void HandleVideoError(VideoPlayer player, string message)
     {
         Debug.LogWarning($"[DynamicSkyVideo] Video error for {activeClipName}: {message}");
+    }
+
+    private float EffectivePlaybackSpeed()
+    {
+        float speed = playbackSpeed * Mathf.Clamp(SkyTargetFps, 1f, 60f) / 30f;
+        return Mathf.Clamp(speed, 0.01f, 2f);
+    }
+
+    private void ApplyEffectivePlaybackSpeed()
+    {
+        if (videoPlayer == null || playingBackward) return;
+        videoPlayer.playbackSpeed = EffectivePlaybackSpeed();
     }
 
     private string ChooseClipName()
@@ -204,13 +283,26 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
     private static bool IsNight()
     {
-        if (GPSLocationController.GPSDisabled)
+        // Signal hierarchy, best first:
+        // 1. Manual hour when testing (override) or desktop (no GPS).
+        // 2. Backend isDay — real sunrise/sunset for the player's location.
+        // 3. Astronomical sun altitude computed on-device from GPS + UTC.
+        // 4. Hardcoded 6/19 local clock, the dumbest last resort. (This was
+        //    briefly the ONLY path with GPS on, which put the night sky up at
+        //    7pm in July while the sun was still shining.)
+        if (GPSLocationController.GPSDisabled || RenderManager.TestSkyOverrideEnabled)
         {
             float hour = Mathf.Repeat(RenderManager.ManualHour, 24f);
             return hour < 6f || hour >= 19f;
         }
 
-        int localHour = DateTime.Now.Hour;
+        if (RenderManager.WeatherIsDay.HasValue)
+            return !RenderManager.WeatherIsDay.Value;
+
+        if (RenderManager.Instance != null)
+            return RenderManager.LiveSunAltitudeDeg < -1.5f;
+
+        int localHour = DateTime.Now.ToLocalTime().Hour;
         return localHour < 6 || localHour >= 19;
     }
 
@@ -219,9 +311,28 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         EnsureSkyPlane();
         if (skyPlane == null || videoMaterial == null) return;
 
-        if (RenderSettings.ambientMode != UnityEngine.Rendering.AmbientMode.Skybox)
-            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Skybox;
-        RenderSettings.ambientIntensity = 0.75f;
+        Camera cam = Camera.main;
+        if (cam != null)
+        {
+            if (cam.clearFlags != CameraClearFlags.SolidColor)
+                cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = Color.black;
+        }
+
+        if (RenderSettings.skybox != null)
+            RenderSettings.skybox = null;
+
+        // Video-sky mode clears the Unity skybox, so Skybox ambient has no
+        // source. Apply the profile's flat ambient color and intensity directly.
+        var lighting = RenderManager.Instance != null ? RenderManager.Instance.profile?.lighting : null;
+        float ambientIntensity = lighting != null && lighting.ambientEnabled
+            ? lighting.ambientIntensity
+            : 0f;
+        Color ambientColor = lighting != null ? lighting.ambientFlatColor : new Color(0.2f, 0.2f, 0.2f);
+        if (RenderSettings.ambientMode != UnityEngine.Rendering.AmbientMode.Flat)
+            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+        RenderSettings.ambientIntensity = ambientIntensity;
+        RenderSettings.ambientLight = ambientColor * ambientIntensity;
 
         if (forceGi) DynamicGI.UpdateEnvironment();
     }
@@ -240,26 +351,6 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         return "file://" + fullPath;
     }
 
-    // ── Horizon-anchored cylindrical sky band ──────────────────────────────
-    // Camera sits inside a procedural cylinder whose side band is mapped with
-    // the video RenderTexture. The cylinder NEVER rotates with the camera —
-    // it only follows the player's XZ so it stays centered. As the player
-    // turns, they sweep across different angular slices of the band → the
-    // video reads as world-space sky instead of a glued billboard.
-    private const int SkyCylinderSegments = 48;
-    private const float SkyCylinderRadius = 600f;
-    private const float SkyCylinderHeight = 480f;
-    // How far below the camera the band's bottom sits. Negative drops it
-    // below eye-line so the bottom edge lines up roughly with the horizon
-    // (the rest of the band fills the sky above).
-    private const float SkyCylinderHorizonOffset = -40f;
-    // How many times the video repeats around the cylinder. 1 = one wrap
-    // (full unique content per direction — turning the camera reveals new
-    // sky). 2+ = tiled which hides the seam but also makes 180° turns look
-    // identical, which reads as "the sky is following me" even though it
-    // isn't. Keep at 1.0 unless the seam is too obvious for your content.
-    private const float SkyCylinderTileCount = 1f;
-
     private void EnsureSkyPlane()
     {
         Camera cam = Camera.main;
@@ -267,91 +358,47 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
         if (skyPlane == null)
         {
-            var dome = new GameObject("K1L0 Video Sky Cylinder");
-            var mf = dome.AddComponent<MeshFilter>();
-            mf.sharedMesh = BuildInsideOutCylinderBand(
-                SkyCylinderSegments, SkyCylinderRadius, SkyCylinderHeight, SkyCylinderTileCount);
-            skyPlaneRenderer = dome.AddComponent<MeshRenderer>();
+            var plane = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            plane.name = "K1L0 Video Sky Plane";
+            var collider = plane.GetComponent<Collider>();
+            if (collider != null) Destroy(collider);
+            skyPlane = plane.transform;
+            skyPlaneRenderer = plane.GetComponent<MeshRenderer>();
             skyPlaneRenderer.sharedMaterial = videoMaterial;
             skyPlaneRenderer.shadowCastingMode = ShadowCastingMode.Off;
             skyPlaneRenderer.receiveShadows = false;
-            skyPlane = dome.transform;
-            Debug.Log($"[DynamicSkyVideo] Built horizon-anchored cylinder: r={SkyCylinderRadius} h={SkyCylinderHeight} segs={SkyCylinderSegments} tiles={SkyCylinderTileCount}");
+            Debug.Log("[DynamicSkyVideo] Created horizon-anchored mirrored video sky plane.");
         }
 
-        // World-anchored — follow player horizontally, sit at horizon, never
-        // inherit yaw. The video stays put in world space as the camera turns.
-        Vector3 camPos = cam.transform.position;
+        float distance = Mathf.Max(30f, Mathf.Min(cam.farClipPlane * 0.82f, 900f));
+        float viewHeight = 2f * distance * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
+        float height = viewHeight * 1.9f;
+        float width = height * cam.aspect * 1.35f;
+        Quaternion yawOnly = Quaternion.Euler(0f, cam.transform.eulerAngles.y, 0f);
+        Vector3 forward = yawOnly * Vector3.forward;
+        float horizonBottomY = cam.transform.position.y - 1.5f;
+
+        // Keep the quad at the world horizon and rotate only around Y. Camera
+        // pitch/height changes therefore move the horizon through the frame,
+        // while yaw is represented by the mirrored UV pan below.
         skyPlane.SetParent(null, true);
-        skyPlane.position = new Vector3(camPos.x, camPos.y + SkyCylinderHorizonOffset, camPos.z);
-        skyPlane.rotation = Quaternion.identity;
-        skyPlane.localScale = Vector3.one;
+        skyPlane.position = cam.transform.position + forward * distance +
+                            Vector3.up * (horizonBottomY - cam.transform.position.y + height * 0.5f);
+        skyPlane.rotation = yawOnly;
+        skyPlane.localScale = new Vector3(width, height, 1f);
+        ApplySkyTextureTransform(cam);
         skyPlane.gameObject.SetActive(true);
-
-        // One-shot sanity log so we can verify on-device that the cylinder is
-        // tracking position but NOT rotation. If yaw ever leaks in, world rot
-        // would diverge from identity and we'd see it here.
-        if (!loggedAnchorOnce)
-        {
-            loggedAnchorOnce = true;
-            Debug.Log($"[DynamicSkyVideo] Anchor sanity: camYaw={cam.transform.eulerAngles.y:F1}° skyRot={skyPlane.eulerAngles.y:F1}° skyPos={skyPlane.position} camPos={camPos}");
-        }
     }
 
-    private bool loggedAnchorOnce;
-
-    // Procedural cylinder side-band, triangles wound to face INWARD so the
-    // camera sees the video on the inside surface. UVs wrap the texture
-    // `tileCount` times around the circumference, full-height vertically.
-    private static Mesh BuildInsideOutCylinderBand(int segments, float radius, float height, float tileCount)
+    private void ApplySkyTextureTransform(Camera cam)
     {
-        var mesh = new Mesh { name = "K1L0 Sky Cylinder Band" };
-        int ringVerts = segments + 1; // +1 so the seam has matching UV at u=tileCount
-        var verts = new Vector3[ringVerts * 2];
-        var uvs = new Vector2[verts.Length];
-        var tris = new int[segments * 6];
+        if (videoMaterial == null || cam == null) return;
 
-        for (int i = 0; i <= segments; i++)
-        {
-            float t = (float)i / segments;
-            float a = t * Mathf.PI * 2f;
-            float x = Mathf.Cos(a) * radius;
-            float z = Mathf.Sin(a) * radius;
-            int bottom = i * 2;
-            int top = i * 2 + 1;
-            verts[bottom] = new Vector3(x, 0f, z);
-            verts[top]    = new Vector3(x, height, z);
-            uvs[bottom]   = new Vector2(t * tileCount, 0f);
-            uvs[top]      = new Vector2(t * tileCount, 1f);
-        }
+        float yawTurns = cam.transform.eulerAngles.y / 360f;
+        Vector2 scale = Vector2.one;
+        Vector2 offset = new Vector2(yawTurns * SkyPanCyclesPerTurn, 0f);
 
-        // Inward-facing winding (reverse of standard cylinder so the inside
-        // surface renders to the camera that lives at the centre).
-        for (int i = 0; i < segments; i++)
-        {
-            int v0 = i * 2;
-            int v1 = i * 2 + 1;
-            int v2 = (i + 1) * 2;
-            int v3 = (i + 1) * 2 + 1;
-            int o = i * 6;
-            tris[o + 0] = v0;
-            tris[o + 1] = v2;
-            tris[o + 2] = v1;
-            tris[o + 3] = v1;
-            tris[o + 4] = v2;
-            tris[o + 5] = v3;
-        }
-
-        mesh.vertices = verts;
-        mesh.uv = uvs;
-        mesh.triangles = tris;
-        mesh.RecalculateNormals();
-        mesh.RecalculateBounds();
-        // Big bounds so frustum culling never accidentally hides the band
-        // (the procedural triangles' computed bounds are correct, but a
-        // large explicit bound is bulletproof for camera-anchored geometry).
-        mesh.bounds = new Bounds(new Vector3(0f, height * 0.5f, 0f), Vector3.one * radius * 4f);
-        return mesh;
+        SetTextureScaleOffset(videoMaterial, scale, offset);
     }
 
     private static void SetVideoTexture(Material material, Texture texture)
@@ -360,5 +407,19 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         if (material.HasProperty("_MainTex")) material.SetTexture("_MainTex", texture);
         if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", Color.white);
         if (material.HasProperty("_Color")) material.SetColor("_Color", Color.white);
+    }
+
+    private static void SetTextureScaleOffset(Material material, Vector2 scale, Vector2 offset)
+    {
+        if (material.HasProperty("_BaseMap"))
+        {
+            material.SetTextureScale("_BaseMap", scale);
+            material.SetTextureOffset("_BaseMap", offset);
+        }
+        if (material.HasProperty("_MainTex"))
+        {
+            material.SetTextureScale("_MainTex", scale);
+            material.SetTextureOffset("_MainTex", offset);
+        }
     }
 }

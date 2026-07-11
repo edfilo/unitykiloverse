@@ -1,6 +1,6 @@
 using System.Collections;
+using System.Collections.Generic;
 using System.Text;
-using System.Collections;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.Profiling;
@@ -37,6 +37,10 @@ public class K1L0SettingsUITK : MonoBehaviour
     bool built;
     VisualElement activeSliderElement;
     int activeSliderPointerId = -1;
+
+    private string selectedSection = "PORTALS";
+    private List<VisualElement> sectionContainers = new List<VisualElement>();
+    private List<Button> tabButtons = new List<Button>();
 
     public void Initialize(Font uiFont, System.Action closeCallback)
     {
@@ -126,6 +130,39 @@ public class K1L0SettingsUITK : MonoBehaviour
         headerLabel.style.whiteSpace = WhiteSpace.Normal;
         panel.Add(headerLabel);
 
+        // ── Segment Controller (Tabs) ──
+        tabButtons.Clear();
+        var tabsContainer = new VisualElement();
+        tabsContainer.style.flexDirection = FlexDirection.Column;
+        tabsContainer.style.marginBottom = 8;
+        panel.Add(tabsContainer);
+
+        var tabRow1 = Row(24);
+        tabRow1.style.marginBottom = 4;
+        tabsContainer.Add(tabRow1);
+
+        var tabRow2 = Row(24);
+        tabsContainer.Add(tabRow2);
+
+        var sections = new string[] { "PORTALS", "CAMERA", "LIGHTING", "BUILDINGS", "IDENTITY", "WEATHER", "EFFECTS" };
+        foreach (var sec in sections)
+        {
+            var btn = new Button() { text = sec };
+            StyleFlatButton(btn);
+            btn.style.flexGrow = 1;
+            btn.style.marginLeft = 2;
+            btn.style.marginRight = 2;
+            btn.style.fontSize = 9.5f;
+            btn.clickable.clicked += () => SelectSection(sec);
+
+            if (sec == "PORTALS" || sec == "CAMERA" || sec == "LIGHTING" || sec == "BUILDINGS")
+                tabRow1.Add(btn);
+            else
+                tabRow2.Add(btn);
+
+            tabButtons.Add(btn);
+        }
+
         // ── Scroll body ──
         var scroll = new ScrollView(ScrollViewMode.Vertical);
         scroll.style.flexGrow = 1;
@@ -140,6 +177,7 @@ public class K1L0SettingsUITK : MonoBehaviour
         var body = scroll.contentContainer;
 
         BuildControls(body);
+        SelectSection(selectedSection);
 
         // ── Command buttons ──
         var footer = new VisualElement();
@@ -149,7 +187,6 @@ public class K1L0SettingsUITK : MonoBehaviour
 
         var rowA = Row(0); rowA.style.marginBottom = 6;
         rowA.Add(CommandButton("EDIT PROFILE", OnEditClick, true));
-        rowA.Add(CommandButton("LOGOUT", OnAuthClick, false, () => authButton = LastButton));
         footer.Add(rowA);
 
         var rowB = Row(0);
@@ -164,135 +201,207 @@ public class K1L0SettingsUITK : MonoBehaviour
     // Builds every section + control, mirroring the original K1L0ProfileMode ordering.
     void BuildControls(VisualElement body)
     {
-        // Perf + ring debug
+        sectionContainers.Clear();
+
+        // ── 1. PORTALS ──
+        var portals = CreateSectionContainer(body, "PORTALS");
+
         perfLabel = MonoLabel("> loading stats...");
         perfLabel.style.fontSize = 10;
         perfLabel.style.color = GreenFaint;
         perfLabel.style.whiteSpace = WhiteSpace.Normal;
         perfLabel.style.marginBottom = 6;
-        body.Add(perfLabel);
+        portals.Add(perfLabel);
 
         beamLabel = MonoLabel("RING DEBUG\nPORTAL AUDIT: waiting...");
         beamLabel.style.fontSize = 10;
         beamLabel.style.color = GreenFaint;
         beamLabel.style.whiteSpace = WhiteSpace.Normal;
         beamLabel.style.marginBottom = 6;
-        body.Add(beamLabel);
+        portals.Add(beamLabel);
 
-        // Face section first — it's the user-identity surface and most likely
-        // to be touched. Pulls the current faceUrl from /api/user/face on
-        // mount, lets the user randomize via /api/admin/random-selfie.
-        BuildFaceSection(body);
+        {
+            var director = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+            float minSteps = director != null ? director.ambientMinStepsToSpawn : PlayerPrefs.GetFloat("k1lo_ambientMinStepsToSpawn", 110f);
+            float graceSteps = director != null ? director.momentumGraceSteps : PlayerPrefs.GetInt("k1lo_momentumGraceSteps", 50);
+            float ttlMinutes = director != null ? director.ambientBeamTtlMinutes : PlayerPrefs.GetFloat("k1lo_ambientBeamTtlMinutes", 30f);
+            float collectRadius = director != null ? director.ambientCollectRadiusMeters : PlayerPrefs.GetFloat("k1lo_ambientCollectRadiusMeters", 16f);
+            Header(portals, "PORTAL SPAWN");
+            Sliders(portals, "MIN STEPS", "ambientMinStepsToSpawn", 0f, 1000f, minSteps, v =>
+            {
+                var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+                if (d != null) d.ambientMinStepsToSpawn = Mathf.RoundToInt(v);
+            }, true);
+            Sliders(portals, "RESET GRACE (steps)", "momentumGraceSteps", 10f, 500f, graceSteps, v =>
+            {
+                var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+                int n = Mathf.Clamp(Mathf.RoundToInt(v), 10, 500);
+                if (d != null) d.momentumGraceSteps = n;
+                PlayerPrefs.SetInt("k1lo_momentumGraceSteps", n);
+                UserPresenceManager.NotifyMomentumGraceStepsChanged(n);
+            }, true);
+            Sliders(portals, "EXPIRE MIN", "ambientBeamTtlMinutes", 1f, 240f, ttlMinutes, v =>
+            {
+                var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+                if (d != null) d.ambientBeamTtlMinutes = Mathf.Clamp(v, 1f, 240f);
+            }, true);
+            Sliders(portals, "COLLECT RADIUS", "ambientCollectRadiusMeters", 1f, 100f, collectRadius, v =>
+            {
+                var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
+                if (d != null) d.ambientCollectRadiusMeters = Mathf.Clamp(v, 1f, 100f);
+            }, true);
+        }
+        Toggle(portals, "PORTAL DIST", "showBeamDistanceLabels", SignalBeamBridge.ShowDistanceLabels, SignalBeamBridge.SetDistanceLabelsVisible);
+        Toggle(portals, "STORIES", "showStoryStrip", StoriesStripVisibility.ShowStoryStrip, StoriesStripVisibility.SetStoryStripVisible);
 
-        Header(body, "DEBUG");
-        Toggle(body, "PORTAL DIST", "showBeamDistanceLabels", SignalBeamBridge.ShowDistanceLabels, SignalBeamBridge.SetDistanceLabelsVisible);
-        Toggle(body, "STORIES", "showStoryStrip", StoriesStripVisibility.ShowStoryStrip, StoriesStripVisibility.SetStoryStripVisible);
-        Sliders(body, "MAP BRIGHT", "panelMapBrightness", 0f, 1f, K1L0HUD.PanelMapBrightness, K1L0HUD.SetPanelMapBrightness);
+        // ── 2. CAMERA ──
+        var camera = CreateSectionContainer(body, "CAMERA");
+        var cam = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.camera;
+        if (cam != null)
+        {
+            Header(camera, "CAMERA / GOD VIEW");
+            Sliders(camera, "HEIGHT", "godPositionY", 10, 500, cam.godPositionY, v => { cam.godPositionY = v; ApplyCameraLiveUpdate(); });
+            Sliders(camera, "DISTANCE", "godPositionZ", 10, 500, cam.godPositionZ, v => { cam.godPositionZ = v; ApplyCameraLiveUpdate(); });
+            Sliders(camera, "PITCH", "godRotationX", -90, 90, cam.godRotationX, v => { cam.godRotationX = v; ApplyCameraLiveUpdate(); });
+            Sliders(camera, "FAR CLIP", "farClipPlane", 100, 5000, cam.farClipPlane, v => { cam.farClipPlane = v; ApplyCameraLiveUpdate(); });
+        }
 
-        var director = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
-        float minSteps = director != null ? director.ambientMinStepsToSpawn : PlayerPrefs.GetFloat("k1lo_ambientMinStepsToSpawn", 200f);
-        float graceMinutes = director != null ? director.momentumSessionGraceMinutes : PlayerPrefs.GetFloat("k1lo_momentumSessionGraceMinutes", 1.5f);
-        float ttlMinutes = director != null ? director.ambientBeamTtlMinutes : PlayerPrefs.GetFloat("k1lo_ambientBeamTtlMinutes", 20f);
-        float collectRadius = director != null ? director.ambientCollectRadiusMeters : PlayerPrefs.GetFloat("k1lo_ambientCollectRadiusMeters", 10f);
-        Header(body, "PORTAL SPAWN");
-        Sliders(body, "MIN STEPS", "ambientMinStepsToSpawn", 0f, 1000f, minSteps, v =>
+        // ── 3. LIGHTING ──
+        var lightingSec = CreateSectionContainer(body, "LIGHTING");
+        var lighting = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.lighting;
+        if (lighting != null)
         {
-            var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
-            if (d != null) d.ambientMinStepsToSpawn = Mathf.RoundToInt(v);
-        }, true);
-        Sliders(body, "RESET GRACE", "momentumSessionGraceMinutes", 1f, 30f, graceMinutes, v =>
+            Header(lightingSec, "LIGHTING");
+            Toggle(lightingSec, "MOONLIGHT", "moonlightEnabled", lighting.moonlightEnabled, v => { lighting.moonlightEnabled = v; KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Sliders(lightingSec, "MOONLIGHT", "moonlightIntensity", 0f, 8f, lighting.moonlightIntensity, v => { lighting.moonlightIntensity = Mathf.Clamp(v, 0f, 8f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Toggle(lightingSec, "AMBIENT", "ambientEnabled", lighting.ambientEnabled, v => { lighting.ambientEnabled = v; KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Sliders(lightingSec, "AMBIENT", "ambientIntensity", 0f, 8f, lighting.ambientIntensity, v => { lighting.ambientIntensity = Mathf.Clamp(v, 0f, 8f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Toggle(lightingSec, "SHADOWS", "enableShadows", lighting.enableShadows, v => { lighting.enableShadows = v; KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Sliders(lightingSec, "SHADOW STR", "shadowStrength", 0f, 1f, lighting.shadowStrength, v => { lighting.shadowStrength = Mathf.Clamp01(v); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Sliders(lightingSec, "SHADOW DIST", "shadowDistance", 0f, 500f, lighting.shadowDistance, v => { lighting.shadowDistance = Mathf.Clamp(v, 0f, 500f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Toggle(lightingSec, "SPOTLIGHT", "spotlightEnabled", lighting.spotlightEnabled, v => { lighting.spotlightEnabled = v; KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Sliders(lightingSec, "SPOTLIGHT", "spotlightIntensity", 0f, 12f, lighting.spotlightIntensity, v => { lighting.spotlightIntensity = Mathf.Clamp(v, 0f, 12f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Toggle(lightingSec, "REFLECTIONS", "reflectionsEnabled", lighting.reflectionsEnabled, v => { lighting.reflectionsEnabled = v; KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Sliders(lightingSec, "REFLECTION", "reflectionIntensity", 0f, 2f, lighting.reflectionIntensity, v => { lighting.reflectionIntensity = Mathf.Clamp(v, 0f, 2f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+        }
+
+        // ── 4. BUILDINGS ──
+        var buildings = CreateSectionContainer(body, "BUILDINGS");
+        var bld = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.buildings;
+        if (bld != null)
         {
-            var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
-            if (d != null) d.momentumSessionGraceMinutes = Mathf.Clamp(v, 1f, 30f);
-        });
-        Sliders(body, "EXPIRE MIN", "ambientBeamTtlMinutes", 1f, 240f, ttlMinutes, v =>
-        {
-            var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
-            if (d != null) d.ambientBeamTtlMinutes = Mathf.Clamp(v, 1f, 240f);
-        }, true);
-        Sliders(body, "COLLECT RADIUS", "ambientCollectRadiusMeters", 1f, 100f, collectRadius, v =>
-        {
-            var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
-            if (d != null) d.ambientCollectRadiusMeters = Mathf.Clamp(v, 1f, 100f);
-        }, true);
+            Header(buildings, "BUILDINGS");
+            Sliders(buildings, "WALL SMOOTH", "zossWallSmoothness", 0f, 1f, bld.zossWallSmoothness, v => { bld.zossWallSmoothness = Mathf.Clamp01(v); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Sliders(buildings, "WALL METAL", "zossWallMetallic", 0f, 1f, bld.zossWallMetallic, v => { bld.zossWallMetallic = Mathf.Clamp01(v); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Header(buildings, "WINDOW GLOW");
+            Sliders(buildings, "INTENSITY", "zossEmissiveIntensity", 0f, 50f, bld.zossEmissiveIntensity, v => { bld.zossEmissiveIntensity = Mathf.Clamp(v, 0f, 50f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Sliders(buildings, "SMOOTHNESS", "zossEmissiveSmoothness", 0f, 1f, bld.zossEmissiveSmoothness, v => { bld.zossEmissiveSmoothness = Mathf.Clamp01(v); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            Sliders(buildings, "METALLIC", "zossEmissiveMetallic", 0f, 1f, bld.zossEmissiveMetallic, v => { bld.zossEmissiveMetallic = Mathf.Clamp01(v); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+        }
+
+        // ── 5. IDENTITY ──
+        var identity = CreateSectionContainer(body, "IDENTITY");
+        BuildFaceSection(identity);
+        BuildTransmissionsSection(identity);
+
+        // ── 6. WEATHER ──
+        var weather = CreateSectionContainer(body, "WEATHER");
+        Sliders(weather, "MAP BRIGHT", "panelMapBrightness", 0f, 1f, K1L0HUD.PanelMapBrightness, K1L0HUD.SetPanelMapBrightness);
 
         var sky = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.sky;
         if (sky != null)
         {
-            Header(body, "AURORA");
-            Toggle(body, "ENABLED", "auroraEnabled", sky.auroraEnabled, v => sky.auroraEnabled = v);
-            Sliders(body, "INTENSITY", "auroraIntensity", 0f, 2f, sky.auroraIntensity, v => sky.auroraIntensity = v);
-            Sliders(body, "HEIGHT", "auroraHeight", 20f, 300f, sky.auroraHeight, v => sky.auroraHeight = v);
-            Sliders(body, "DISTANCE", "auroraDistance", 80f, 900f, sky.auroraDistance, v => sky.auroraDistance = v);
-            Sliders(body, "WIDTH", "auroraWidth", 80f, 900f, sky.auroraWidth, v => sky.auroraWidth = v);
-            Sliders(body, "DRIFT", "auroraDriftSpeed", 0f, 2f, sky.auroraDriftSpeed, v => sky.auroraDriftSpeed = v);
-
-            Header(body, "MANUAL SKY (GPS OFF)");
-            float manualHour = PlayerPrefs.GetFloat("k1lo_manualHour", 13f);
+            Header(weather, "WEATHER / SKY");
+            float manualHour = PlayerPrefs.GetFloat("k1lo_manualHour", 13.25f);
             KiloWorld.Rendering.Systems.RenderManager.ManualHour = manualHour;
-            Sliders(body, "TIME OF DAY", "manualHour", 0f, 24f, manualHour,
+            Sliders(weather, "TIME OF DAY", "manualHour", 0f, 24f, manualHour,
                 v =>
                 {
                     KiloWorld.Rendering.Systems.RenderManager.ManualHour = v;
                     KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
                 });
-            WeatherRow(body);
+            WeatherRow(weather);
+
+            float currentSkyFps = DynamicSkyVideoController.SkyTargetFps > 0.1f
+                ? DynamicSkyVideoController.SkyTargetFps
+                : PlayerPrefs.GetFloat("k1lo_skyTargetFps", 30f);
+            Sliders(weather, "SKY SPEED (FPS)", "skyTargetFps", 1f, 60f, currentSkyFps,
+                v => DynamicSkyVideoController.SetSkyFps(v));
         }
 
+        // ── 7. EFFECTS ──
+        var effects = CreateSectionContainer(body, "EFFECTS");
         var pfx = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.postFX;
         if (pfx != null)
         {
-            Header(body, "COLOR GRADING");
-            Sliders(body, "BRIGHTNESS", "exposureFixedValue", -1f, 2f, pfx.exposureFixedValue, v => pfx.exposureFixedValue = v, true);
-            Sliders(body, "SATURATION", "saturation", -100, 100, pfx.saturation, v => pfx.saturation = v, true);
-            Sliders(body, "CONTRAST", "contrast", -100, 100, pfx.contrast, v => pfx.contrast = v, true);
-            Sliders(body, "HUE SHIFT", "hueShift", -100, 100, pfx.hueShift, v => pfx.hueShift = v, true);
-            Sliders(body, "TEMPERATURE", "temperature", -100, 100, pfx.temperature, v => pfx.temperature = v, true);
-            Sliders(body, "TINT", "tint", -100, 100, pfx.tint, v => pfx.tint = v, true);
+            Header(effects, "COLOR GRADING");
+            Sliders(effects, "BRIGHTNESS", "exposureFixedValue", -1f, 2f, pfx.exposureFixedValue, v => pfx.exposureFixedValue = v, true);
+            Sliders(effects, "SATURATION", "saturation", -100, 100, pfx.saturation, v => pfx.saturation = v, true);
+            Sliders(effects, "CONTRAST", "contrast", -100, 100, pfx.contrast, v => pfx.contrast = v, true);
+            Sliders(effects, "HUE SHIFT", "hueShift", -100, 100, pfx.hueShift, v => pfx.hueShift = v, true);
+            Sliders(effects, "TEMPERATURE", "temperature", -100, 100, pfx.temperature, v => pfx.temperature = v, true);
+            Sliders(effects, "TINT", "tint", -100, 100, pfx.tint, v => pfx.tint = v, true);
 
-            Header(body, "BLOOM");
-            Toggle(body, "ENABLED", "bloomEnabled", pfx.bloomEnabled, v => pfx.bloomEnabled = v);
-            Sliders(body, "INTENSITY", "bloomIntensity", 0, 10, pfx.bloomIntensity, v => pfx.bloomIntensity = v);
-            Sliders(body, "THRESHOLD", "bloomThreshold", 0, 5, pfx.bloomThreshold, v => pfx.bloomThreshold = v);
-            Sliders(body, "SCATTER", "bloomScatter", 0, 1, pfx.bloomScatter, v => pfx.bloomScatter = v);
+            Header(effects, "BLOOM");
+            Toggle(effects, "ENABLED", "bloomEnabled", pfx.bloomEnabled, v => pfx.bloomEnabled = v);
+            Sliders(effects, "INTENSITY", "bloomIntensity", 0, 10, pfx.bloomIntensity, v => pfx.bloomIntensity = v);
+            Sliders(effects, "THRESHOLD", "bloomThreshold", 0, 5, pfx.bloomThreshold, v => pfx.bloomThreshold = v);
+            Sliders(effects, "SCATTER", "bloomScatter", 0, 1, pfx.bloomScatter, v => pfx.bloomScatter = v);
 
-            Header(body, "VIGNETTE");
-            Toggle(body, "ENABLED", "vignetteEnabled", pfx.vignetteEnabled, v => pfx.vignetteEnabled = v);
-            Sliders(body, "INTENSITY", "vignetteIntensity", 0, 1, pfx.vignetteIntensity, v => pfx.vignetteIntensity = v);
-            Sliders(body, "SMOOTHNESS", "vignetteSmoothness", 0.01f, 1, pfx.vignetteSmoothness, v => pfx.vignetteSmoothness = v);
+            Header(effects, "VIGNETTE");
+            Toggle(effects, "ENABLED", "vignetteEnabled", pfx.vignetteEnabled, v => pfx.vignetteEnabled = v);
+            Sliders(effects, "INTENSITY", "vignetteIntensity", 0, 1, pfx.vignetteIntensity, v => pfx.vignetteIntensity = v);
+            Sliders(effects, "SMOOTHNESS", "vignetteSmoothness", 0.01f, 1, pfx.vignetteSmoothness, v => pfx.vignetteSmoothness = v);
 
-            Header(body, "CHROMATIC ABERRATION");
-            Toggle(body, "ENABLED", "chromaticEnabled", pfx.chromaticAberrationEnabled, v => pfx.chromaticAberrationEnabled = v);
-            Sliders(body, "INTENSITY", "chromaticIntensity", 0, 1, pfx.chromaticAberrationIntensity, v => pfx.chromaticAberrationIntensity = v);
+            Header(effects, "CHROMATIC ABERRATION");
+            Toggle(effects, "ENABLED", "chromaticEnabled", pfx.chromaticAberrationEnabled, v => pfx.chromaticAberrationEnabled = v);
+            Sliders(effects, "INTENSITY", "chromaticIntensity", 0, 1, pfx.chromaticAberrationIntensity, v => pfx.chromaticAberrationIntensity = v);
 
-            Header(body, "LENS DISTORTION");
-            Toggle(body, "ENABLED", "lensDistEnabled", pfx.lensDistortionEnabled, v => pfx.lensDistortionEnabled = v);
-            Sliders(body, "INTENSITY", "lensDistIntensity", -1, 1, pfx.lensDistortionIntensity, v => pfx.lensDistortionIntensity = v);
+            Header(effects, "LENS DISTORTION");
+            Toggle(effects, "ENABLED", "lensDistEnabled", pfx.lensDistortionEnabled, v => pfx.lensDistortionEnabled = v);
+            Sliders(effects, "INTENSITY", "lensDistIntensity", -1, 1, pfx.lensDistortionIntensity, v => pfx.lensDistortionIntensity = v);
 
-            Header(body, "DEPTH OF FIELD");
-            Toggle(body, "ENABLED", "dofEnabled", pfx.depthOfFieldEnabled, v => pfx.depthOfFieldEnabled = v);
-            Sliders(body, "FOCUS DIST", "focusDistance", 0.1f, 300, pfx.focusDistance, v => pfx.focusDistance = v);
-            Sliders(body, "APERTURE", "aperture", 0.05f, 32, pfx.aperture, v => pfx.aperture = v);
-            Sliders(body, "FOCAL LEN", "focalLength", 1, 300, pfx.focalLength, v => pfx.focalLength = v);
+            Header(effects, "DEPTH OF FIELD");
+            Toggle(effects, "ENABLED", "dofEnabled", pfx.depthOfFieldEnabled, v => pfx.depthOfFieldEnabled = v);
+            Sliders(effects, "FOCUS DIST", "focusDistance", 0.1f, 300, pfx.focusDistance, v => pfx.focusDistance = v);
+            Sliders(effects, "APERTURE", "aperture", 0.05f, 32, pfx.aperture, v => pfx.aperture = v);
+            Sliders(effects, "FOCAL LEN", "focalLength", 1, 300, pfx.focalLength, v => pfx.focalLength = v);
 
-            Header(body, "MOTION BLUR");
-            Toggle(body, "ENABLED", "motionBlurEnabled", pfx.motionBlurEnabled, v => pfx.motionBlurEnabled = v);
-            Sliders(body, "INTENSITY", "motionBlurIntensity", 0, 1, pfx.motionBlurIntensity, v => pfx.motionBlurIntensity = v);
+            Header(effects, "MOTION BLUR");
+            Toggle(effects, "ENABLED", "motionBlurEnabled", pfx.motionBlurEnabled, v => pfx.motionBlurEnabled = v);
+            Sliders(effects, "INTENSITY", "motionBlurIntensity", 0, 1, pfx.motionBlurIntensity, v => pfx.motionBlurIntensity = v);
 
-            Header(body, "FILM GRAIN");
-            Toggle(body, "ENABLED", "filmGrainEnabled", pfx.filmGrainEnabled, v => pfx.filmGrainEnabled = v);
-            Sliders(body, "INTENSITY", "filmGrainIntensity", 0, 1, pfx.filmGrainIntensity, v => pfx.filmGrainIntensity = v);
+            Header(effects, "FILM GRAIN");
+            Toggle(effects, "ENABLED", "filmGrainEnabled", pfx.filmGrainEnabled, v => pfx.filmGrainEnabled = v);
+            Sliders(effects, "INTENSITY", "filmGrainIntensity", 0, 1, pfx.filmGrainIntensity, v => pfx.filmGrainIntensity = v);
         }
-
-        var cam = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.camera;
-        if (cam != null)
+    }
+    private void SelectSection(string sectionName)
+    {
+        selectedSection = sectionName;
+        for (int i = 0; i < tabButtons.Count; i++)
         {
-            Header(body, "CAMERA / GOD VIEW");
-            Sliders(body, "HEIGHT", "godPositionY", 10, 500, cam.godPositionY, v => { cam.godPositionY = v; ApplyCameraLiveUpdate(); });
-            Sliders(body, "DISTANCE", "godPositionZ", 10, 500, cam.godPositionZ, v => { cam.godPositionZ = v; ApplyCameraLiveUpdate(); });
-            Sliders(body, "PITCH", "godRotationX", -90, 90, cam.godRotationX, v => { cam.godRotationX = v; ApplyCameraLiveUpdate(); });
-            Sliders(body, "FAR CLIP", "farClipPlane", 100, 5000, cam.farClipPlane, v => { cam.farClipPlane = v; ApplyCameraLiveUpdate(); });
+            var btn = tabButtons[i];
+            bool active = btn.text == sectionName;
+            btn.style.backgroundColor = active ? Green : Color.black;
+            btn.style.color = active ? Color.black : Green;
         }
+        foreach (var entry in sectionContainers)
+        {
+            bool show = entry.name == sectionName;
+            entry.style.display = show ? DisplayStyle.Flex : DisplayStyle.None;
+        }
+    }
+
+    VisualElement CreateSectionContainer(VisualElement parent, string name)
+    {
+        var container = new VisualElement();
+        container.name = name;
+        container.style.flexDirection = FlexDirection.Column;
+        container.style.display = name == selectedSection ? DisplayStyle.Flex : DisplayStyle.None;
+        parent.Add(container);
+        sectionContainers.Add(container);
+        return container;
     }
 
     // ── Control builders ───────────────────────────────────────────
@@ -385,8 +494,10 @@ public class K1L0SettingsUITK : MonoBehaviour
             if (!CanSliderApply(slider)) return;
             int idx = Mathf.Clamp(evt.newValue, 0, WeatherGlyphs.Length - 1);
             KiloWorld.Rendering.Systems.RenderManager.ManualWeatherGlyph = WeatherGlyphs[idx];
+            KiloWorld.Rendering.Systems.RenderManager.ManualWeatherOverrideEnabled = true;
             PlayerPrefs.SetFloat("k1lo_manualWeather", idx);
             PlayerPrefs.SetString("k1lo_manualWeatherGlyph", WeatherGlyphs[idx]);
+            PlayerPrefs.SetInt("k1lo_manualWeatherOverrideEnabled", 1);
             KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
             val.text = WeatherNames[idx];
         });
@@ -531,7 +642,7 @@ public class K1L0SettingsUITK : MonoBehaviour
 
     void LoadProfile()
     {
-        string signal = FirebaseAuthManager.Instance != null && FirebaseAuthManager.Instance.isAuthenticated ? "AUTHENTICATED" : "ANON";
+        string signal = K1L0NativeSessionBridge.IsAuthenticated ? "AUTHENTICATED" : "ANON";
         string deviceId = DeviceIDManager.Instance != null ? DeviceIDManager.Instance.GetCurrentUserId() : "offline";
         RenderHeader(signal, deviceId);
         UpdateAuthButton();
@@ -569,25 +680,13 @@ public class K1L0SettingsUITK : MonoBehaviour
 
     void OnAuthClick()
     {
-        var auth = FirebaseAuthManager.Instance;
-        if (auth == null) return;
-        if (auth.isAuthenticated)
-        {
-            auth.SignOut();
-            LoadProfile();
-            UpdateAuthButton();
-        }
-        else
-        {
-            var loginUI = Object.FindFirstObjectByType<LoginUI>();
-            if (loginUI != null) loginUI.ShowLogin();
-        }
+        Debug.Log("[K1L0SettingsUITK] Unity auth UI is disabled; native overlay owns auth.");
     }
 
     void UpdateAuthButton()
     {
         if (authButton == null) return;
-        bool loggedIn = FirebaseAuthManager.Instance != null && FirebaseAuthManager.Instance.isAuthenticated;
+        bool loggedIn = K1L0NativeSessionBridge.IsAuthenticated;
         authButton.text = loggedIn ? "LOGOUT" : "LOGIN";
         authButton.style.color = Green;
     }
@@ -615,6 +714,174 @@ public class K1L0SettingsUITK : MonoBehaviour
     void OnDestroy()
     {
         if (panelSettings != null) Destroy(panelSettings);
+    }
+
+    // ── Transmissions section ───────────────────────────────────────────────
+
+    VisualElement txGrid;
+    Label txStatusLabel;
+
+    void BuildTransmissionsSection(VisualElement parent)
+    {
+        Header(parent, "MY TRANSMISSIONS");
+
+        txStatusLabel = new Label("loading...");
+        txStatusLabel.style.fontSize = 9;
+        txStatusLabel.style.color = GreenDim;
+        txStatusLabel.style.marginBottom = 4;
+        parent.Add(txStatusLabel);
+
+        txGrid = new VisualElement();
+        txGrid.style.flexDirection = FlexDirection.Row;
+        txGrid.style.flexWrap = Wrap.Wrap;
+        txGrid.style.marginBottom = 8;
+        parent.Add(txGrid);
+
+        StartCoroutine(LoadTransmissions());
+    }
+
+    IEnumerator LoadTransmissions()
+    {
+        string uid = CurrentUserId();
+        if (string.IsNullOrEmpty(uid) || APIManager.Instance == null)
+        {
+            if (txStatusLabel != null) txStatusLabel.text = "(not signed in)";
+            yield break;
+        }
+
+        string resp = null;
+        yield return APIManager.Instance.Get(
+            $"/api/k1l0/v2/my-transmissions?userId={UnityWebRequest.EscapeURL(uid)}",
+            (ok, r) => { if (ok) resp = r; }
+        );
+
+        if (string.IsNullOrEmpty(resp))
+        {
+            if (txStatusLabel != null) txStatusLabel.text = "(failed to load)";
+            yield break;
+        }
+
+        var items = ParseTransmissionList(resp);
+        if (txStatusLabel != null) txStatusLabel.text = items.Count == 0 ? "(no transmissions yet)" : "";
+
+        foreach (var item in items)
+            yield return AddTransmissionThumb(item);
+    }
+
+    IEnumerator AddTransmissionThumb(TxItem item)
+    {
+        string thumbUrl   = item.thumbUrl;
+        string finalUrl   = item.finalUrl;
+        string audioUrl   = item.audioUrl;
+        string replyText  = item.selectedResponse;
+        string parentUrl  = item.parentFinalUrl;
+        bool   isReply    = !string.IsNullOrEmpty(replyText) && !string.IsNullOrEmpty(parentUrl);
+
+        var card = new Button(() =>
+        {
+            if (string.IsNullOrEmpty(finalUrl)) return;
+            var frame = TransmissionFrame.Instance;
+            if (frame == null) { Application.OpenURL(finalUrl); return; }
+            if (isReply)
+                frame.ReplaySequence(parentUrl, finalUrl, audioUrl, thumbUrl);
+            else
+                frame.ReplayStoredTransmission(finalUrl, audioUrl, thumbUrl);
+        });
+        card.style.width = 76;
+        card.style.height = 76;
+        card.style.marginLeft = 3;
+        card.style.marginRight = 3;
+        card.style.marginTop = 3;
+        card.style.marginBottom = 3;
+        card.style.paddingLeft = 0;
+        card.style.paddingRight = 0;
+        card.style.paddingTop = 0;
+        card.style.paddingBottom = 0;
+        card.style.backgroundColor = new Color(0.04f, 0.08f, 0.04f, 1f);
+        SetBorder(card, BorderCol, 1);
+        SetBorderRadius(card, 4);
+        txGrid?.Add(card);
+
+        if (!string.IsNullOrEmpty(thumbUrl))
+        {
+            using (var req = UnityWebRequestTexture.GetTexture(thumbUrl))
+            {
+                yield return req.SendWebRequest();
+                if (req.result == UnityWebRequest.Result.Success)
+                {
+                    var img = new Image();
+                    img.image = ((DownloadHandlerTexture)req.downloadHandler).texture;
+                    img.scaleMode = ScaleMode.ScaleAndCrop;
+                    img.style.position = Position.Absolute;
+                    img.style.left = 0; img.style.right = 0;
+                    img.style.top = 0; img.style.bottom = 0;
+                    img.pickingMode = PickingMode.Ignore;
+                    card.Add(img);
+                }
+            }
+        }
+
+        // Reply badge: shown at the bottom of the card, text = what was chosen
+        if (isReply)
+        {
+            var badge = new Label(replyText);
+            badge.style.position = Position.Absolute;
+            badge.style.left = 0; badge.style.right = 0; badge.style.bottom = 0;
+            badge.style.fontSize = 8;
+            badge.style.color = Color.white;
+            badge.style.backgroundColor = new Color(0f, 0f, 0f, 0.72f);
+            badge.style.paddingLeft = 3; badge.style.paddingRight = 3;
+            badge.style.paddingTop = 2; badge.style.paddingBottom = 2;
+            badge.style.unityTextAlign = TextAnchor.MiddleCenter;
+            badge.style.whiteSpace = WhiteSpace.Normal;
+            badge.style.overflow = Overflow.Hidden;
+            badge.pickingMode = PickingMode.Ignore;
+            card.Add(badge);
+        }
+    }
+
+    struct TxItem
+    {
+        public string thumbUrl;
+        public string finalUrl;
+        public string audioUrl;
+        public string selectedResponse;  // non-empty = this is a reply; text is what was chosen
+        public string parentFinalUrl;    // play this first before finalUrl
+    }
+
+    List<TxItem> ParseTransmissionList(string json)
+    {
+        var result = new List<TxItem>();
+        int arrayStart = json.IndexOf('[');
+        int arrayEnd = json.LastIndexOf(']');
+        if (arrayStart < 0 || arrayEnd < 0) return result;
+        string body = json.Substring(arrayStart, arrayEnd - arrayStart + 1);
+        int pos = 0;
+        while (pos < body.Length)
+        {
+            int objStart = body.IndexOf('{', pos);
+            if (objStart < 0) break;
+            int depth = 0;
+            int objEnd = objStart;
+            for (int i = objStart; i < body.Length; i++)
+            {
+                if (body[i] == '{') depth++;
+                else if (body[i] == '}') { depth--; if (depth == 0) { objEnd = i; break; } }
+            }
+            string obj = body.Substring(objStart, objEnd - objStart + 1);
+            var item = new TxItem
+            {
+                thumbUrl         = ExtractField(obj, "thumbUrl"),
+                finalUrl         = ExtractField(obj, "finalUrl"),
+                audioUrl         = ExtractField(obj, "audioUrl"),
+                selectedResponse = ExtractField(obj, "selectedResponse"),
+                parentFinalUrl   = ExtractField(obj, "parentFinalUrl"),
+            };
+            if (!string.IsNullOrEmpty(item.finalUrl))
+                result.Add(item);
+            pos = objEnd + 1;
+        }
+        return result;
     }
 
     // ── Face section ────────────────────────────────────────────────────────

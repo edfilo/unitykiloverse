@@ -324,8 +324,9 @@ public class APIManager : MonoBehaviour
 
         string url = $"{GetBaseURL()}{endpoint}";
         Debug.Log($"[APIManager] Sending POST to {url}");
-        // LLM-backed endpoints can take 15-25s; editor used 10s which was too tight.
-        int timeoutSec = 30;
+        // Most LLM-backed endpoints finish in 15-25s, but identity rendering
+        // does multiple image generations and uploads before returning URLs.
+        int timeoutSec = endpoint.Contains("/api/k1l0/user/identity/render") ? 180 : 30;
 
         using (UnityWebRequest www = new UnityWebRequest(url, "POST"))
         {
@@ -334,9 +335,10 @@ public class APIManager : MonoBehaviour
             www.downloadHandler = new DownloadHandlerBuffer();
             www.SetRequestHeader("Content-Type", "application/json");
             
-            if (FirebaseAuthManager.Instance != null && !string.IsNullOrEmpty(FirebaseAuthManager.Instance.idToken))
+            var authManager = FindFirstObjectByType<FirebaseAuthManager>();
+            if (authManager != null && !string.IsNullOrEmpty(authManager.idToken))
             {
-                www.SetRequestHeader("Authorization", $"Bearer {FirebaseAuthManager.Instance.idToken}");
+                www.SetRequestHeader("Authorization", $"Bearer {authManager.idToken}");
             }
             
             www.timeout = timeoutSec;
@@ -383,9 +385,10 @@ public class APIManager : MonoBehaviour
 
         using (UnityWebRequest www = UnityWebRequest.Get(url))
         {
-            if (FirebaseAuthManager.Instance != null && !string.IsNullOrEmpty(FirebaseAuthManager.Instance.idToken))
+            var authManager = FindFirstObjectByType<FirebaseAuthManager>();
+            if (authManager != null && !string.IsNullOrEmpty(authManager.idToken))
             {
-                www.SetRequestHeader("Authorization", $"Bearer {FirebaseAuthManager.Instance.idToken}");
+                www.SetRequestHeader("Authorization", $"Bearer {authManager.idToken}");
             }
             
             www.timeout = 10;

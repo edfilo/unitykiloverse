@@ -70,12 +70,17 @@ public class DeviceIDManager : MonoBehaviour
     /// </summary>
     public string GetCurrentUserId()
     {
+        string nativeUserId = K1L0NativeSessionBridge.ResolveUserId("");
+        if (!string.IsNullOrWhiteSpace(nativeUserId))
+            return nativeUserId;
+
         // Check if Firebase auth is available and user is authenticated
-        if (FirebaseAuthManager.Instance != null &&
-            FirebaseAuthManager.Instance.isAuthenticated &&
-            !string.IsNullOrEmpty(FirebaseAuthManager.Instance.userId))
+        var authManager = FindFirstObjectByType<FirebaseAuthManager>();
+        if (authManager != null &&
+            authManager.isAuthenticated &&
+            !string.IsNullOrEmpty(authManager.userId))
         {
-            return FirebaseAuthManager.Instance.userId;
+            return authManager.userId;
         }
 
         // Fallback to device ID

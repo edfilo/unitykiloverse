@@ -7,6 +7,8 @@
 @property (nonatomic, copy) NSString *currentNonce;
 @end
 
+static ASAuthorizationController *appleAuthorizationController API_AVAILABLE(ios(13.0)) = nil;
+
 @implementation AppleSignInDelegate
 
 - (void)authorizationController:(ASAuthorizationController *)controller
@@ -40,6 +42,7 @@
         UnitySendMessage([self.callbackObject UTF8String],
                         "OnAppleSignInCallback",
                         [result UTF8String]);
+        appleAuthorizationController = nil;
     }
 }
 
@@ -56,6 +59,7 @@
     UnitySendMessage([self.callbackObject UTF8String],
                     "OnAppleSignInError",
                     [errorMessage UTF8String]);
+    appleAuthorizationController = nil;
 }
 
 - (ASPresentationAnchor)presentationAnchorForAuthorizationController:(ASAuthorizationController *)controller API_AVAILABLE(ios(13.0)) {
@@ -126,13 +130,13 @@ extern "C" {
             request.nonce = sha256(nonce);
 
             // Create and start authorization controller
-            ASAuthorizationController *authorizationController =
+            appleAuthorizationController =
                 [[ASAuthorizationController alloc] initWithAuthorizationRequests:@[request]];
 
-            authorizationController.delegate = appleSignInDelegate;
-            authorizationController.presentationContextProvider = appleSignInDelegate;
+            appleAuthorizationController.delegate = appleSignInDelegate;
+            appleAuthorizationController.presentationContextProvider = appleSignInDelegate;
 
-            [authorizationController performRequests];
+            [appleAuthorizationController performRequests];
         }
     }
 }

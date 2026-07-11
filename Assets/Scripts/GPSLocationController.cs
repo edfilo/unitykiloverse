@@ -88,6 +88,15 @@ public class GPSLocationController : MonoBehaviour
             yield break;
         }
 
+        if (TeleportManager.StoredNativeLocationModeIsFixed())
+        {
+            Debug.Log("[GPS] Native fixed location mode active - skipping Input.location startup.");
+            GPSDisabled = true;
+            GPSReady = true;
+            EnsureServices();
+            yield break;
+        }
+
         Debug.Log("[GPS] Mobile platform confirmed - proceeding with real GPS");
         Debug.Log($"[GPS] useGPSOnMobile setting: {useGPSOnMobile}");
 

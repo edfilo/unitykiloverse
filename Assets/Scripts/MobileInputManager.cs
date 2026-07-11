@@ -157,9 +157,7 @@ public class MobileInputManager : MonoBehaviour
             playerController.ToggleCameraView();
         };
 
-        // GPS toggle button (testing only) — small, bottom-right — inside safe area.
-        RectTransform safeArea = CreateSafeAreaRect(canvasGO.transform);
-        CreateGpsToggleButton(safeArea);
+        // GPS/test location mode is owned by the native Swift settings panel.
     }
 
     RectTransform CreateSafeAreaRect(Transform parent)
@@ -242,9 +240,9 @@ public class MobileInputManager : MonoBehaviour
         private float lastDragEndTime = -1f; // Cooldown to ignore phantom taps after drags
         private enum Axis { None, Horizontal, Vertical }
         private Axis lockedAxis = Axis.None;
-        private const float LOCK_THRESHOLD_PX = 5f;
-        private const float TAP_TIME = 0.2f;
-        private const float TAP_THRESHOLD_PX = 10f; // Must be nearly stationary
+        private const float LOCK_THRESHOLD_PX = 12f;
+        private const float TAP_TIME = 0.35f;
+        private const float TAP_THRESHOLD_PX = 24f;
 
         private GPSLocationController gps;
 
@@ -367,18 +365,17 @@ public class MobileInputManager : MonoBehaviour
             {
                 Vector2 totalDelta = eventData.position - startPos;
                 float dur = Time.time - startTime;
-                // A tap is: very short hold, AND less than 3px movement in any direction
-                // Any horizontal or vertical movement = swipe, not tap
-                // Ignore phantom zero-duration taps that fire immediately after a drag release
+                // A tap is a short hold with only normal finger jitter. On iOS a tiny
+                // finger wobble often emits OnDrag, so do not disqualify only because
+                // a drag callback fired; use actual total distance instead.
                 float timeSinceLastDrag = Time.time - lastDragEndTime;
-                bool isTap = !hasMoved
+                float totalMove = totalDelta.magnitude;
+                bool isTap = totalMove <= TAP_THRESHOLD_PX
                     && dur < TAP_TIME
                     && dur > 0.01f // Must have actual duration (phantom taps have dur=0)
-                    && timeSinceLastDrag > 0.15f // Cooldown after drags
-                    && Mathf.Abs(totalDelta.x) < 3f
-                    && Mathf.Abs(totalDelta.y) < 3f;
-                Debug.Log($"[MobileInput] PointerUp: hasMoved={hasMoved} dur={dur:F3}s delta=({totalDelta.x:F1},{totalDelta.y:F1}) dragCooldown={timeSinceLastDrag:F3}s isTap={isTap}");
-                if (hasMoved) lastDragEndTime = Time.time;
+                    && timeSinceLastDrag > 0.12f; // Cooldown after real drags
+                Debug.Log($"[MobileInput] PointerUp: hasMoved={hasMoved} dur={dur:F3}s move={totalMove:F1}px delta=({totalDelta.x:F1},{totalDelta.y:F1}) dragCooldown={timeSinceLastDrag:F3}s isTap={isTap}");
+                if (totalMove > TAP_THRESHOLD_PX) lastDragEndTime = Time.time;
                 if (isTap)
                 {
                     Debug.Log("[MobileInput] ✓ TAP → ToggleCameraView");

@@ -28,6 +28,8 @@ public class UIBootstrapper : MonoBehaviour
             hudGO.AddComponent<K1L0HUD>();
         }
 
+        K1L0NativeOverlay.EnsureInstalled();
+
         // Disable old UILayoutManager if it exists (K1L0HUD replaces it)
         UILayoutManager layoutManager = FindFirstObjectByType<UILayoutManager>();
         if (layoutManager != null)

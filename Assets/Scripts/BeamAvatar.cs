@@ -11,6 +11,7 @@ using UnityEngine.Networking;
 public class BeamAvatar : MonoBehaviour
 {
     private const float ParticleBeamTargetHeight = 150f;
+    private const float MinParticleBeamTargetHeight = 18f;
 
     public enum BeamVisualMode
     {
@@ -84,6 +85,7 @@ public class BeamAvatar : MonoBehaviour
     private Coroutine avatarRoutine;
     private float avatarShimmerOffset;
     private bool hasAvatarTexture;
+    private float visibleBeamHeight = ParticleBeamTargetHeight;
 
     [Header("Hologram Avatar")]
     public float avatarHeight = 1.2f;
@@ -233,7 +235,7 @@ public class BeamAvatar : MonoBehaviour
         #endif
 
         var main = magicalParticles.main;
-        float targetHeight = ParticleBeamTargetHeight;
+        float targetHeight = GetVisibleBeamHeight();
         float safeSpeed = Mathf.Max(0.5f, particleSpeed);
         float lifetime = targetHeight / safeSpeed;
 
@@ -245,6 +247,8 @@ public class BeamAvatar : MonoBehaviour
         main.simulationSpace = ParticleSystemSimulationSpace.Local;
         main.gravityModifier = -0.01f;
         main.startRotation = new ParticleSystem.MinMaxCurve(0f, 360f * Mathf.Deg2Rad);
+        // Skip the slow upward fill — system arrives pre-populated.
+        main.prewarm = true;
 
         var emission = magicalParticles.emission;
         if (lifetime > 0)
@@ -404,6 +408,13 @@ public class BeamAvatar : MonoBehaviour
         beamGlowRenderer = glowObj.AddComponent<LineRenderer>();
         ConfigureLaserLine(beamGlowRenderer, "SpaceLaserGlowMat", false);
 
+        // The solid LineRenderer column reads as a flat unattractive bar in
+        // the middle of the particle plume — kill the visual while keeping
+        // the components alive so the rest of the avatar (SetPositions etc.)
+        // keeps working without NPE.
+        beamRenderer.enabled = false;
+        beamGlowRenderer.enabled = false;
+
         CreateMagicalParticles();
         UpdateBeamAppearance();
     }
@@ -475,6 +486,24 @@ public class BeamAvatar : MonoBehaviour
         startPosition = newPosition;
         transform.position = newPosition;
         externallyPositioned = true;
+    }
+
+    public void SetVisualBeamHeight(float height)
+    {
+        float clamped = Mathf.Clamp(height, MinParticleBeamTargetHeight, ParticleBeamTargetHeight);
+        if (Mathf.Abs(clamped - visibleBeamHeight) < 1f) return;
+
+        visibleBeamHeight = clamped;
+
+        if (magicalParticles != null)
+        {
+            ApplyParticleSettings();
+            magicalParticles.Clear();
+            var main = magicalParticles.main;
+            float simLifetime = main.startLifetime.constant;
+            magicalParticles.Simulate(simLifetime, true, true);
+            magicalParticles.Play();
+        }
     }
 
     void Update()
@@ -584,7 +613,7 @@ public class BeamAvatar : MonoBehaviour
     private float GetVisibleBeamHeight()
     {
         if (visualMode == BeamVisualMode.SpaceLaser || useMagicalParticles)
-            return Mathf.Min(beamHeight, ParticleBeamTargetHeight);
+            return Mathf.Min(beamHeight, visibleBeamHeight);
         return beamHeight;
     }
 

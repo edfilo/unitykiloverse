@@ -18,11 +18,16 @@ public class K1L0Screenshot : MonoBehaviour
 
     public void Capture()
     {
-        if (_capturing) return;
-        StartCoroutine(CaptureAndUpload());
+        Capture(false);
     }
 
-    private IEnumerator CaptureAndUpload()
+    public void Capture(bool analyze)
+    {
+        if (_capturing) return;
+        StartCoroutine(CaptureAndUpload(analyze));
+    }
+
+    private IEnumerator CaptureAndUpload(bool analyze)
     {
         _capturing = true;
         yield return new WaitForEndOfFrame();
@@ -32,9 +37,9 @@ public class K1L0Screenshot : MonoBehaviour
         Destroy(tex);
 
         string base64 = Convert.ToBase64String(png);
-        string json = "{\"image\":\"" + base64 + "\"}";
+        string json = "{\"image\":\"" + base64 + "\",\"analyze\":" + (analyze ? "true" : "false") + "}";
 
-        Debug.Log($"[Screenshot] Captured {png.Length} bytes, uploading...");
+        Debug.Log($"[Screenshot] Captured {png.Length} bytes, uploading analyze={analyze}...");
 
         yield return APIManager.Instance.Post("/screenshot", json, (success, response) =>
         {

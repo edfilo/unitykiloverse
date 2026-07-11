@@ -74,11 +74,6 @@ public class K1L0ProfileMode : MonoBehaviour
         var editBtn = CreateCommandButton(rt, "EditBtn", new Vector2(0f, 0f), new Vector2(0.48f, 0f), new Vector2(0f, 0f), new Vector2(0f, btnBase), new Vector2(0f, 32f), "EDIT PROFILE");
         editBtn.btn.onClick.AddListener(OnEditClick);
 
-        var authBtn = CreateCommandButton(rt, "AuthBtn", new Vector2(0.52f, 0f), new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(0f, btnBase), new Vector2(0f, 32f), "LOGOUT");
-        authBtn.btn.onClick.AddListener(OnAuthClick);
-        authBtnLabel = authBtn.label;
-        authChrome = authBtn.chrome;
-
         var prodBtn = CreateCommandButton(rt, "ProdApiBtn", new Vector2(0f, 0f), new Vector2(0.48f, 0f), new Vector2(0f, 0f), new Vector2(0f, btnBase + 38f), new Vector2(0f, 32f), "PRODUCTION API OFF");
         prodBtn.btn.onClick.AddListener(OnProdApiToggle);
         prodApiLabel = prodBtn.label;
@@ -182,20 +177,23 @@ public class K1L0ProfileMode : MonoBehaviour
         y = AddSlider(scrollContent, y, "MAP BRIGHT", "panelMapBrightness", 0f, 1f, K1L0HUD.PanelMapBrightness, K1L0HUD.SetPanelMapBrightness);
 
         var director = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
-        float minSteps = director != null ? director.ambientMinStepsToSpawn : PlayerPrefs.GetFloat("k1lo_ambientMinStepsToSpawn", 200f);
-        float graceMinutes = director != null ? director.momentumSessionGraceMinutes : PlayerPrefs.GetFloat("k1lo_momentumSessionGraceMinutes", 1.5f);
-        float ttlMinutes = director != null ? director.ambientBeamTtlMinutes : PlayerPrefs.GetFloat("k1lo_ambientBeamTtlMinutes", 20f);
-        float collectRadius = director != null ? director.ambientCollectRadiusMeters : PlayerPrefs.GetFloat("k1lo_ambientCollectRadiusMeters", 10f);
+        float minSteps = director != null ? director.ambientMinStepsToSpawn : PlayerPrefs.GetFloat("k1lo_ambientMinStepsToSpawn", 110f);
+        float graceSteps = director != null ? director.momentumGraceSteps : PlayerPrefs.GetInt("k1lo_momentumGraceSteps", 50);
+        float ttlMinutes = director != null ? director.ambientBeamTtlMinutes : PlayerPrefs.GetFloat("k1lo_ambientBeamTtlMinutes", 30f);
+        float collectRadius = director != null ? director.ambientCollectRadiusMeters : PlayerPrefs.GetFloat("k1lo_ambientCollectRadiusMeters", 16f);
         y = AddHeader(scrollContent, y, "PORTAL SPAWN");
         y = AddSlider(scrollContent, y, "MIN STEPS", "ambientMinStepsToSpawn", 0f, 1000f, minSteps, v =>
         {
             var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
             if (d != null) d.ambientMinStepsToSpawn = Mathf.RoundToInt(v);
         }, true);
-        y = AddSlider(scrollContent, y, "RESET GRACE", "momentumSessionGraceMinutes", 1f, 30f, graceMinutes, v =>
+        y = AddSlider(scrollContent, y, "RESET GRACE (steps)", "momentumGraceSteps", 10f, 500f, graceSteps, v =>
         {
             var d = SignalDirectorV2.Instance ?? FindFirstObjectByType<SignalDirectorV2>();
-            if (d != null) d.momentumSessionGraceMinutes = Mathf.Clamp(v, 1f, 30f);
+            int n = Mathf.Clamp(Mathf.RoundToInt(v), 10, 500);
+            if (d != null) d.momentumGraceSteps = n;
+            PlayerPrefs.SetInt("k1lo_momentumGraceSteps", n);
+            UserPresenceManager.NotifyMomentumGraceStepsChanged(n);
         });
         y = AddSlider(scrollContent, y, "EXPIRE MIN", "ambientBeamTtlMinutes", 1f, 240f, ttlMinutes, v =>
         {
@@ -208,20 +206,27 @@ public class K1L0ProfileMode : MonoBehaviour
             if (d != null) d.ambientCollectRadiusMeters = Mathf.Clamp(v, 1f, 100f);
         }, true);
 
+        var lighting = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.lighting;
+        if (lighting != null)
+        {
+            y = AddHeader(scrollContent, y, "LIGHTING");
+            y = AddToggle(scrollContent, y, "MOONLIGHT", "moonlightEnabled", lighting.moonlightEnabled, v => lighting.moonlightEnabled = v);
+            y = AddSlider(scrollContent, y, "MOONLIGHT", "moonlightIntensity", 0f, 8f, lighting.moonlightIntensity, v => lighting.moonlightIntensity = Mathf.Clamp(v, 0f, 8f));
+            y = AddToggle(scrollContent, y, "AMBIENT", "ambientEnabled", lighting.ambientEnabled, v => lighting.ambientEnabled = v);
+            y = AddSlider(scrollContent, y, "AMBIENT", "ambientIntensity", 0f, 8f, lighting.ambientIntensity, v => lighting.ambientIntensity = Mathf.Clamp(v, 0f, 8f));
+            y = AddToggle(scrollContent, y, "SHADOWS", "enableShadows", lighting.enableShadows, v => lighting.enableShadows = v);
+            y = AddSlider(scrollContent, y, "SHADOW STR", "shadowStrength", 0f, 1f, lighting.shadowStrength, v => lighting.shadowStrength = Mathf.Clamp01(v));
+            y = AddToggle(scrollContent, y, "SPOTLIGHT", "spotlightEnabled", lighting.spotlightEnabled, v => lighting.spotlightEnabled = v);
+            y = AddSlider(scrollContent, y, "SPOTLIGHT", "spotlightIntensity", 0f, 12f, lighting.spotlightIntensity, v => lighting.spotlightIntensity = Mathf.Clamp(v, 0f, 12f));
+            y = AddToggle(scrollContent, y, "REFLECTIONS", "reflectionsEnabled", lighting.reflectionsEnabled, v => lighting.reflectionsEnabled = v);
+            y = AddSlider(scrollContent, y, "REFLECTION", "reflectionIntensity", 0f, 2f, lighting.reflectionIntensity, v => lighting.reflectionIntensity = Mathf.Clamp(v, 0f, 2f));
+        }
+
         var sky = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.sky;
         if (sky != null)
         {
-            y = AddHeader(scrollContent, y, "AURORA");
-            y = AddToggle(scrollContent, y, "ENABLED", "auroraEnabled", sky.auroraEnabled, v => sky.auroraEnabled = v);
-            y = AddSlider(scrollContent, y, "INTENSITY", "auroraIntensity", 0f, 2f, sky.auroraIntensity, v => sky.auroraIntensity = v);
-            y = AddSlider(scrollContent, y, "HEIGHT", "auroraHeight", 20f, 300f, sky.auroraHeight, v => sky.auroraHeight = v);
-            y = AddSlider(scrollContent, y, "DISTANCE", "auroraDistance", 80f, 900f, sky.auroraDistance, v => sky.auroraDistance = v);
-            y = AddSlider(scrollContent, y, "WIDTH", "auroraWidth", 80f, 900f, sky.auroraWidth, v => sky.auroraWidth = v);
-            y = AddSlider(scrollContent, y, "DRIFT", "auroraDriftSpeed", 0f, 2f, sky.auroraDriftSpeed, v => sky.auroraDriftSpeed = v);
-
-            // Manual time-of-day + weather, used when GPS mode is off.
-            y = AddHeader(scrollContent, y, "MANUAL SKY (GPS OFF)");
-            float manualHour = PlayerPrefs.GetFloat("k1lo_manualHour", 13f);
+            y = AddHeader(scrollContent, y, "WEATHER");
+            float manualHour = PlayerPrefs.GetFloat("k1lo_manualHour", 13.25f);
             KiloWorld.Rendering.Systems.RenderManager.ManualHour = manualHour;
             y = AddSlider(scrollContent, y, "TIME OF DAY", "manualHour", 0f, 24f, manualHour,
                 v =>
@@ -230,6 +235,12 @@ public class K1L0ProfileMode : MonoBehaviour
                     KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
                 });
             y = AddWeatherRow(scrollContent, y);
+
+            float currentSkyFps = DynamicSkyVideoController.SkyTargetFps > 0.1f
+                ? DynamicSkyVideoController.SkyTargetFps
+                : PlayerPrefs.GetFloat("k1lo_skyTargetFps", 30f);
+            y = AddSlider(scrollContent, y, "SKY SPEED (FPS)", "skyTargetFps", 1f, 60f, currentSkyFps,
+                v => DynamicSkyVideoController.SetSkyFps(v));
         }
 
         // ── COLOR GRADING ──
@@ -468,8 +479,10 @@ public class K1L0ProfileMode : MonoBehaviour
             if (activeSlider != null && activeSlider != s) return;
             int idx = Mathf.Clamp(Mathf.RoundToInt(v), 0, WeatherGlyphs.Length - 1);
             KiloWorld.Rendering.Systems.RenderManager.ManualWeatherGlyph = WeatherGlyphs[idx];
+            KiloWorld.Rendering.Systems.RenderManager.ManualWeatherOverrideEnabled = true;
             PlayerPrefs.SetFloat("k1lo_manualWeather", idx);
             PlayerPrefs.SetString("k1lo_manualWeatherGlyph", WeatherGlyphs[idx]);
+            PlayerPrefs.SetInt("k1lo_manualWeatherOverrideEnabled", 1);
             KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
             valTmp.text = WeatherNames[idx];
         });
@@ -710,7 +723,7 @@ public class K1L0ProfileMode : MonoBehaviour
         if (!initialized || bodyText == null || lineBgContainer == null)
             return;
 
-        string signal = FirebaseAuthManager.Instance != null && FirebaseAuthManager.Instance.isAuthenticated ? "AUTHENTICATED" : "ANON";
+        string signal = K1L0NativeSessionBridge.IsAuthenticated ? "AUTHENTICATED" : "ANON";
         string deviceId = DeviceIDManager.Instance != null ? DeviceIDManager.Instance.GetCurrentUserId() : "offline";
 
         RenderProfileText(signal, deviceId);
@@ -808,26 +821,13 @@ public class K1L0ProfileMode : MonoBehaviour
 
     private void OnAuthClick()
     {
-        FirebaseAuthManager auth = FirebaseAuthManager.Instance;
-        if (auth == null) return;
-
-        if (auth.isAuthenticated)
-        {
-            auth.SignOut();
-            LoadProfile();
-            UpdateAuthButton();
-        }
-        else
-        {
-            LoginUI loginUI = Object.FindFirstObjectByType<LoginUI>();
-            if (loginUI != null) loginUI.ShowLogin();
-        }
+        Debug.Log("[K1L0ProfileMode] Unity auth UI is disabled; native overlay owns auth.");
     }
 
     private void UpdateAuthButton()
     {
         if (authBtnLabel == null) return;
-        bool loggedIn = FirebaseAuthManager.Instance != null && FirebaseAuthManager.Instance.isAuthenticated;
+        bool loggedIn = K1L0NativeSessionBridge.IsAuthenticated;
         authBtnLabel.text = loggedIn ? "LOGOUT" : "LOGIN";
         if (authChrome != null)
         {

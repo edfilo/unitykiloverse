@@ -143,8 +143,10 @@ public class CityWeatherOverlay : MonoBehaviour
         if (string.IsNullOrWhiteSpace(key)) return "";
         switch (key.Trim().ToLowerInvariant())
         {
-            case "sun": case "sunny": case "clear": case "01d": case "01n":
+            case "sun": case "sunny": case "clear": case "01d":
                 return "☀";
+            case "moon": case "night": case "clear-night": case "01n":
+                return "☾";
             case "cloud": case "cloudy": case "overcast": case "03d": case "03n": case "04d": case "04n":
                 return "☁";
             case "partly cloudy": case "partlycloudy": case "02d": case "02n":

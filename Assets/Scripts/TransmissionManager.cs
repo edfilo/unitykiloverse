@@ -5,7 +5,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using Firebase.Database;
+using System.Globalization;
 
 // ─────────────────────────────────────────────────────────────────
 // TransmissionManager  –  Connects SignalDirectorV2 to the Story Engine
@@ -73,12 +73,54 @@ public class TransmissionManager : MonoBehaviour
         public int grams;
     }
 
+    private static readonly string[] CanonicalElementNames =
+    {
+        "Scandium", "Yttrium", "Lanthanum", "Cerium", "Praseodymium", "Neodymium",
+        "Promethium", "Samarium", "Europium", "Gadolinium", "Terbium", "Dysprosium",
+        "Holmium", "Erbium", "Thulium", "Ytterbium", "Lutetium", "Indium", "Gallium",
+        "Bismuth", "Cobalt", "Molybdenum", "Selenium", "Tungsten", "Titanium",
+        "Vanadium", "Niobium", "Tantalum", "Nickel", "Tellurium", "Hematite",
+        "Magnetite", "Monazite", "Bastnäsite"
+    };
+
+    // Full pool of collectible mystery items — minerals plus other categories.
+    // Ambient beams pick from this deterministically by seed.
+    private static readonly string[] MysteryItemPool =
+    {
+        // Minerals
+        "Scandium", "Yttrium", "Lanthanum", "Cerium", "Praseodymium", "Neodymium",
+        "Samarium", "Europium", "Gadolinium", "Terbium", "Dysprosium",
+        "Holmium", "Erbium", "Thulium", "Ytterbium", "Lutetium", "Indium", "Gallium",
+        "Bismuth", "Cobalt", "Molybdenum", "Selenium", "Tungsten", "Titanium",
+        "Vanadium", "Niobium", "Tantalum", "Nickel", "Tellurium", "Hematite",
+        "Magnetite", "Monazite",
+        // Organics
+        "Spore Cluster", "Mycelium Sample", "Amber Fragment", "Resin Crystal",
+        "Chitin Shard", "Pollen Mass", "Keratin Filament", "Bone Dust",
+        "Seed Cache", "Algae Extract", "Lichen Crust", "Beetle Carapace",
+        "Bioluminescent Gel", "Root Fiber", "Bark Tar", "Ant Colony Resin",
+        // Synthetics
+        "Carbon Lattice", "Graphene Sheet", "Aerogel Block", "Quantum Dot Array",
+        "Polymer Resin", "Fullerene Powder", "Ferrofluid Capsule", "Piezocrystal",
+        "Metamaterial Shard", "Hydrogel Bead", "Aerosol Compound", "Ceramic Filament",
+        // Chemical / mineral compounds
+        "Silicate Gel", "Phosphate Compound", "Oxide Matrix", "Sulfide Flake",
+        "Carbide Pellet", "Nitride Film", "Boride Shard", "Chloride Salt",
+        "Fluorite Powder", "Pyrite Dust", "Galena Fragment", "Stibnite Needle",
+        // Energy / signal
+        "Plasma Residue", "Radiation Trace", "Thermal Crystal",
+        "Magnetic Core", "Signal Fragment", "Photon Lattice", "Ion Membrane",
+        "Capacitor Paste", "Electrolyte Gel", "Discharge Residue",
+        // Data / tech
+        "Encrypted Shard", "Memory Crystallite", "Logic Dust", "Sensor Film",
+        "Antenna Weave", "Circuit Flake", "Quantum Key Fragment", "Lattice Code",
+    };
+
     // ── Rare Earth Elements — RTDB users/<userId>/items ─────
     private readonly List<string> cachedItems = new List<string>();
     private readonly List<InventoryMaterial> cachedInventory = new List<InventoryMaterial>();
-    private DatabaseReference itemsRef;
-    private EventHandler<ValueChangedEventArgs> itemsHandler;
     private string itemsUserId;
+    private const bool NativeOverlayOwnsInventory = true;
 
     static string LocationKey(Signal sig)
     {
@@ -88,6 +130,54 @@ public class TransmissionManager : MonoBehaviour
         // would otherwise collide every ambient beam onto one cache slot.
         if (sig.role != SignalRole.LocationTransmission) return sig.id;
         return string.IsNullOrEmpty(sig.locationName) ? sig.id : sig.locationName.Trim().ToLowerInvariant();
+    }
+
+    private static string PickMysteryItem(int seed)
+    {
+        // FNV-1a over the seed to get a stable, well-distributed index.
+        unchecked
+        {
+            uint hash = 2166136261u;
+            byte[] bytes = System.BitConverter.GetBytes(seed);
+            foreach (byte b in bytes) { hash ^= b; hash *= 16777619u; }
+            // Second round with a salt so this doesn't collide with other generators.
+            byte[] salt = System.Text.Encoding.UTF8.GetBytes("mystery");
+            foreach (byte b in salt) { hash ^= b; hash *= 16777619u; }
+            return MysteryItemPool[(int)(hash % (uint)MysteryItemPool.Length)];
+        }
+    }
+
+    private static string CanonicalElementName(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        string trimmed = raw.Trim();
+        string lower = trimmed.ToLowerInvariant();
+        for (int i = 0; i < CanonicalElementNames.Length; i++)
+        {
+            string element = CanonicalElementNames[i];
+            string needle = element.ToLowerInvariant();
+            if (lower == needle || lower.StartsWith(needle + " ", StringComparison.Ordinal) || lower.Contains(" " + needle + " "))
+                return element;
+        }
+
+        int inIndex = lower.IndexOf(" in ", StringComparison.Ordinal);
+        if (inIndex > 0)
+            trimmed = trimmed.Substring(0, inIndex).Trim();
+
+        return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(trimmed.ToLowerInvariant());
+    }
+
+    private static string ElementKey(string element)
+    {
+        string clean = CanonicalElementName(element).ToLowerInvariant();
+        var sb = new StringBuilder(clean.Length);
+        for (int i = 0; i < clean.Length; i++)
+        {
+            char ch = clean[i];
+            if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) sb.Append(ch);
+            else if (sb.Length == 0 || sb[sb.Length - 1] != '_') sb.Append('_');
+        }
+        return sb.ToString().Trim('_');
     }
 
     static string LocationDropKey(Signal sig)
@@ -125,6 +215,11 @@ public class TransmissionManager : MonoBehaviour
     public event Action<string, string, string, string> OnStoryShellReady; // storyId, character, object, premise (any story)
     // storyId, shotNumber, status ("generating"|"image_ready"|"rendering_video"|"ready"), hasImage, hasAudio
     public event Action<string, int, string, bool, bool> OnShotProgress;
+    // jobId, status — fires on each v2 job status change while polling (gathering/planning/.../ready/error)
+    public event Action<string, string> OnTransmitV2Progress;
+
+    // Current v2 job being processed; null when idle.
+    public string TransmitV2ActiveJobId { get; private set; }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void AutoBootstrap()
@@ -233,195 +328,35 @@ public class TransmissionManager : MonoBehaviour
 
     void BeginItemsListener()
     {
-        FirebaseBootstrap.WhenReady(() =>
-        {
-            string uid = GetUserId();
-            if (string.IsNullOrWhiteSpace(uid)) return;
-            string safeUid = SanitizeUserId(uid);
-            if (itemsRef != null && itemsUserId == safeUid) return;
-            if (itemsRef != null) StopItemsListener();
-
-            string path = $"users/{safeUid}/items";
-            var db = FirebaseDatabase.DefaultInstance;
-            itemsRef = db.GetReference(path);
-            itemsUserId = safeUid;
-            itemsHandler = (sender, args) =>
-            {
-                if (args.DatabaseError != null) return;
-                if (args.Snapshot == null) return;
-
-                cachedItems.Clear();
-                cachedInventory.Clear();
-                foreach (var child in args.Snapshot.Children)
-                {
-                    if (child == null) continue;
-                    string material = FirstChildString(child, "material", "artifactMaterial", "rareEarthMineral", "artifact");
-                    if (string.IsNullOrWhiteSpace(material)) continue;
-
-                    int grams = FirstChildInt(child, 0, "grams", "quantityGrams", "quantity");
-                    material = material.Trim();
-                    cachedItems.Add(material);
-                    cachedInventory.Add(new InventoryMaterial { material = material, grams = Mathf.Max(0, grams) });
-                }
-
-                cachedItems.Sort(StringComparer.OrdinalIgnoreCase);
-                Debug.Log($"[TransmissionManager] Rare earth elements updated: {cachedItems.Count}");
-
-                // If transmitter modal is open, refresh its inventory list.
-                var modal = TransmitterEnterModal.Instance;
-                if (modal != null) modal.RefreshInventory();
-            };
-            itemsRef.ValueChanged += itemsHandler;
-        });
+        // Native Swift HUD owns inventory now. Unity keeps a small local cache
+        // for immediate modal refreshes after collection only.
     }
 
     void CleanupUnenteredBeamsOnInit()
     {
-        FirebaseBootstrap.WhenReady(() =>
-        {
-            string uid = GetUserId();
-            if (string.IsNullOrWhiteSpace(uid)) return;
-
-            var db = FirebaseDatabase.DefaultInstance;
-            string path = $"users/{SanitizeUserId(uid)}/beams";
-            var beamsRef = db.GetReference(path);
-
-            beamsRef.GetValueAsync().ContinueWith(task =>
-            {
-                if (task == null || !task.IsCompletedSuccessfully) return;
-                var snap = task.Result;
-                if (snap == null || !snap.Exists) return;
-
-                foreach (var child in snap.Children)
-                {
-                    if (child == null) continue;
-                    bool entered = false;
-                    try
-                    {
-                        var ev = child.Child("entered")?.Value;
-                        if (ev is bool b) entered = b;
-                        else if (ev != null) bool.TryParse(ev.ToString(), out entered);
-                    }
-                    catch { /* ignore */ }
-
-                    if (!entered)
-                        beamsRef.Child(child.Key).RemoveValueAsync();
-                }
-            });
-        });
+        // Beam lifecycle is backend-owned. Unity should not directly mutate RTDB.
     }
 
     void StopItemsListener()
     {
-        if (itemsRef != null && itemsHandler != null)
-            itemsRef.ValueChanged -= itemsHandler;
-        itemsRef = null;
-        itemsHandler = null;
         itemsUserId = null;
-    }
-
-    private static string FirstChildString(DataSnapshot parent, params string[] keys)
-    {
-        if (parent == null || keys == null) return null;
-        for (int i = 0; i < keys.Length; i++)
-        {
-            var value = parent.Child(keys[i])?.Value;
-            if (value == null) continue;
-            string text = value.ToString();
-            if (!string.IsNullOrWhiteSpace(text)) return text;
-        }
-        return null;
-    }
-
-    private static int FirstChildInt(DataSnapshot parent, int fallback, params string[] keys)
-    {
-        if (parent == null || keys == null) return fallback;
-        for (int i = 0; i < keys.Length; i++)
-        {
-            var value = parent.Child(keys[i])?.Value;
-            if (value == null) continue;
-            if (int.TryParse(value.ToString(), out int parsed)) return parsed;
-        }
-        return fallback;
     }
 
     // ── Beams (Live pool) — RTDB users/<userId>/beams/<signalId> ─────
 
     void UpsertBeamRecord(Signal sig, string storyId, bool entered)
     {
-        if (sig == null) return;
-        string uid = GetUserId();
-        if (string.IsNullOrWhiteSpace(uid)) return;
-
-        FirebaseBootstrap.WhenReady(() =>
-        {
-            var db = FirebaseDatabase.DefaultInstance;
-            string path = $"users/{SanitizeUserId(uid)}/beams/{sig.id}";
-            var beamRef = db.GetReference(path);
-
-            string t = (sig.transmissionType == TransmissionType.Location) ? "location"
-                : (sig.transmissionType == TransmissionType.Artifact ? "artifact" : "transmitter");
-
-            var payload = new Dictionary<string, object>
-            {
-                { "id", sig.id },
-                { "type", t },
-                { "lat", sig.latitude },
-                { "lng", sig.longitude },
-                { "externalKey", sig.externalKey ?? "" },
-                { "locationName", sig.locationName ?? "" },
-                { "locationCategory", sig.locationCategory ?? "" },
-                { "artifact", sig.specialItem ?? "" },
-                { "entered", entered },
-                { "storyId", storyId ?? "" },
-                { "updatedAt", ServerValue.Timestamp }
-            };
-
-            // Create createdAt only once (best-effort).
-            beamRef.Child("createdAt").GetValueAsync().ContinueWith(task =>
-            {
-                if (task == null || !task.IsCompletedSuccessfully) return;
-                if (task.Result == null || !task.Result.Exists)
-                    beamRef.Child("createdAt").SetValueAsync(ServerValue.Timestamp);
-                beamRef.UpdateChildrenAsync(payload);
-            });
-        });
+        // Backend owns shared beam persistence. Unity only renders/signals.
     }
 
     void DeleteBeamRecord(string signalId)
     {
-        if (string.IsNullOrWhiteSpace(signalId)) return;
-        string uid = GetUserId();
-        if (string.IsNullOrWhiteSpace(uid)) return;
-
-        FirebaseBootstrap.WhenReady(() =>
-        {
-            var db = FirebaseDatabase.DefaultInstance;
-            string path = $"users/{SanitizeUserId(uid)}/beams/{signalId}";
-            db.GetReference(path).RemoveValueAsync();
-        });
+        // Backend owns shared beam persistence.
     }
 
     void AttachStoryToBeamRecord(string signalId, string storyId)
     {
-        if (string.IsNullOrWhiteSpace(signalId)) return;
-        if (string.IsNullOrWhiteSpace(storyId)) return;
-        string uid = GetUserId();
-        if (string.IsNullOrWhiteSpace(uid)) return;
-
-        FirebaseBootstrap.WhenReady(() =>
-        {
-            var db = FirebaseDatabase.DefaultInstance;
-            string path = $"users/{SanitizeUserId(uid)}/beams/{signalId}";
-            var beamRef = db.GetReference(path);
-            var payload = new Dictionary<string, object>
-            {
-                { "storyId", storyId },
-                { "entered", true },
-                { "updatedAt", ServerValue.Timestamp }
-            };
-            beamRef.UpdateChildrenAsync(payload);
-        });
+        // Backend owns shared beam persistence.
     }
 
     // ── Signal event handlers ─────────────────────────────
@@ -475,6 +410,10 @@ public class TransmissionManager : MonoBehaviour
 
     string GetUserId()
     {
+        string nativeUserId = K1L0NativeSessionBridge.ResolveUserId("");
+        if (!string.IsNullOrWhiteSpace(nativeUserId))
+            return nativeUserId;
+
         if (DeviceIDManager.Instance != null)
             return DeviceIDManager.Instance.GetCurrentUserId();
         return "k1l0_anonymous";
@@ -768,9 +707,8 @@ public class TransmissionManager : MonoBehaviour
         return sb.ToString();
     }
 
-    // Track active Firebase listeners so we can detach them cleanly.
-    private readonly Dictionary<string, DatabaseReference> _storyRefs = new Dictionary<string, DatabaseReference>();
-    private readonly Dictionary<string, EventHandler<ValueChangedEventArgs>> _storyHandlers = new Dictionary<string, EventHandler<ValueChangedEventArgs>>();
+    // Track active backend status pollers so we can avoid duplicate loops.
+    private readonly HashSet<string> _storyPollers = new HashSet<string>();
 
     // Opens (or reuses) a Firebase RTDB ValueChanged listener for the given storyId.
     // Multiple concurrent listeners are supported — a new pursuit chain does
@@ -778,53 +716,32 @@ public class TransmissionManager : MonoBehaviour
     void BeginStoryListener(string storyId)
     {
         if (string.IsNullOrEmpty(storyId)) return;
-        if (_storyRefs.ContainsKey(storyId)) return; // already listening
-
-        FirebaseBootstrap.WhenReady(() =>
-        {
-            if (_storyRefs.ContainsKey(storyId)) return;
-            string path = $"users/{SanitizeUserId(GetUserId())}/stories/{storyId}";
-            Debug.Log($"[TransmissionManager] Opening Firebase listener on {path}");
-
-            var db = FirebaseDatabase.DefaultInstance;
-            var reference = db.GetReference(path);
-            EventHandler<ValueChangedEventArgs> handler = (sender, args) =>
-            {
-                if (args.DatabaseError != null)
-                {
-                    Debug.LogWarning($"[TransmissionManager] RTDB error on {path}: {args.DatabaseError.Message}");
-                    return;
-                }
-                if (args.Snapshot == null || !args.Snapshot.Exists) return;
-                StartCoroutine(FetchAndDeliver(storyId));
-            };
-            reference.ValueChanged += handler;
-            _storyRefs[storyId] = reference;
-            _storyHandlers[storyId] = handler;
-        });
+        if (_storyPollers.Contains(storyId)) return;
+        _storyPollers.Add(storyId);
+        Debug.Log($"[TransmissionManager] Opening backend poller for story {storyId}");
+        StartCoroutine(PollStoryStatus(storyId));
     }
 
     void StopStoryListener(string storyId)
     {
         if (string.IsNullOrEmpty(storyId)) return;
-        if (_storyRefs.TryGetValue(storyId, out var reference) &&
-            _storyHandlers.TryGetValue(storyId, out var handler))
-        {
-            reference.ValueChanged -= handler;
-        }
-        _storyRefs.Remove(storyId);
-        _storyHandlers.Remove(storyId);
+        _storyPollers.Remove(storyId);
     }
 
     void StopShotListener()
     {
-        foreach (var kv in _storyRefs)
+        _storyPollers.Clear();
+    }
+
+    IEnumerator PollStoryStatus(string storyId)
+    {
+        float start = Time.realtimeSinceStartup;
+        while (_storyPollers.Contains(storyId) && Time.realtimeSinceStartup - start < 180f)
         {
-            if (_storyHandlers.TryGetValue(kv.Key, out var handler))
-                kv.Value.ValueChanged -= handler;
+            yield return FetchAndDeliver(storyId);
+            yield return new WaitForSecondsRealtime(2f);
         }
-        _storyRefs.Clear();
-        _storyHandlers.Clear();
+        _storyPollers.Remove(storyId);
     }
 
     IEnumerator FetchAndDeliver(string storyId)
@@ -1300,7 +1217,8 @@ public class TransmissionManager : MonoBehaviour
         foreach (var kv in storyStates)
         {
             var obj = kv.Value != null ? kv.Value.objectName : null;
-            if (!string.IsNullOrWhiteSpace(obj)) set.Add(obj.Trim());
+            string material = CanonicalElementName(obj);
+            if (!string.IsNullOrWhiteSpace(material)) set.Add(material);
         }
         var list = set.ToList();
         list.Sort(StringComparer.OrdinalIgnoreCase);
@@ -1316,7 +1234,8 @@ public class TransmissionManager : MonoBehaviour
         {
             var item = cachedInventory[i];
             if (item == null || string.IsNullOrWhiteSpace(item.material)) continue;
-            string material = item.material.Trim();
+            string material = CanonicalElementName(item.material);
+            if (string.IsNullOrWhiteSpace(material)) continue;
             if (!totals.ContainsKey(material)) totals[material] = 0;
             totals[material] += Mathf.Max(0, item.grams);
         }
@@ -1326,7 +1245,8 @@ public class TransmissionManager : MonoBehaviour
             foreach (string item in cachedItems)
             {
                 if (string.IsNullOrWhiteSpace(item)) continue;
-                string material = item.Trim();
+                string material = CanonicalElementName(item);
+                if (string.IsNullOrWhiteSpace(material)) continue;
                 if (!totals.ContainsKey(material)) totals[material] = 0;
             }
         }
@@ -1345,37 +1265,23 @@ public class TransmissionManager : MonoBehaviour
     public void AcceptItem(string artifact, string storyId, int shotNumber, int grams)
     {
         if (string.IsNullOrWhiteSpace(artifact)) return;
-        string itemName = artifact.Trim();
+        string sourceLabel = artifact.Trim();
+        string itemName = CanonicalElementName(sourceLabel);
+        if (string.IsNullOrWhiteSpace(itemName)) return;
         string uid = GetUserId();
         if (string.IsNullOrWhiteSpace(uid)) return;
 
         AddCachedItem(itemName, grams);
 
-        FirebaseBootstrap.WhenReady(() =>
-        {
-            var db = FirebaseDatabase.DefaultInstance;
-            string path = $"users/{SanitizeUserId(uid)}/items";
-            var itemRef = db.GetReference(path).Push();
-
-            var payload = new Dictionary<string, object>
-            {
-                { "artifact", itemName },
-                { "material", itemName },
-                { "grams", Mathf.Max(0, grams) },
-                { "storyId", storyId ?? "" },
-                { "shotNumber", shotNumber },
-                { "createdAt", ServerValue.Timestamp }
-            };
-
-            itemRef.SetValueAsync(payload);
-            Debug.Log($"[TransmissionManager] Accepted rare earth element '{itemName}' {grams}g → {path}/{itemRef.Key}");
-        });
+        if (APIManager.Instance != null)
+            StartCoroutine(PostCollectElement(uid, itemName, grams, sourceLabel, "legacy_accept", storyId, shotNumber));
     }
 
     private void AddCachedItem(string itemName, int grams = 0)
     {
         if (string.IsNullOrWhiteSpace(itemName)) return;
-        string clean = itemName.Trim();
+        string clean = CanonicalElementName(itemName);
+        if (string.IsNullOrWhiteSpace(clean)) return;
         if (!cachedItems.Exists(x => string.Equals(x, clean, StringComparison.OrdinalIgnoreCase)))
         {
             cachedItems.Add(clean);
@@ -1407,63 +1313,20 @@ public class TransmissionManager : MonoBehaviour
 
     public IEnumerator FetchLocationExchangeObject(Signal sig, Action<string> onDone)
     {
-        if (sig == null)
-        {
-            onDone?.Invoke(null);
-            yield break;
-        }
-
-        bool ready = false;
-        FirebaseBootstrap.WhenReady(() => ready = true);
-        float start = Time.unscaledTime;
-        while (!ready && Time.unscaledTime - start < 5f) yield return null;
-        if (!ready)
-        {
-            onDone?.Invoke(null);
-            yield break;
-        }
-
-        string path = $"k1l0/locationDrops/{LocationDropKey(sig)}";
-        var task = FirebaseDatabase.DefaultInstance.GetReference(path).GetValueAsync();
-        yield return new WaitUntil(() => task.IsCompleted);
-
-        if (task.IsFaulted || task.IsCanceled || task.Result == null || !task.Result.Exists)
-        {
-            onDone?.Invoke(null);
-            yield break;
-        }
-
-        string item = task.Result.Child("artifact").Value as string;
-        onDone?.Invoke(string.IsNullOrWhiteSpace(item) ? null : item.Trim());
+        // Location exchange objects are now supplied by backend/native flows.
+        onDone?.Invoke(null);
+        yield break;
     }
 
     private void SaveLocationExchangeItem(Signal sig, string item)
     {
-        if (sig == null || string.IsNullOrWhiteSpace(item)) return;
-
-        FirebaseBootstrap.WhenReady(() =>
-        {
-            string key = LocationDropKey(sig);
-            string path = $"k1l0/locationDrops/{key}";
-            var payload = new Dictionary<string, object>
-            {
-                { "artifact", item.Trim() },
-                { "locationName", sig.locationName ?? "" },
-                { "locationCategory", sig.locationCategory ?? "" },
-                { "latitude", sig.latitude },
-                { "longitude", sig.longitude },
-                { "leftBy", GetUserId() ?? "" },
-                { "updatedAt", ServerValue.Timestamp }
-            };
-            FirebaseDatabase.DefaultInstance.GetReference(path).SetValueAsync(payload);
-            Debug.Log($"[TransmissionManager] Location drop saved '{item.Trim()}' → {path}");
-        });
+        // Backend/native flows own location drops; Unity does not write RTDB.
     }
 
-    // Rare-earth collection: seed an item directly from local beam seed/name/noun.
+    // Mystery object collection: pick item deterministically from the full pool by beam seed.
     public void AddItemFromArtifactBeam(int beamSeed, int beamIndex, string beamName, string beamNoun)
     {
-        string artifact = $"{(beamName ?? "").Trim()} {(beamNoun ?? "").Trim()}".Trim();
+        string artifact = PickMysteryItem(beamSeed);
         if (string.IsNullOrWhiteSpace(artifact)) return;
 
         string uid = GetUserId();
@@ -1471,28 +1334,37 @@ public class TransmissionManager : MonoBehaviour
 
         AddCachedItem(artifact, 0);
 
-        FirebaseBootstrap.WhenReady(() =>
+        string sourceLabel = $"{(beamName ?? "").Trim()} {(beamNoun ?? "").Trim()}".Trim();
+        if (APIManager.Instance != null)
+            StartCoroutine(PostCollectElement(uid, artifact, 0, sourceLabel, "legacy_artifact_beam", null, beamIndex));
+    }
+
+    private IEnumerator PostCollectElement(string userId, string material, int grams, string sourceLabel, string kind, string storyId, int shotNumber)
+    {
+        string payload =
+            "{" +
+            $"\"userId\":\"{JsonEscape(userId)}\"," +
+            $"\"material\":\"{JsonEscape(material)}\"," +
+            $"\"element\":\"{JsonEscape(material)}\"," +
+            $"\"grams\":{Mathf.Max(0, grams)}," +
+            $"\"sourceLabel\":\"{JsonEscape(sourceLabel)}\"," +
+            $"\"kind\":\"{JsonEscape(kind)}\"," +
+            $"\"storyId\":\"{JsonEscape(storyId ?? "")}\"," +
+            $"\"shotNumber\":{shotNumber}" +
+            "}";
+        yield return APIManager.Instance.Post("/api/k1l0/user/elements/collect", payload, (success, response) =>
         {
-            var db = FirebaseDatabase.DefaultInstance;
-            string path = $"users/{SanitizeUserId(uid)}/items";
-            var itemRef = db.GetReference(path).Push();
-
-            var payload = new Dictionary<string, object>
-            {
-                { "artifact", artifact },
-                { "material", artifact },
-                { "grams", 0 },
-                { "kind", "artifact_beam" },
-                { "beamSeed", beamSeed },
-                { "beamIndex", beamIndex },
-                { "beamName", beamName ?? "" },
-                { "beamNoun", beamNoun ?? "" },
-                { "createdAt", ServerValue.Timestamp }
-            };
-
-            itemRef.SetValueAsync(payload);
-            Debug.Log($"[TransmissionManager] Collected rare earth element '{artifact}' → {path}/{itemRef.Key}");
+            if (success)
+                Debug.Log($"[TransmissionManager] Native/API inventory collect saved '{material}' {grams}g");
+            else
+                Debug.LogWarning($"[TransmissionManager] Inventory collect failed '{material}': {response}");
         });
+    }
+
+    private static string JsonEscape(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        return value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
     }
 
     // Transmitter-enter flow: user picks an artifact + action, then we prime + generate-shot with that directive.
@@ -1519,22 +1391,14 @@ public class TransmissionManager : MonoBehaviour
         StartCoroutine(TransmitAndGenerateForTransmitter(sig, artifact, userAction));
     }
 
-    public void StartTransmitterInteraction(Signal sig, string artifact, string userAction, string imageUrl, string spirits)
+    public void StartTransmitterInteraction(Signal sig, string artifact, string userAction, string imageUrl, string mood)
     {
-        if (string.IsNullOrWhiteSpace(artifact)) return;
         if (string.IsNullOrWhiteSpace(userAction)) return;
-        StartCoroutine(TransmitV2Coroutine(sig, artifact.Trim(), userAction.Trim(), imageUrl, spirits));
+        StartCoroutine(TransmitV2Coroutine(sig, string.IsNullOrWhiteSpace(artifact) ? "" : artifact.Trim(), userAction.Trim(), imageUrl, mood));
     }
 
-    IEnumerator TransmitV2Coroutine(Signal sig, string artifact, string userAction, string imageUrl, string spirits)
+    IEnumerator TransmitV2Coroutine(Signal sig, string artifact, string userAction, string imageUrl, string mood)
     {
-        // Show the transmission frame in its loading state with no pinned storyId,
-        // so it's active and will accept the v2 result when polling delivers it.
-        var frame = TransmissionFrame.Instance;
-        if (frame != null)
-            frame.ShowLoading(sig != null ? sig.locationName : "TRANSMISSION",
-                              sig != null ? sig.locationCategory : "ambient", null);
-
         var body = JsonUtility.ToJson(new K1L0TransmitV2Request
         {
             userId = GetUserId(),
@@ -1542,7 +1406,7 @@ public class TransmissionManager : MonoBehaviour
             element = artifact,
             image = string.IsNullOrWhiteSpace(imageUrl) ? "" : imageUrl,
             message = userAction,
-            mood = string.IsNullOrWhiteSpace(spirits) ? "medium" : spirits
+            mood = string.IsNullOrWhiteSpace(mood) ? "wired" : mood
         });
 
         bool success = false;
@@ -1564,12 +1428,16 @@ public class TransmissionManager : MonoBehaviour
 
         var resp = JsonUtility.FromJson<K1L0TransmitV2Response>(responseText);
         string jobId = resp != null ? resp.jobId : null;
-        Debug.Log($"[TransmissionManager] Transmit v2 queued jobId={jobId ?? ""} material='{artifact}' spirits='{spirits}' image={(string.IsNullOrWhiteSpace(imageUrl) ? "none" : "yes")}");
+        Debug.Log($"[TransmissionManager] Transmit v2 queued jobId={jobId ?? ""} material='{artifact}' mood='{mood}' image={(string.IsNullOrWhiteSpace(imageUrl) ? "none" : "yes")}");
 
         if (string.IsNullOrWhiteSpace(jobId)) yield break;
+        TransmitV2ActiveJobId = jobId;
+        OnTransmitV2Progress?.Invoke(jobId, "gathering");
         // Poll the job until it's ready (or errors / times out), then deliver the
-        // finished video to the TransmissionFrame via the standard ready event.
+        // finished video to native Swift. The Unity TransmissionFrame intentionally
+        // stays inactive for this native transmitter path.
         yield return PollTransmitV2Result(jobId, sig);
+        TransmitV2ActiveJobId = null;
     }
 
     // Poll GET /api/k1l0/v2/transmit/<jobId> until status=ready|error.
@@ -1580,6 +1448,7 @@ public class TransmissionManager : MonoBehaviour
         const float pollEvery = 4f;
         const float timeout = 600f; // 10 min cap
         float start = Time.unscaledTime;
+        string lastFiredStatus = "gathering";
 
         while (Time.unscaledTime - start < timeout)
         {
@@ -1595,6 +1464,12 @@ public class TransmissionManager : MonoBehaviour
             try { st = JsonUtility.FromJson<K1L0TransmitV2Status>(body); }
             catch { continue; }
             if (st == null) continue;
+
+            if (!string.IsNullOrEmpty(st.status) && st.status != lastFiredStatus)
+            {
+                lastFiredStatus = st.status;
+                OnTransmitV2Progress?.Invoke(jobId, st.status);
+            }
 
             if (st.status == "error")
             {
@@ -1616,10 +1491,12 @@ public class TransmissionManager : MonoBehaviour
                     longitude = sig != null ? sig.longitude : 0,
                     imageUrl = !string.IsNullOrWhiteSpace(st.nbUrl) ? st.nbUrl : "",
                     videoUrl = st.finalUrl,
-                    audioUrl = "",          // audio is muxed into the final video
+                    audioUrl = st.audioUrl ?? "",
                     hasImage = !string.IsNullOrWhiteSpace(st.nbUrl),
                     hasVideo = true,
-                    hasAudio = false,
+                    hasAudio = !string.IsNullOrWhiteSpace(st.audioUrl),
+                    responsePlot = st.responsePlot,
+                    responseOptions = st.responseOptions,
                 };
                 OnTransmissionReady?.Invoke(td);
                 yield break;
@@ -1797,6 +1674,8 @@ public class TransmissionData
     public bool hasImage;
     public bool hasVideo;
     public bool hasAudio;
+    public string responsePlot;
+    public string[] responseOptions;
 }
 
 [Serializable]
@@ -1867,7 +1746,10 @@ class K1L0TransmitV2Status
     public string status;     // gathering|planning|planned|image_ready|composing|ready|error
     public string branch;     // selfie|scene|scene_noimage
     public string nbUrl;      // the NanoBanana still (shown while video prepares)
-    public string finalUrl;   // the finished 30s transmission video
+    public string finalUrl;   // the raw WAN video (FX applied client-side)
+    public string audioUrl;   // music/vocal track played on separate AudioSource
+    public string responsePlot;
+    public string[] responseOptions;
     public string error;
 }
 

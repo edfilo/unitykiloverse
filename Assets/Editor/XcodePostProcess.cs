@@ -18,38 +18,39 @@ public class XcodePostProcess
 
         Debug.Log("[XcodePostProcess] Applying post-build fixes...");
 
-        // Get bundle identifier from PlayerSettings
-        string bundleIdentifier = PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.iOS);
-        Debug.Log($"[XcodePostProcess] Bundle ID: {bundleIdentifier}");
-
         // Path to entitlements file
         string entitlementsPath = pathToBuiltProject + "/Unity-iPhone.entitlements";
 
-        // Create proper entitlements file with required fields
         PlistDocument entitlements = new PlistDocument();
-        PlistElementDict rootDict = entitlements.root;
-
-        // CRITICAL: Add application-identifier (required by iOS)
-        // Format: TEAM_ID.BUNDLE_ID (e.g., "ABC123DEF4.com.kilomeme.kiloverse")
-        // Unity should fill this automatically, but we ensure it exists
-        string teamID = PlayerSettings.iOS.appleDeveloperTeamID;
-        if (!string.IsNullOrEmpty(teamID))
+        if (File.Exists(entitlementsPath))
         {
-            rootDict.SetString("application-identifier", $"{teamID}.{bundleIdentifier}");
-            Debug.Log($"[XcodePostProcess] ✓ Set application-identifier: {teamID}.{bundleIdentifier}");
+            entitlements.ReadFromFile(entitlementsPath);
         }
         else
         {
-            Debug.LogWarning("[XcodePostProcess] ⚠ Team ID not set in Player Settings! Set it in Build Settings → iOS → Other Settings → Identification → Apple Developer Team ID");
+            entitlements.Create();
         }
 
-        // Add location permissions (if using GPS)
-        rootDict.SetBoolean("com.apple.developer.location.push", true);
-        Debug.Log("[XcodePostProcess] ✓ Added location push capability");
+        PlistElementDict rootDict = entitlements.root;
+        rootDict.values.Remove("application-identifier");
+        rootDict.values.Remove("com.apple.developer.location.push");
+        var appleSignIn = rootDict.values.ContainsKey("com.apple.developer.applesignin")
+            ? rootDict["com.apple.developer.applesignin"].AsArray()
+            : rootDict.CreateArray("com.apple.developer.applesignin");
+        bool hasDefault = false;
+        foreach (var value in appleSignIn.values)
+        {
+            if (value.AsString() == "Default")
+            {
+                hasDefault = true;
+                break;
+            }
+        }
+        if (!hasDefault) appleSignIn.AddString("Default");
 
         // Save entitlements file
         entitlements.WriteToFile(entitlementsPath);
-        Debug.Log($"[XcodePostProcess] ✓ Created entitlements file: {entitlementsPath}");
+        Debug.Log($"[XcodePostProcess] ✓ Preserved Sign in with Apple entitlement: {entitlementsPath}");
 
         // Verify Info.plist has location permissions
         string plistPath = pathToBuiltProject + "/Info.plist";

@@ -59,7 +59,11 @@ public class TransmitterScanner : MonoBehaviour
     [Header("Settings")]
     public float scanInterval = 1.0f;
     [Header("Data Source")]
-    public bool usePlacesApi = true;
+    public bool usePlacesApi = false;
+    [Tooltip("Legacy fallback only. Native Swift owns world/nearby and pushes places into Unity.")]
+    public bool allowUnityPlacesPolling = false;
+    [Tooltip("Legacy fallback only. Native pushed places are canonical.")]
+    public bool allowLegacyRegisteredTransmitters = false;
     [Tooltip("Defer Places API start until after boot (avoids lockup during Startup)")]
     public bool deferPlacesApiStart = true;
     public float placesPollInterval = 8f;
@@ -117,7 +121,7 @@ private void Awake()
 
     private void Start()
     {
-        if (usePlacesApi)
+        if (usePlacesApi && allowUnityPlacesPolling)
         {
             if (deferPlacesApiStart)
             {
@@ -132,6 +136,9 @@ private void Awake()
 
     private IEnumerator DeferredPlacesApiStart()
     {
+        if (!usePlacesApi || !allowUnityPlacesPolling)
+            yield break;
+
         // Wait for boot to complete so API/TryAutoConnect doesn't block startup
         while (!BootState.AllowPlayer)
         {
@@ -151,7 +158,7 @@ private void Awake()
     /// </summary>
     public void EnsurePlacesApiRunning()
     {
-        if (!usePlacesApi || _placesApiRunning) return;
+        if (!usePlacesApi || !allowUnityPlacesPolling || _placesApiRunning) return;
         _placesApiRunning = true;
         Debug.Log("[TransmitterScanner] EnsurePlacesApiRunning: force-starting Places API");
         StartCoroutine(PlacesPollRoutine());
@@ -165,11 +172,34 @@ private void Awake()
         Debug.Log("[TransmitterScanner] Cleared all memory.");
     }
 
+    public void ApplyNativeWorldNearby(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+
+        try
+        {
+            var data = JsonUtility.FromJson<PlacesResponse>(json);
+            if (data != null && !data.includePlaces)
+                return;
+            if (data == null || data.places == null)
+            {
+                Debug.LogWarning("[TransmitterScanner] Native world payload missing places.");
+                return;
+            }
+
+            ApplyPlaces(data.places, "native");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[TransmitterScanner] Failed to parse native world payload: {ex.Message}");
+        }
+    }
+
 public void RegisterTransmitter(string name, string primaryCategory, string mainCategoryGroup, Vector2d latLon)
     {
-        if (usePlacesApi)
+        if (!allowLegacyRegisteredTransmitters || usePlacesApi)
         {
-            // Ignore Overture POIs when using the Places API.
+            // Ignore Overture/manual POIs. Native Swift pushes canonical nearby places.
             return;
         }
         // Dedup based on Name + Location (approximate)
@@ -273,6 +303,7 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
     private class PlacesResponse
     {
         public bool ok;
+        public bool includePlaces;
         public PlaceEntry[] places;
         public string error;
     }
@@ -298,6 +329,66 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
     {
         public float lat;
         public float lng;
+    }
+
+    private void ApplyPlaces(PlaceEntry[] places, string source)
+    {
+        if (places == null) return;
+
+        _allTransmitters.Clear();
+        foreach (var place in places)
+        {
+            if (place == null || place.coordinates == null || string.IsNullOrEmpty(place.name))
+            {
+                continue;
+            }
+
+            string primary = !string.IsNullOrEmpty(place.type) ? place.type : (place.types != null && place.types.Length > 0 ? place.types[0] : "place");
+            string group = MapToMainGroup(primary, place.types);
+
+            var latLon = new Vector2d(place.coordinates.lat, place.coordinates.lng);
+            _allTransmitters.Add(new TransmitterData
+            {
+                Name = place.name,
+                PrimaryCategory = primary,
+                MainCategoryGroup = group,
+                TypesRaw = place.types,
+                Lore = place.lore,
+                ArtifactMaterial = place.artifactMaterial,
+                ArtifactContainer = place.artifactContainer,
+                ArtifactLabel = place.artifactLabel,
+                ArtifactLore = place.artifactLore,
+                ArtifactSenderName = place.artifactSenderName,
+                GeoLocation = latLon,
+                Class = group,
+                Type = primary,
+                Maki = primary,
+                Category = primary
+            });
+        }
+
+        if (!_scanInProgress)
+        {
+            StartCoroutine(UpdateDistancesAndSortCoroutine());
+        }
+
+        var categoryBreakdown = _allTransmitters
+            .GroupBy(t => t.MainCategoryGroup)
+            .OrderByDescending(g => g.Count())
+            .Select(g => $"{g.Key}: {g.Count()}")
+            .ToList();
+
+        Debug.Log($"[TransmitterScanner] Loaded {places.Length} places from {source}");
+        Debug.Log($"[TransmitterScanner]   Total transmitters: {_allTransmitters.Count}");
+        Debug.Log($"[TransmitterScanner]   Categories: {string.Join(", ", categoryBreakdown)}");
+        if (_allTransmitters.Count > 0)
+        {
+            var nearest = _sortedTransmitters.FirstOrDefault();
+            if (nearest != null)
+            {
+                Debug.Log($"[TransmitterScanner]   Nearest: {nearest.Name} ({nearest.Distance:F0}m, {nearest.MainCategoryGroup})");
+            }
+        }
     }
 
     private void Update()
@@ -326,6 +417,12 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
     {
         while (true)
         {
+            if (!usePlacesApi || !allowUnityPlacesPolling)
+            {
+                _placesApiRunning = false;
+                yield break;
+            }
+
             if (_placesFetchInFlight)
             {
                 yield return new WaitForSeconds(placesPollInterval);
@@ -405,63 +502,9 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
                         return;
                     }
 
-                    _allTransmitters.Clear();
-                    foreach (var place in data.places)
-                    {
-                        if (place == null || place.coordinates == null || string.IsNullOrEmpty(place.name))
-                        {
-                            continue;
-                        }
-
-                        string primary = !string.IsNullOrEmpty(place.type) ? place.type : (place.types != null && place.types.Length > 0 ? place.types[0] : "place");
-                        string group = MapToMainGroup(primary, place.types);
-
-                        var latLon = new Vector2d(place.coordinates.lat, place.coordinates.lng);
-                        _allTransmitters.Add(new TransmitterData
-                        {
-                            Name = place.name,
-                            PrimaryCategory = primary,
-                            MainCategoryGroup = group,
-                            TypesRaw = place.types,
-                            Lore = place.lore,
-                            ArtifactMaterial = place.artifactMaterial,
-                            ArtifactContainer = place.artifactContainer,
-                            ArtifactLabel = place.artifactLabel,
-                            ArtifactLore = place.artifactLore,
-                            ArtifactSenderName = place.artifactSenderName,
-                            GeoLocation = latLon,
-                            Class = group,
-                            Type = primary,
-                            Maki = primary,
-                            Category = primary
-                        });
-                    }
-
-                    if (!_scanInProgress)
-                    {
-                        StartCoroutine(UpdateDistancesAndSortCoroutine());
-                    }
+                    ApplyPlaces(data.places, "legacy Places API");
                     _lastPlacesFetchTime = Time.time;
                     _lastPlacesFetchGPS = new Vector2d(liveGPS.Latitude, liveGPS.Longitude);
-
-                    // Log detailed results
-                    var categoryBreakdown = _allTransmitters
-                        .GroupBy(t => t.MainCategoryGroup)
-                        .OrderByDescending(g => g.Count())
-                        .Select(g => $"{g.Key}: {g.Count()}")
-                        .ToList();
-
-                    Debug.Log($"[TransmitterScanner] ✓ Loaded {data.places.Length} places from API");
-                    Debug.Log($"[TransmitterScanner]   Total transmitters: {_allTransmitters.Count}");
-                    Debug.Log($"[TransmitterScanner]   Categories: {string.Join(", ", categoryBreakdown)}");
-                    if (_allTransmitters.Count > 0)
-                    {
-                        var nearest = _sortedTransmitters.FirstOrDefault();
-                        if (nearest != null)
-                        {
-                            Debug.Log($"[TransmitterScanner]   Nearest: {nearest.Name} ({nearest.Distance:F0}m, {nearest.MainCategoryGroup})");
-                        }
-                    }
                 }
                 catch (Exception ex)
                 {

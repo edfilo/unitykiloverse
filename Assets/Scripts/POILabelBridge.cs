@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
@@ -85,6 +86,12 @@ public class POILabelBridge : MonoBehaviour
 
     void DoTick()
     {
+        if (SignalDirectorV2.Instance != null)
+        {
+            ClearEntries();
+            return;
+        }
+
         // Find camera
         if (_mainCamera == null || !_mainCamera.isActiveAndEnabled)
         {
@@ -139,6 +146,8 @@ public class POILabelBridge : MonoBehaviour
         List<TransmitterScanner.TransmitterData> nearby = new List<TransmitterScanner.TransmitterData>();
         foreach (var poi in allPOIs)
         {
+            if (IsSuppressedByActiveLocationSignal(poi))
+                continue;
             if (poi.Distance <= maxDistance)
                 nearby.Add(poi);
             if (nearby.Count >= maxLabels) break;
@@ -151,7 +160,7 @@ public class POILabelBridge : MonoBehaviour
         for (int i = _entries.Count - 1; i >= 0; i--)
         {
             string key = MakeKey(_entries[i]);
-            if (!desiredKeys.Contains(key))
+            if (!desiredKeys.Contains(key) || IsSuppressedByActiveLocationSignal(_entries[i]))
             {
                 if (_entries[i].uiLabel != null) Destroy(_entries[i].uiLabel);
                 _entries.RemoveAt(i);
@@ -200,6 +209,55 @@ public class POILabelBridge : MonoBehaviour
             _firstLog = false;
             Debug.Log($"[POILabelBridge] Created {_entries.Count} labels from {allPOIs.Count} transmitters");
         }
+    }
+
+    private void ClearEntries()
+    {
+        for (int i = _entries.Count - 1; i >= 0; i--)
+        {
+            if (_entries[i] != null && _entries[i].uiLabel != null)
+                Destroy(_entries[i].uiLabel);
+            _entries.RemoveAt(i);
+        }
+    }
+
+    private bool IsSuppressedByActiveLocationSignal(TransmitterScanner.TransmitterData poi)
+    {
+        if (poi == null) return false;
+        return IsSuppressedByActiveLocationSignal(poi.Name, poi.GeoLocation);
+    }
+
+    private bool IsSuppressedByActiveLocationSignal(POIEntry entry)
+    {
+        if (entry == null) return false;
+        return IsSuppressedByActiveLocationSignal(entry.name, entry.geoLocation);
+    }
+
+    private bool IsSuppressedByActiveLocationSignal(string poiName, Vector2d poiGeo)
+    {
+        var director = SignalDirectorV2.Instance;
+        if (director == null) return false;
+
+        var active = director.ActiveSignals;
+        if (active == null) return false;
+
+        for (int i = 0; i < active.Count; i++)
+        {
+            var sig = active[i];
+            if (sig == null) continue;
+            if (sig.state == SignalState.Hidden || sig.state == SignalState.CoolingDown) continue;
+            if (sig.role != SignalRole.LocationTransmission && sig.transmissionType != TransmissionType.Location) continue;
+
+            bool sameName = !string.IsNullOrWhiteSpace(poiName)
+                            && !string.IsNullOrWhiteSpace(sig.locationName)
+                            && string.Equals(poiName.Trim(), sig.locationName.Trim(), StringComparison.OrdinalIgnoreCase);
+            bool samePoint = Mathf.Abs((float)(poiGeo.x - sig.latitude)) < 0.00012f
+                             && Mathf.Abs((float)(poiGeo.y - sig.longitude)) < 0.00012f;
+            if (sameName || samePoint)
+                return true;
+        }
+
+        return false;
     }
 
     private void UpdateScreenPositions()

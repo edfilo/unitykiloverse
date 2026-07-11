@@ -94,7 +94,7 @@ public class BootTaskQueue : MonoBehaviour
         // Double-check: if queue has items but we're not running, something went wrong
         if (_queue.Count > 0 && !_running)
         {
-            Debug.LogWarning($"[BootTaskQueue] Queue has {_queue.Count} items but processor not running! Restarting...");
+            Debug.LogWarning($"[BootTaskQueue] Queue has {_queue.Count} items but processor not running! Restarting... activeSelf={gameObject.activeSelf} activeInHierarchy={gameObject.activeInHierarchy} enabled={enabled}");
         }
         
         BootDiagnostics.Mark($"BootTaskQueue.TryStart: Starting queue processor (queue size: {_queue.Count})");

@@ -40,6 +40,12 @@ public class iOSPostProcessor
                 rootDict.SetString(photoKey, "K1L0 lets you choose a photo to use in a transmission.");
             }
 
+            string photoAddKey = "NSPhotoLibraryAddUsageDescription";
+            if (rootDict[photoAddKey] == null)
+            {
+                rootDict.SetString(photoAddKey, "K1L0 lets you save transmissions to your camera roll.");
+            }
+
             string cameraKey = "NSCameraUsageDescription";
             if (rootDict[cameraKey] == null)
             {

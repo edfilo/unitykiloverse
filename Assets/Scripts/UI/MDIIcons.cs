@@ -17,6 +17,7 @@ public static class MDIIcons
 
     // -- Weather icons --
     public static readonly string Sunny        = char.ConvertFromUtf32(0xF0599);  // weather-sunny
+    public static readonly string Night        = char.ConvertFromUtf32(0xF0594);  // weather-night
     public static readonly string Cloudy       = char.ConvertFromUtf32(0xF0590);  // weather-cloudy
     public static readonly string PartlyCloudy = char.ConvertFromUtf32(0xF0595);  // weather-partly-cloudy
     public static readonly string Rainy        = char.ConvertFromUtf32(0xF0597);  // weather-rainy
@@ -60,8 +61,10 @@ public static class MDIIcons
         if (string.IsNullOrEmpty(glyphKey)) return Sunny;
         switch (glyphKey.Trim().ToLowerInvariant())
         {
-            case "sun": case "sunny": case "clear": case "☀": case "01d": case "01n":
+            case "sun": case "sunny": case "clear": case "☀": case "01d":
                 return Sunny;
+            case "moon": case "night": case "clear-night": case "☾": case "01n":
+                return Night;
             case "cloud": case "cloudy": case "overcast": case "☁": case "03d": case "03n": case "04d": case "04n":
                 return Cloudy;
             case "partly cloudy": case "partlycloudy": case "⛅": case "02d": case "02n":

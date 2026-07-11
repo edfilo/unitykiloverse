@@ -13,6 +13,11 @@ public class SignalBeamBridge : MonoBehaviour
 {
     public static SignalBeamBridge Instance { get; private set; }
     private const string ShowDistanceLabelsPref = "k1lo_showBeamDistanceLabels";
+    private const float BeamMinVisualHeight = 20f;
+    private const float BeamMaxVisualHeight = 150f;
+    private const float BeamTargetPixelsAboveHorizon = 150f;
+    private const float BeamTopSafeMarginPixels = 130f;
+    private const float BeamMinScreenHeightPixels = 90f;
     private static bool hudSuppressed;
     public static bool ShowDistanceLabels => PlayerPrefs.GetInt(ShowDistanceLabelsPref, 1) != 0;
 
@@ -145,7 +150,12 @@ public class SignalBeamBridge : MonoBehaviour
             Vector3 worldPos = director.SignalToWorldPos(sig);
             var orb = go.GetComponent<BeamAvatar>();
             if (orb != null)
+            {
                 orb.SetPosition(worldPos);
+                if (mainCamera == null || !mainCamera.isActiveAndEnabled) mainCamera = Camera.main;
+                if (mainCamera != null)
+                    orb.SetVisualBeamHeight(ComputeScreenClampedBeamHeight(mainCamera, worldPos));
+            }
             else
                 go.transform.position = worldPos;
         }
@@ -295,6 +305,53 @@ public class SignalBeamBridge : MonoBehaviour
         orb.emissionIntensity = Mathf.Max(orb.emissionIntensity, 4f);
     }
 
+    private float ComputeScreenClampedBeamHeight(Camera cam, Vector3 baseWorld)
+    {
+        if (cam == null) return BeamMaxVisualHeight;
+
+        Vector3 baseScreen = cam.WorldToScreenPoint(baseWorld);
+        if (baseScreen.z <= 0f) return BeamMaxVisualHeight;
+
+        float horizonY = EstimateHorizonScreenY(cam, baseWorld.y);
+        float targetTopY = horizonY + BeamTargetPixelsAboveHorizon;
+        targetTopY = Mathf.Clamp(
+            targetTopY,
+            baseScreen.y + BeamMinScreenHeightPixels,
+            Screen.height - BeamTopSafeMarginPixels);
+
+        Vector3 fullTopScreen = cam.WorldToScreenPoint(baseWorld + Vector3.up * BeamMaxVisualHeight);
+        if (fullTopScreen.z <= 0f || fullTopScreen.y <= targetTopY)
+            return BeamMaxVisualHeight;
+
+        float low = BeamMinVisualHeight;
+        float high = BeamMaxVisualHeight;
+        for (int i = 0; i < 8; i++)
+        {
+            float mid = (low + high) * 0.5f;
+            Vector3 midScreen = cam.WorldToScreenPoint(baseWorld + Vector3.up * mid);
+            if (midScreen.z > 0f && midScreen.y > targetTopY)
+                high = mid;
+            else
+                low = mid;
+        }
+        return Mathf.Clamp(low, BeamMinVisualHeight, BeamMaxVisualHeight);
+    }
+
+    private float EstimateHorizonScreenY(Camera cam, float groundY)
+    {
+        Vector3 flatForward = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up);
+        if (flatForward.sqrMagnitude < 0.0001f)
+            return Screen.height * 0.5f;
+
+        Vector3 probe = cam.transform.position + flatForward.normalized * 2000f;
+        probe.y = groundY;
+        Vector3 screen = cam.WorldToScreenPoint(probe);
+        if (screen.z <= 0f || float.IsNaN(screen.y) || float.IsInfinity(screen.y))
+            return Screen.height * 0.5f;
+
+        return Mathf.Clamp(screen.y, Screen.height * 0.2f, Screen.height * 0.8f);
+    }
+
     private void EnsureLabel(string signalId)
     {
         if (labelsBySignalId.ContainsKey(signalId)) return;
@@ -362,9 +419,10 @@ public class SignalBeamBridge : MonoBehaviour
             }
 
             Vector3 baseWorld = director.SignalToWorldPos(sig);
-            // Sit the label high above the beam base so it reads as attached
-            // to the laser column rather than the ground orb.
-            Vector3 worldPos = baseWorld + Vector3.up * 145f;
+            float labelHeight = ComputeScreenClampedBeamHeight(mainCamera, baseWorld);
+            // Attach the label to the current visual top of the shortened
+            // laser column, not the old fixed 145m cap.
+            Vector3 worldPos = baseWorld + Vector3.up * (labelHeight + 3f);
             Vector3 screenPos = mainCamera.WorldToScreenPoint(worldPos);
 
             bool onScreen = screenPos.z > 0 &&
@@ -373,8 +431,6 @@ public class SignalBeamBridge : MonoBehaviour
 
             if (onScreen != lbl.go.activeSelf) lbl.go.SetActive(onScreen);
             if (!onScreen) continue;
-            screenPos.x = Mathf.Clamp(screenPos.x, 16f, Screen.width - 16f);
-            screenPos.y = Mathf.Clamp(screenPos.y, 16f, Screen.height - 58f);
 
             float distM = director.DistanceToSignal(sig);
             float w = lbl.rt != null ? lbl.rt.sizeDelta.x : 92f;
@@ -415,12 +471,19 @@ public class SignalBeamBridge : MonoBehaviour
 
             // Set text + width BEFORE collision testing so the rect we
             // measure is the rect we'll actually draw.
+            // Location beams identify the place. Non-location beams stay
+            // mysterious until collected/tuned; keep their real label in data.
+            string labelText = c.signal != null && c.signal.transmissionType == TransmissionType.Location
+                ? (string.IsNullOrEmpty(c.signal.locationName) ? null : c.signal.locationName)
+                : "?";
+            if (labelText == null)
+            {
+                if (c.label.go.activeSelf) c.label.go.SetActive(false);
+                continue;
+            }
             if (c.label.tmp != null)
             {
-                string txt = !string.IsNullOrEmpty(c.signal?.locationName)
-                    ? c.signal.locationName
-                    : (!string.IsNullOrEmpty(c.signal?.teaser) ? c.signal.teaser : $"{Mathf.RoundToInt(c.distanceMeters)}m");
-                c.label.tmp.text = txt;
+                c.label.tmp.text = labelText;
             }
             if (c.label.tmp != null && c.label.rt != null)
             {

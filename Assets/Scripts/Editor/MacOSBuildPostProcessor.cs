@@ -20,15 +20,34 @@ public class MacOSBuildPostProcessor
         if (File.Exists(plistPath))
         {
             string plistContent = File.ReadAllText(plistPath);
-            if (!plistContent.Contains("NSLocationUsageDescription"))
+            int insertionPoint = plistContent.LastIndexOf("</dict>");
+            if (insertionPoint > 0)
             {
-                int insertionPoint = plistContent.LastIndexOf("</dict>");
-                if (insertionPoint > 0)
+                string inject = "";
+                if (!plistContent.Contains("NSLocationUsageDescription"))
                 {
-                    string newKey = "\n\t<key>NSLocationUsageDescription</key>\n\t<string>Kiloverse needs your location to show nearby transmitters and track steps.</string>\n";
-                    newKey += "\n\t<key>NSAppTransportSecurity</key>\n\t<dict>\n\t\t<key>NSAllowsArbitraryLoads</key>\n\t\t<true/>\n\t</dict>\n";
-                    File.WriteAllText(plistPath, plistContent.Insert(insertionPoint, newKey));
-                    Debug.Log("[MacOSBuildPostProcessor] Injected NSLocationUsageDescription and NSAppTransportSecurity into Info.plist");
+                    inject += "\n\t<key>NSLocationUsageDescription</key>\n\t<string>Kiloverse needs your location to show nearby transmitters and track steps.</string>\n";
+                }
+                if (!plistContent.Contains("NSLocationWhenInUseUsageDescription"))
+                {
+                    inject += "\n\t<key>NSLocationWhenInUseUsageDescription</key>\n\t<string>Kiloverse needs your location to show nearby transmitters and track steps.</string>\n";
+                }
+                if (!plistContent.Contains("NSLocationAlwaysAndWhenInUseUsageDescription"))
+                {
+                    inject += "\n\t<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>\n\t<string>Kiloverse needs your location to show nearby transmitters and track steps.</string>\n";
+                }
+                if (!plistContent.Contains("NSAppTransportSecurity"))
+                {
+                    inject += "\n\t<key>NSAppTransportSecurity</key>\n\t<dict>\n\t\t<key>NSAllowsArbitraryLoads</key>\n\t\t<true/>\n\t</dict>\n";
+                }
+                if (!plistContent.Contains("LSUIElement"))
+                {
+                    inject += "\n\t<key>LSUIElement</key>\n\t<false/>\n";
+                }
+                if (!string.IsNullOrEmpty(inject))
+                {
+                    File.WriteAllText(plistPath, plistContent.Insert(insertionPoint, inject));
+                    Debug.Log("[MacOSBuildPostProcessor] Injected custom keys (NSLocationUsageDescription, NSLocationWhenInUseUsageDescription, NSLocationAlwaysAndWhenInUseUsageDescription, NSAppTransportSecurity, LSUIElement) into Info.plist");
                 }
             }
         }
@@ -37,7 +56,43 @@ public class MacOSBuildPostProcessor
             Debug.LogWarning($"[MacOSBuildPostProcessor] Info.plist not found at {plistPath}");
         }
 
+        BuildAndEmbedOverlay(pathToBuiltProject);
+
         ReSignWithEntitlements(pathToBuiltProject);
+    }
+
+    // Compile the shared Swift overlay (Assets/Plugins/iOS/K1L0WeatherOverlay.swift)
+    // into K1L0Overlay.bundle and drop it into <app>/Contents/PlugIns so the macOS
+    // player resolves DllImport("K1L0Overlay"). Runs before ReSignWithEntitlements so
+    // the --deep codesign re-signs the embedded bundle with the dev identity.
+    static void BuildAndEmbedOverlay(string appPath)
+    {
+        string script = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "native-mac", "build_overlay_bundle.sh"));
+        if (!File.Exists(script))
+        {
+            Debug.LogWarning($"[MacOSBuildPostProcessor] overlay build script not found at {script}; skipping native overlay.");
+            return;
+        }
+
+        string pluginsDir = Path.Combine(appPath, "Contents", "PlugIns");
+        Directory.CreateDirectory(pluginsDir);
+
+        var psi = new ProcessStartInfo("/bin/bash", $"\"{script}\" \"{pluginsDir}\"")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        using (var proc = Process.Start(psi))
+        {
+            string stdout = proc.StandardOutput.ReadToEnd();
+            string stderr = proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            if (proc.ExitCode != 0)
+                Debug.LogError($"[MacOSBuildPostProcessor] overlay bundle build failed ({proc.ExitCode}): {stderr}");
+            else
+                Debug.Log($"[MacOSBuildPostProcessor] overlay bundle embedded at {pluginsDir}/K1L0Overlay.bundle\n{stdout}");
+        }
     }
 
     // Re-sign the .app with Sign in with Apple entitlements. Without this the

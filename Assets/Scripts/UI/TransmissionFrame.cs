@@ -26,6 +26,7 @@ public class TransmissionFrame : MonoBehaviour
     private RawImage videoImage;            // overlays heroImage once video is ready
     private VideoPlayer videoPlayer;
     private RenderTexture videoRT;
+    private TransmissionFXScheduler fxScheduler;
     private Button closeBtn;
     private GameObject acceptBtnGO;
     private Button acceptBtn;
@@ -196,6 +197,12 @@ public class TransmissionFrame : MonoBehaviour
         videoPlayer.waitForFirstFrame = true;
         videoPlayer.prepareCompleted += OnVideoPrepared;
         videoPlayer.errorReceived += (vp, msg) => Debug.LogWarning($"[TransmissionFrame] Video error: {msg}");
+
+        // Client-side post-FX (chroma shift, grain, vignette, crop/zoom cuts, etc.) —
+        // ported from the old server-side ffmpeg composite. Re-rolls a schedule on every Prepare.
+        fxScheduler = videoGO.AddComponent<TransmissionFXScheduler>();
+        fxScheduler.sourceSize = new Vector2(videoRT.width, videoRT.height);
+        fxScheduler.Bind(videoImage, videoPlayer);
 
         // Music — ACE-Step generated mp3 streamed from CDN; loops while the slide is open.
         musicSource = frameRoot.AddComponent<AudioSource>();
@@ -376,6 +383,76 @@ public class TransmissionFrame : MonoBehaviour
         rt.pivot = new Vector2(0.5f, 0.5f);
         rt.anchoredPosition = new Vector2(0f, -140f);
         rt.sizeDelta = new Vector2(340f, 78f);
+    }
+
+    /// <summary>Play parent video once (no loop), then switch to responseUrl on completion.</summary>
+    public void ReplaySequence(string parentUrl, string responseUrl, string audioUrl, string thumbUrl)
+    {
+        // Start with the parent video playing once (no loop).
+        ReplayStoredTransmission(parentUrl, "", thumbUrl, "TRANSMISSION");
+        if (videoPlayer == null) return;
+        videoPlayer.isLooping = false;
+
+        void OnEnd(VideoPlayer vp)
+        {
+            vp.loopPointReached -= OnEnd;
+            vp.isLooping = true;
+            currentVideoUrl = "";  // force URL update in ReplayStoredTransmission
+            ReplayStoredTransmission(responseUrl, audioUrl, thumbUrl, "REPLY");
+        }
+        videoPlayer.loopPointReached += OnEnd;
+    }
+
+    /// <summary>Replay a stored transmission (user-section tap) — opens the frame and plays raw WAN video + separate music track with client FX.</summary>
+    public void ReplayStoredTransmission(string videoUrl, string audioUrl, string thumbUrl, string locationName = "")
+    {
+        if (!initialized || frameRoot == null || canvasGroup == null)
+            Initialize();
+        if (frameRoot == null || canvasGroup == null) return;
+
+        frameRoot.SetActive(true);
+        frameRoot.transform.SetAsLastSibling();
+        if (!contrastActive)
+        {
+            K1L0ModalHudMode.Begin();
+            K1L0ModalContrastMode.Begin(this);
+            contrastActive = true;
+        }
+        canvasGroup.alpha = 1f;
+        canvasGroup.interactable = true;
+        canvasGroup.blocksRaycasts = true;
+
+        // Minimal chrome: hide accept/close affordances differences and just show the playback.
+        sendTransmissionMode = false;
+        dismissOnlyMode = true;
+        acceptRequired = false;
+        if (acceptBtnGO != null) acceptBtnGO.SetActive(true);
+        if (acceptBtnLabel != null) acceptBtnLabel.text = "[DONE]";
+        if (closeBtn != null) closeBtn.gameObject.SetActive(true);
+        if (locationHeader != null) locationHeader.text = string.IsNullOrEmpty(locationName) ? "TRANSMISSION" : locationName.ToUpperInvariant();
+        if (headerText != null) headerText.text = "";
+        if (bodyText != null) bodyText.text = "";
+        if (statusText != null) statusText.text = "";
+
+        if (!string.IsNullOrEmpty(thumbUrl) && thumbUrl != currentImageUrl)
+        {
+            currentImageUrl = thumbUrl;
+            if (imageLoadRoutine != null) StopCoroutine(imageLoadRoutine);
+            imageLoadRoutine = StartCoroutine(LoadImageRoutine(thumbUrl));
+        }
+        if (!string.IsNullOrEmpty(videoUrl) && videoUrl != currentVideoUrl && videoPlayer != null)
+        {
+            currentVideoUrl = videoUrl;
+            videoPlayer.Stop();
+            videoPlayer.url = videoUrl;
+            videoPlayer.Prepare();
+        }
+        if (!string.IsNullOrEmpty(audioUrl) && audioUrl != currentAudioUrl)
+        {
+            currentAudioUrl = audioUrl;
+            if (musicLoadRoutine != null) StopCoroutine(musicLoadRoutine);
+            musicLoadRoutine = StartCoroutine(LoadMusicRoutine(audioUrl));
+        }
     }
 
     /// <summary>Show frame immediately with loading state when proximity is met.</summary>
@@ -795,6 +872,11 @@ public class TransmissionFrame : MonoBehaviour
 
     void OnVideoPrepared(VideoPlayer vp)
     {
+        if (fxScheduler != null)
+        {
+            float len = vp.frameCount > 0 && vp.frameRate > 0.01f ? (float)(vp.frameCount / vp.frameRate) : 7.5f;
+            fxScheduler.RollSchedule(len);
+        }
         vp.Play();
         if (videoImage != null) videoImage.color = Color.white;
     }
@@ -880,6 +962,7 @@ public class TransmissionFrame : MonoBehaviour
             imageLoadRoutine = null;
         }
         if (videoPlayer != null && videoPlayer.isPlaying) videoPlayer.Stop();
+        if (fxScheduler != null) fxScheduler.Stop();
         currentVideoUrl = null;
         if (musicLoadRoutine != null) { StopCoroutine(musicLoadRoutine); musicLoadRoutine = null; }
         if (musicSource != null && musicSource.isPlaying) musicSource.Stop();

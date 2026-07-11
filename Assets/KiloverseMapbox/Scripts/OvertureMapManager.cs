@@ -43,6 +43,34 @@ namespace Kiloverse.Mapbox
         public static int _tilesRendered = 0;
         public static string _lastTileUrl = "";
         public static string _lastTileResult = "";
+        public static string _buildingCenterTile = "";
+        public static string _buildingLoadedTiles = "";
+        public static int _buildingLoadedCount = 0;
+        public static int _buildingRequestingCount = 0;
+        public static string _lastBuildingRender = "";
+
+        public static string RenderDebugJson()
+        {
+            return string.Format(
+                System.Globalization.CultureInfo.InvariantCulture,
+                "\"render\":{{\"tilesFetched\":{0},\"tilesRendered\":{1},\"lastTile\":\"{2}\",\"lastTileResult\":\"{3}\",\"buildingCenter\":\"{4}\",\"buildingLoaded\":{5},\"buildingRequesting\":{6},\"buildingTiles\":\"{7}\",\"lastBuilding\":\"{8}\"}}",
+                _tilesFetched,
+                _tilesRendered,
+                EscapeJson(_lastTileUrl),
+                EscapeJson(_lastTileResult),
+                EscapeJson(_buildingCenterTile),
+                _buildingLoadedCount,
+                _buildingRequestingCount,
+                EscapeJson(_buildingLoadedTiles),
+                EscapeJson(_lastBuildingRender)
+            );
+        }
+
+        private static string EscapeJson(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
 
         private void OnGUI()
         {
@@ -668,6 +696,16 @@ private void DoUpdate()
             Debug.Log($"[OvertureMapManager] Registered {m_Layers.Count} XYZ layers.");
         }
 
+        public void ClearLoadedTilesForLocationJump()
+        {
+            Debug.Log("[OvertureMapManager] Clearing loaded tiles for native location jump.");
+            m_Renderer?.ClearAllTiles();
+            foreach (var layer in m_Layers)
+            {
+                layer.ClearLoadedState();
+            }
+        }
+
         // Calculate which tiles are visible in camera frustum
 private HashSet<TileId> GetVisibleTilesInFrustum(LatitudeLongitude playerLatLon, int zoom)
     {
@@ -832,18 +870,15 @@ private void RequestCurrentTile()
             }
 
             // Update each layer independently
-            // TEMP: Frustum culling disabled - using 3x3 grid for all layers until we fix Web Mercator scaling
-            // TODO: Fix frustum culling to account for Web Mercator coordinate scale
             if (_doUpdateCallCount % 300 == 0)
             {
-                Debug.Log($"[TileLoad] Updating {m_Layers.Count} layers (3x3 grid mode): {string.Join(", ", m_Layers.Select(l => l.Name))}");
+                Debug.Log($"[TileLoad] Updating {m_Layers.Count} layers: {string.Join(", ", m_Layers.Select(l => l.Name))}");
             }
 
             foreach (var layer in m_Layers)
             {
-                // POI: Always 3x3 grid (for distance sorting in locations panel)
-                // Visual layers: Frustum-based (buildings, roads, land/water)
-                // TEMP: Force 3x3 grid for buildings to debug USX Tower loading
+                // POI and buildings: player-centered 3x3 grid.
+                // Roads/land/water: frustum-based.
                 bool useFrustumLoading = !layer.Name.Contains("Places") && !layer.Name.Contains("Buildings");
                 HashSet<TileId> visibleTiles = null;
 
@@ -863,6 +898,11 @@ private void RequestCurrentTile()
                     }
                 }
 
+                if (layer.Name.Contains("Buildings"))
+                {
+                    m_Renderer?.SetPlayerCullCenter(playerLatLon);
+                }
+
                 // Use _map as coroutine host — coroutines on OvertureMapManager stall in editor (MB lifecycle broken)
                 layer.UpdateTilesForPosition(playerLatLon, _map, useFrustumLoading, visibleTiles);
             }
@@ -870,9 +910,10 @@ private void RequestCurrentTile()
 
         private void CreateTileFetchers(string baseURL)
         {
-            // Overture vector tiles are currently served by the production Cloudflare API.
-            // LAN/api-tunnel handles app JSON endpoints, but /xyz/* returns 404 there.
-            baseURL = "https://api.kilomeme.com";
+            if (string.IsNullOrWhiteSpace(baseURL))
+            {
+                baseURL = ResolveTileBaseURLImmediate();
+            }
             m_PlacesFetcher = new XYZTileFetcher($"{baseURL}/xyz/places/{{z}}/{{x}}/{{y}}.mvt");
             m_BuildingsFetcher = new XYZTileFetcher($"{baseURL}/xyz/buildings/{{z}}/{{x}}/{{y}}.mvt");
             m_TransportationFetcher = new XYZTileFetcher($"{baseURL}/xyz/transportation/{{z}}/{{x}}/{{y}}.mvt");
@@ -893,16 +934,16 @@ private void RequestCurrentTile()
             }
 
 #if UNITY_EDITOR || UNITY_STANDALONE_OSX
-            return "https://api.kilomeme.com";
+            return string.IsNullOrWhiteSpace(baseURL) ? "http://localhost:3000" : baseURL;
 #else
-            return "https://api.kilomeme.com";
+            return string.IsNullOrWhiteSpace(baseURL) ? "http://192.168.40.34:3000" : baseURL;
 #endif
         }
 
         private IEnumerator ResolveTileBaseURL(Action<string> onComplete)
         {
             yield return null;
-            onComplete?.Invoke("https://api.kilomeme.com");
+            onComplete?.Invoke(ResolveTileBaseURLImmediate());
         }
     }
 
@@ -994,6 +1035,7 @@ private void RequestCurrentTile()
         private readonly Dictionary<TileId, float> _tileCacheTime = new Dictionary<TileId, float>();
         private float TileCacheTimeout => MaxZoom <= 12 ? 600f : MaxZoom <= 14 ? 300f : 120f;
         private int MaxLoadedTiles => MaxZoom <= 12 ? 12 : MaxZoom <= 14 ? 16 : 20;
+        private bool IsBuildingsLayer => Name.Contains("Buildings");
 
         // Track tile request times for API performance logging
         public static readonly Dictionary<string, float> _tileRequestTimes = new Dictionary<string, float>();
@@ -1023,6 +1065,22 @@ private void RequestCurrentTile()
             return MaxZoom;
         }
 
+        public void ClearLoadedState()
+        {
+            _loadedTiles.Clear();
+            _requestingTiles.Clear();
+            _renderingTiles.Clear();
+            _tileCacheTime.Clear();
+            _lastCenterTile = null;
+            if (IsBuildingsLayer)
+            {
+                OvertureMapManager._buildingLoadedCount = 0;
+                OvertureMapManager._buildingRequestingCount = 0;
+                OvertureMapManager._buildingLoadedTiles = "";
+                OvertureMapManager._lastBuildingRender = "cleared";
+            }
+        }
+
         public void UpdateTilesForPosition(LatitudeLongitude latLon, MonoBehaviour coroutineHost, bool useFrustum = false, HashSet<TileId> visibleTiles = null)
         {
             // Calculate current center tile at this layer's zoom
@@ -1049,6 +1107,14 @@ private void RequestCurrentTile()
                         newTiles.Add(new TileId(currentCenter.Z, tileX, tileY));
                     }
                 }
+            }
+
+            if (IsBuildingsLayer)
+            {
+                OvertureMapManager._buildingCenterTile = $"{currentCenter.Z}/{currentCenter.X}/{currentCenter.Y}";
+                OvertureMapManager._buildingLoadedCount = _loadedTiles.Count;
+                OvertureMapManager._buildingRequestingCount = _requestingTiles.Count;
+                OvertureMapManager._buildingLoadedTiles = string.Join(",", _loadedTiles.Select(t => $"{t.Z}/{t.X}/{t.Y}").OrderBy(s => s));
             }
 
             // Update cache times for visible tiles (reset timeout)
@@ -1133,8 +1199,8 @@ private void RequestCurrentTile()
             }
 
             // Load new tiles (editor: throttle to prevent lockup when many responses arrive at once)
-            int maxNewPerPoll = Application.isEditor ? 2 : 20;
-            int maxInFlight = Application.isEditor ? 4 : 25;
+            int maxNewPerPoll = Application.isEditor ? 2 : (IsBuildingsLayer ? 3 : 20);
+            int maxInFlight = Application.isEditor ? 4 : (IsBuildingsLayer ? 6 : 25);
             int added = 0;
             foreach (var tile in tilesToAdd)
             {
@@ -1200,6 +1266,7 @@ public IEnumerator RequestTile(TileId tile, int tileIndex)
         private static bool _waterTileStructureLogged;
         private bool _initialized;
         private Vector2d _lastMapCenterMercator;
+        private Vector2d? _playerCullCenterMercator;
         private readonly MapboxMapInfoAdapter _mapboxMapInfo;
 
         // Layer root Y offsets — applied every frame to prevent z-fighting
@@ -1224,17 +1291,19 @@ public IEnumerator RequestTile(TileId tile, int tileIndex)
         };
 
         // === MEMORY BUDGETS per source layer per tile ===
-        // Currently UNCAPPED to measure real-world memory usage on downtown tiles.
         // Each vertex ≈ 80 bytes (pos 12 + normal 12 + tangent 16 + uv0 8 + uv1 8 + indices ~24)
-        // The [MEMORY] logs report per-tile and global totals so you can decide where to cap later.
-        private const int VERTEX_BUDGET_BUILDING = int.MaxValue;  // UNCAPPED — monitoring only
+        // Buildings get real caps because dense waterfront/downtown tiles can contain thousands of
+        // window/door quads before renderer culling ever gets a chance to disable them.
+        private const int VERTEX_BUDGET_BUILDING = 250000;
         private const int VERTEX_BUDGET_ROAD     = int.MaxValue;
         private const int VERTEX_BUDGET_WATER    = int.MaxValue;
         private const int VERTEX_BUDGET_DEFAULT  = int.MaxValue;
-        private const int FEATURE_CAP_BUILDING   = int.MaxValue;  // UNCAPPED — load all skyscrapers
+        private const int FEATURE_CAP_BUILDING   = 1200;
         private const int FEATURE_CAP_ROAD       = int.MaxValue;
         private const int FEATURE_CAP_DEFAULT    = int.MaxValue;
         private const int FEATURES_PER_YIELD     = 50;       // Yield to main thread every N features (editor uses 10)
+        private const float BUILDING_DETAIL_RADIUS_METERS = 750f;
+        private const float BUILDING_SIMPLE_RADIUS_METERS = 6000f;
 
         public OvertureVectorRenderer(KiloverseMapInfo map, Dictionary<string, MapboxIVLV> visualizers, bool logLayers)
         {
@@ -1314,6 +1383,11 @@ public IEnumerator RequestTile(TileId tile, int tileIndex)
             // The actual visualizer initialization will complete asynchronously
             _initialized = _visualizers.Count > 0;
             Debug.Log($"[OvertureVectorRenderer] Initializing {_visualizers.Count} visualizers asynchronously (no blocking) - KILOVERSE SDK");
+        }
+
+        public void SetPlayerCullCenter(LatitudeLongitude playerLatLon)
+        {
+            _playerCullCenterMercator = Conversions.LatitudeLongitudeToWebMercator(playerLatLon);
         }
 
         private IEnumerator InitializeVisualizerCoroutine(MapboxVLV visualizer, string key)
@@ -1445,8 +1519,10 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                         int processedFeatures = 0;
                         bool budgetExceeded = false;
 
-                        int effectiveFeatureCount = Mathf.Min(featureCount, featureCap);
-                        if (featureCount > featureCap)
+                        int effectiveFeatureCount = sourceLayer == "building"
+                            ? featureCount
+                            : Mathf.Min(featureCount, featureCap);
+                        if (sourceLayer != "building" && featureCount > featureCap)
                         {
                             Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tileKey} '{sourceLayer}': Feature cap hit — {featureCount} features, capped to {featureCap}");
                         }
@@ -1495,6 +1571,16 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                                 points.Add(part);
                             }
                             featureUnity.Points = points;
+
+                            bool useSimpleBuildingLod = false;
+                            if (sourceLayer == "building")
+                            {
+                                float featureDistance = EstimateFeatureDistanceFromMapCenterMeters(tile, featureUnity);
+                                if (featureDistance > BUILDING_SIMPLE_RADIUS_METERS)
+                                    continue;
+
+                                useSimpleBuildingLod = featureDistance > BUILDING_DETAIL_RADIUS_METERS;
+                            }
 
                             // WATER FILTERS: Skip problematic water (El Paso fix - giant polygons, ocean, intermittent, canals)
                             if (sourceLayer == "water")
@@ -1640,7 +1726,19 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                             {
                                 if (i == 0 && sourceLayer == "building")
                                     Debug.Log($"[DIAG] Pre-RunMeshModifiers: feature pts={featureUnity.Points?.Count}/{featureUnity.Points?[0]?.Count}, stack={stack?.GetType().Name}, mapInfo={_mapboxMapInfo != null}");
-                                md = stack.RunMeshModifiers(featureUnity, md, _mapboxMapInfo);
+                                bool previousSimpleLod = ZossBuildingStack.SimpleLOD;
+                                if (sourceLayer == "building")
+                                    ZossBuildingStack.SimpleLOD = useSimpleBuildingLod;
+
+                                try
+                                {
+                                    md = stack.RunMeshModifiers(featureUnity, md, _mapboxMapInfo);
+                                }
+                                finally
+                                {
+                                    if (sourceLayer == "building")
+                                        ZossBuildingStack.SimpleLOD = previousSimpleLod;
+                                }
                                 if (i == 0 && sourceLayer == "building")
                                     Debug.Log($"[DIAG] Post-RunMeshModifiers: verts={md.Vertices?.Count ?? -1}, tris={md.Triangles?.Count ?? -1}");
                             }
@@ -1765,6 +1863,8 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                         }
                     }
 
+                    if (layerName.Contains("Buildings"))
+                        OvertureMapManager._lastBuildingRender = $"{tile.Z}/{tile.X}/{tile.Y} {layerData.FeatureCount()}->{layerObjects.Count}";
                     Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: api.kilomeme.com ({apiTimeMs:F0}ms) → {layerData.FeatureCount()} {objectType} → {layerObjects.Count} {objectType}");
 
                     // DIAGNOSTIC: Check if GoModifiers (MaterialModifier) actually applied materials
@@ -1841,6 +1941,8 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                 {
                     // No mesh geometry (e.g., POI labels which are created by POILabelModifier)
                     string objectType = sourceLayer == "place" ? "POIs" : "objects";
+                    if (layerName.Contains("Buildings"))
+                        OvertureMapManager._lastBuildingRender = $"{tile.Z}/{tile.X}/{tile.Y} {layerData.FeatureCount()}->0 no_mesh";
                     Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: api.kilomeme.com ({apiTimeMs:F0}ms) → {layerData.FeatureCount()} {objectType} (no mesh, modifiers only)");
                 }
 
@@ -1865,6 +1967,53 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
             PositionTileObjectsInMercator(tile, createdObjects, tileIndexStr);
 
             Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Rendering complete (spread across multiple frames to avoid lag)");
+        }
+
+        private float EstimateFeatureDistanceFromMapCenterMeters(TileId tile, MapboxFeature feature)
+        {
+            if (_map == null || _map.MapInformation == null || feature?.Points == null || feature.Points.Count == 0)
+                return 0f;
+
+            int pointCount = 0;
+            double sumX = 0;
+            double sumZ = 0;
+            foreach (var ring in feature.Points)
+            {
+                if (ring == null) continue;
+                foreach (var point in ring)
+                {
+                    sumX += point.x;
+                    sumZ += point.z;
+                    pointCount++;
+                }
+            }
+
+            if (pointCount == 0)
+                return 0f;
+
+            var tileBoundsM = Conversions.TileBoundsInWebMercator(new TileId(tile.Z, tile.X, tile.Y));
+            double tileSize = Conversions.TileEdgeSizeInMercator(tile.Z);
+            double normalizedX = sumX / pointCount;
+            double normalizedZ = sumZ / pointCount;
+
+            double featureMercatorX = tileBoundsM.minX + normalizedX * tileSize;
+            double featureMercatorY = tileBoundsM.maxY + normalizedZ * tileSize;
+
+            Vector2d cullCenterMercator;
+            if (_playerCullCenterMercator.HasValue)
+            {
+                cullCenterMercator = _playerCullCenterMercator.Value;
+            }
+            else
+            {
+                var mapboxLatLng = _map.MapInformation.LatitudeLongitude;
+                var mapCenterGPS = new LatitudeLongitude(mapboxLatLng.Latitude, mapboxLatLng.Longitude);
+                cullCenterMercator = Conversions.LatitudeLongitudeToWebMercator(mapCenterGPS);
+            }
+
+            double dx = featureMercatorX - cullCenterMercator.x;
+            double dy = featureMercatorY - cullCenterMercator.y;
+            return (float)System.Math.Sqrt(dx * dx + dy * dy);
         }
 
         public void UpdateForView(TileId tile)

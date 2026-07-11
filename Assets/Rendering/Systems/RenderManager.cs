@@ -41,6 +41,30 @@ namespace KiloWorld.Rendering.Systems
         private FilmGrain _filmGrain;
         private LensDistortion _lensDistortion;
 
+        // Day vs Night Fog and Ground settings
+        [HideInInspector] public float dayFogDensity = 0.37f;
+        [HideInInspector] public float dayFogNoiseStrength = 1.67f;
+        [HideInInspector] public float dayFogNoiseScale = 17.4f;
+        [HideInInspector] public float dayFogBrightness = 0.34f;
+        [HideInInspector] public float dayFogScatteringIntensity = 1.15f;
+        [HideInInspector] public float dayFogHeight = 77.0f;
+        [HideInInspector] public float dayFogDistantDensity = 0.0f;
+        [HideInInspector] public float dayFogDistantStart = 0.0f;
+
+        [HideInInspector] public float nightFogDensity = 0.37f;
+        [HideInInspector] public float nightFogNoiseStrength = 1.67f;
+        [HideInInspector] public float nightFogNoiseScale = 17.4f;
+        [HideInInspector] public float nightFogBrightness = 0.34f;
+        [HideInInspector] public float nightFogScatteringIntensity = 1.15f;
+        [HideInInspector] public float nightFogHeight = 77.0f;
+        [HideInInspector] public float nightFogDistantDensity = 0.0f;
+        [HideInInspector] public float nightFogDistantStart = 0.0f;
+
+        [HideInInspector] public float dayGroundHue = 0.3f;
+        [HideInInspector] public float dayGroundSaturation = 0f;
+        [HideInInspector] public float nightGroundHue = 0.3f;
+        [HideInInspector] public float nightGroundSaturation = 0f;
+
         public static RenderManager Instance;
 
         private void OnEnable()
@@ -106,18 +130,140 @@ namespace KiloWorld.Rendering.Systems
             LoadPref("godRotationX", ref cam.godRotationX);
             LoadPref("farClipPlane", ref cam.farClipPlane);
 
-            var sky = profile.sky;
-            LoadPrefBool("auroraEnabled", ref sky.auroraEnabled);
-            LoadPref("auroraIntensity", ref sky.auroraIntensity);
-            LoadPref("auroraHeight", ref sky.auroraHeight);
-            LoadPref("auroraDistance", ref sky.auroraDistance);
-            LoadPref("auroraWidth", ref sky.auroraWidth);
-            LoadPref("auroraVerticalSize", ref sky.auroraVerticalSize);
-            LoadPref("auroraDriftSpeed", ref sky.auroraDriftSpeed);
+            var lighting = profile.lighting;
+            LoadPrefBool("moonlightEnabled", ref lighting.moonlightEnabled);
+            LoadPrefBool("ambientEnabled", ref lighting.ambientEnabled);
+            LoadPref("moonlightIntensity", ref lighting.moonlightIntensity);
+            LoadPref("moonlightRed", ref lighting.moonlightColor.r);
+            LoadPref("moonlightGreen", ref lighting.moonlightColor.g);
+            LoadPref("moonlightBlue", ref lighting.moonlightColor.b);
+            LoadPref("moonlightPitch", ref lighting.moonlightRotation.x);
+            LoadPref("moonlightYaw", ref lighting.moonlightRotation.y);
+            LoadPref("moonlightRoll", ref lighting.moonlightRotation.z);
+            LoadPref("ambientIntensity", ref lighting.ambientIntensity);
+            LoadPrefBool("enableShadows", ref lighting.enableShadows);
+            LoadPref("shadowStrength", ref lighting.shadowStrength);
+            LoadPref("shadowDistance", ref lighting.shadowDistance);
+            LoadPrefBool("spotlightEnabled", ref lighting.spotlightEnabled);
+            LoadPref("spotlightIntensity", ref lighting.spotlightIntensity);
+            LoadPrefBool("reflectionsEnabled", ref lighting.reflectionsEnabled);
+            LoadPref("reflectionIntensity", ref lighting.reflectionIntensity);
+
+            var fog = profile.volumetricFog;
+            ClearBadFogDefaultsOnce();
+            LoadPrefBool("fogConstantDensity", ref fog.constantDensity);
+            
+            // Load day fog settings into profile.volumetricFog AND our dayFog fields
+            LoadPref("fogDensity", ref fog.density); dayFogDensity = fog.density;
+            LoadPref("fogNoiseStrength", ref fog.noiseStrength); dayFogNoiseStrength = fog.noiseStrength;
+            LoadPref("fogNoiseScale", ref fog.noiseScale); dayFogNoiseScale = fog.noiseScale;
+            LoadPref("fogBrightness", ref fog.brightness); dayFogBrightness = fog.brightness;
+            LoadPref("fogScatteringIntensity", ref fog.scatteringIntensity); dayFogScatteringIntensity = fog.scatteringIntensity;
+            LoadPrefBool("fogCustomHeight", ref fog.customHeight);
+            LoadPref("fogHeight", ref fog.height); dayFogHeight = fog.height;
+            LoadPrefBool("fogDistantFog", ref fog.distantFog);
+            LoadPref("fogDistantDensity", ref fog.distantFogDistanceDensity); dayFogDistantDensity = fog.distantFogDistanceDensity;
+            LoadPref("fogDistantStart", ref fog.distantFogStartDistance); dayFogDistantStart = fog.distantFogStartDistance;
+            LoadPrefBool("fogNativeLights", ref fog.enableNativeLights);
+            LoadPref("fogNativeLightsMultiplier", ref fog.nativeLightsMultiplier);
+
+            // Load night fog settings
+            nightFogDensity = PlayerPrefs.GetFloat("k1lo_fogDensity_night", dayFogDensity);
+            nightFogNoiseStrength = PlayerPrefs.GetFloat("k1lo_fogNoiseStrength_night", dayFogNoiseStrength);
+            nightFogNoiseScale = PlayerPrefs.GetFloat("k1lo_fogNoiseScale_night", dayFogNoiseScale);
+            nightFogBrightness = PlayerPrefs.GetFloat("k1lo_fogBrightness_night", dayFogBrightness);
+            nightFogScatteringIntensity = PlayerPrefs.GetFloat("k1lo_fogScatteringIntensity_night", dayFogScatteringIntensity);
+            nightFogHeight = PlayerPrefs.GetFloat("k1lo_fogHeight_night", dayFogHeight);
+            nightFogDistantDensity = PlayerPrefs.GetFloat("k1lo_fogDistantDensity_night", dayFogDistantDensity);
+            nightFogDistantStart = PlayerPrefs.GetFloat("k1lo_fogDistantStart_night", dayFogDistantStart);
+
+            var buildings = profile.buildings;
+            LoadPref("zossWallSmoothness", ref buildings.zossWallSmoothness);
+            LoadPref("zossWallMetallic", ref buildings.zossWallMetallic);
+            LoadPref("zossEmissiveIntensity", ref buildings.zossEmissiveIntensity);
+            LoadPref("zossEmissiveSmoothness", ref buildings.zossEmissiveSmoothness);
+            LoadPref("zossEmissiveMetallic", ref buildings.zossEmissiveMetallic);
+
+            // Persisted window-glow + ground hue/sat (Swift settings sliders).
+            if (PlayerPrefs.HasKey("k1lo_zossEmissiveHue") || PlayerPrefs.HasKey("k1lo_zossEmissiveSaturation"))
+            {
+                Color.RGBToHSV(buildings.zossEmissiveColor, out float wh, out float ws, out float wv);
+                if (PlayerPrefs.HasKey("k1lo_zossEmissiveHue")) wh = PlayerPrefs.GetFloat("k1lo_zossEmissiveHue");
+                if (PlayerPrefs.HasKey("k1lo_zossEmissiveSaturation")) ws = PlayerPrefs.GetFloat("k1lo_zossEmissiveSaturation");
+                var wc = Color.HSVToRGB(Mathf.Clamp01(wh), Mathf.Clamp01(ws), Mathf.Max(0.01f, wv));
+                buildings.zossEmissiveColor = wc;
+                buildings.zossEmissiveEmission = wc;
+            }
+            
+            Color.RGBToHSV(profile.ground.groundColor, out float initialGh, out float initialGs, out float initialGv);
+            dayGroundHue = PlayerPrefs.GetFloat("k1lo_groundHue", initialGh);
+            dayGroundSaturation = PlayerPrefs.GetFloat("k1lo_groundSaturation", initialGs);
+            nightGroundHue = PlayerPrefs.GetFloat("k1lo_groundHue_night", dayGroundHue);
+            nightGroundSaturation = PlayerPrefs.GetFloat("k1lo_groundSaturation_night", dayGroundSaturation);
+
+            if (PlayerPrefs.HasKey("k1lo_groundHue") || PlayerPrefs.HasKey("k1lo_groundSaturation"))
+            {
+                if (initialGv < 0.05f) initialGv = 0.5f;
+                profile.ground.groundColor = Color.HSVToRGB(Mathf.Clamp01(dayGroundHue), Mathf.Clamp01(dayGroundSaturation), initialGv);
+            }
 
             LoadPref("manualHour", ref ManualHour);
+            ClearOvercastManualWeatherOnce();
+            TestSkyOverrideEnabled = PlayerPrefs.GetInt("k1lo_testSkyOverride", 0) == 1;
+            ManualWeatherOverrideEnabled = PlayerPrefs.GetInt("k1lo_manualWeatherOverrideEnabled", 0) == 1;
             if (PlayerPrefs.HasKey("k1lo_manualWeatherGlyph"))
                 ManualWeatherGlyph = PlayerPrefs.GetString("k1lo_manualWeatherGlyph");
+        }
+
+        // The dystopian grade briefly defaulted manual weather to Overcast,
+        // which hijacked the sky video whenever live weather was unavailable.
+        // One-shot: drop a stored Overcast override so the fallback is Clear
+        // again; deliberate non-overcast picks are left alone.
+        private static void ClearOvercastManualWeatherOnce()
+        {
+            const string migrationKey = "k1lo_clearOvercastManualWeather_v1";
+            if (PlayerPrefs.GetInt(migrationKey, 0) == 1) return;
+
+            if (PlayerPrefs.GetString("k1lo_manualWeatherGlyph", "") == "overcast")
+            {
+                PlayerPrefs.DeleteKey("k1lo_manualWeather");
+                PlayerPrefs.DeleteKey("k1lo_manualWeatherGlyph");
+                PlayerPrefs.DeleteKey("k1lo_manualWeatherOverrideEnabled");
+            }
+
+            PlayerPrefs.SetInt(migrationKey, 1);
+            PlayerPrefs.Save();
+        }
+
+        private void ClearBadFogDefaultsOnce()
+        {
+            const string migrationKey = "k1lo_clearBadFogDefaults_v1";
+            if (PlayerPrefs.GetInt(migrationKey, 0) == 1) return;
+
+            string[] fogKeys =
+            {
+                "k1lo_fogConstantDensity",
+                "k1lo_fogDensity",
+                "k1lo_fogNoiseStrength",
+                "k1lo_fogNoiseScale",
+                "k1lo_fogBrightness",
+                "k1lo_fogScatteringIntensity",
+                "k1lo_fogCustomHeight",
+                "k1lo_fogHeight",
+                "k1lo_fogDistantFog",
+                "k1lo_fogDistantDensity",
+                "k1lo_fogDistantStart",
+                "k1lo_fogNativeLights",
+                "k1lo_fogNativeLightsMultiplier"
+            };
+
+            foreach (var key in fogKeys)
+            {
+                PlayerPrefs.DeleteKey(key);
+            }
+
+            PlayerPrefs.SetInt(migrationKey, 1);
+            PlayerPrefs.Save();
         }
 
         private static void LoadPref(string key, ref float field)
@@ -454,58 +600,61 @@ namespace KiloWorld.Rendering.Systems
 
         private void ApplyLighting()
         {
-            // Use cached or find light (cached is safer for runtime)
-            if (directionalLight == null)
-            {
-                // TEMP: Disable expensive FindObjectsOfType in editor (causes freeze)
-#if !UNITY_EDITOR
-                var lights = FindObjectsOfType<Light>();
-                foreach (var l in lights)
-                {
-                    // Look for the main sun/moon, ignore player spotlights
-                    if (l.type == LightType.Directional && !l.name.Contains("Spotlight"))
-                    {
-                        directionalLight = l;
-                        break;
-                    }
-                }
-#endif
-            }
+            EnsureDirectionalSun();
+
+            bool dynamicSkySun = profile.sky != null && profile.sky.dynamicSky;
+            bool directionalEnabled = profile.lighting.moonlightEnabled || dynamicSkySun;
 
             if (directionalLight != null)
             {
-                // Ensure Volumetric Fog uses this light as the Sun
-                if (VolumetricFogManager.instance != null && VolumetricFogManager.instance.sun != directionalLight)
+                if (!directionalEnabled)
                 {
-                    VolumetricFogManager.instance.sun = directionalLight;
-                }
-
-                if (profile.sky != null && profile.sky.dynamicSky)
-                {
-                    // Drive the sun/moon from the real solar position + weather.
-                    DriveSunLight(directionalLight);
+                    if (directionalLight.enabled)
+                        directionalLight.enabled = false;
+                    if (directionalLight.intensity != 0f)
+                        directionalLight.intensity = 0f;
+                    if (VolumetricFogManager.instance != null && VolumetricFogManager.instance.sun == directionalLight)
+                        VolumetricFogManager.instance.sun = null;
                 }
                 else
                 {
-                    if (directionalLight.color != profile.lighting.moonlightColor)
-                        directionalLight.color = profile.lighting.moonlightColor;
+                    if (!directionalLight.enabled)
+                        directionalLight.enabled = true;
 
-                    if (directionalLight.intensity != profile.lighting.moonlightIntensity)
-                        directionalLight.intensity = profile.lighting.moonlightIntensity;
+                    // Ensure Volumetric Fog uses this light as the Sun only when enabled.
+                    if (VolumetricFogManager.instance != null && VolumetricFogManager.instance.sun != directionalLight)
+                    {
+                        VolumetricFogManager.instance.sun = directionalLight;
+                    }
 
-                    // Always apply full rotation from profile
-                    // We use localRotation or rotation? Usually global rotation for sun.
-                    Quaternion targetRot = Quaternion.Euler(profile.lighting.moonlightRotation);
-                    if (directionalLight.transform.rotation != targetRot)
-                        directionalLight.transform.rotation = targetRot;
+                    bool manualMoonlight = PlayerPrefs.GetFloat("k1lo_moonlightManualOverride", 0f) > 0.5f;
+                    if (dynamicSkySun && !manualMoonlight)
+                    {
+                        // Drive the sun/moon from the real solar position + weather.
+                        DriveSunLight(directionalLight);
+                    }
+                    else
+                    {
+                        if (directionalLight.color != profile.lighting.moonlightColor)
+                            directionalLight.color = profile.lighting.moonlightColor;
+
+                        if (directionalLight.intensity != profile.lighting.moonlightIntensity)
+                            directionalLight.intensity = profile.lighting.moonlightIntensity;
+
+                        // Always apply full rotation from profile
+                        // We use localRotation or rotation? Usually global rotation for sun.
+                        Quaternion targetRot = Quaternion.Euler(profile.lighting.moonlightRotation);
+                        if (directionalLight.transform.rotation != targetRot)
+                            directionalLight.transform.rotation = targetRot;
+                    }
+
+                    var shadowType = profile.lighting.enableShadows ? LightShadows.Soft : LightShadows.None;
+                    if (directionalLight.shadows != shadowType)
+                        directionalLight.shadows = shadowType;
+
+                    if (directionalLight.shadowStrength != profile.lighting.shadowStrength)
+                        directionalLight.shadowStrength = profile.lighting.shadowStrength;
                 }
-
-                var shadowType = profile.lighting.enableShadows ? LightShadows.Soft : LightShadows.None;
-                if (directionalLight.shadows != shadowType)
-                    directionalLight.shadows = shadowType;
-                
-                if (directionalLight.shadowStrength != profile.lighting.shadowStrength)
-                    directionalLight.shadowStrength = profile.lighting.shadowStrength;
             }
 
             // Sync Global URP Shadow Settings
@@ -519,19 +668,20 @@ namespace KiloWorld.Rendering.Systems
                     urpAsset.shadowCascadeCount = profile.lighting.shadowCascades;
             }
 
-            RenderSettings.sun = directionalLight;
+            RenderSettings.sun = directionalEnabled ? directionalLight : null;
 
             // Apply Ambient Mode and Colors
             if (RenderSettings.ambientMode != profile.lighting.ambientMode)
                 RenderSettings.ambientMode = profile.lighting.ambientMode;
-                
-            if (RenderSettings.ambientIntensity != profile.lighting.ambientIntensity)
-                RenderSettings.ambientIntensity = profile.lighting.ambientIntensity;
+
+            float effectiveAmbientIntensity = profile.lighting.ambientEnabled ? profile.lighting.ambientIntensity : 0f;
+            if (RenderSettings.ambientIntensity != effectiveAmbientIntensity)
+                RenderSettings.ambientIntensity = effectiveAmbientIntensity;
 
             // Apply Colors based on mode
             // Note: RenderSettings.ambientIntensity usually only affects Skybox mode.
             // For Flat and Trilight, we manually multiply the colors by the intensity for consistency.
-            float intensity = profile.lighting.ambientIntensity;
+            float intensity = effectiveAmbientIntensity;
 
             if (profile.lighting.ambientMode == AmbientMode.Flat)
             {
@@ -545,14 +695,21 @@ namespace KiloWorld.Rendering.Systems
             }
 
             // Apply Reflection Settings
-            RenderSettings.defaultReflectionMode = profile.lighting.reflectionMode;
+            // Reflections are turned off in the day time (_sunAlt >= -4f)
+            bool isDayTime = _sunAlt >= -4f;
+            bool reflectionsActuallyEnabled = profile.lighting.reflectionsEnabled && !isDayTime;
+
+            RenderSettings.defaultReflectionMode = reflectionsActuallyEnabled
+                ? profile.lighting.reflectionMode
+                : DefaultReflectionMode.Skybox;
             if (profile.lighting.reflectionMode == DefaultReflectionMode.Custom)
             {
                 RenderSettings.customReflection = profile.lighting.customReflectionCubemap;
             }
 
-            if (RenderSettings.reflectionIntensity != profile.lighting.reflectionIntensity)
-                RenderSettings.reflectionIntensity = profile.lighting.reflectionIntensity;
+            float effectiveReflectionIntensity = reflectionsActuallyEnabled ? profile.lighting.reflectionIntensity : 0f;
+            if (RenderSettings.reflectionIntensity != effectiveReflectionIntensity)
+                RenderSettings.reflectionIntensity = effectiveReflectionIntensity;
                 
             if (RenderSettings.reflectionBounces != profile.lighting.reflectionBounces)
                 RenderSettings.reflectionBounces = profile.lighting.reflectionBounces;
@@ -561,32 +718,74 @@ namespace KiloWorld.Rendering.Systems
             RenderSettings.subtractiveShadowColor = profile.lighting.subtractiveShadowColor;
         }
 
+        private void EnsureDirectionalSun()
+        {
+            if (directionalLight != null)
+            {
+                directionalLight.type = LightType.Directional;
+                directionalLight.renderMode = LightRenderMode.ForcePixel;
+                return;
+            }
+
+            var lights = FindObjectsOfType<Light>();
+            foreach (var l in lights)
+            {
+                // Look for the main sun/moon, ignore player spotlights even if the
+                // runtime spotlight manager has converted its light to Directional.
+                if (l.type == LightType.Directional &&
+                    !l.name.Contains("Spotlight") &&
+                    l.GetComponent<global::KiloWorld.SpotlightManager>() == null)
+                {
+                    directionalLight = l;
+                    directionalLight.renderMode = LightRenderMode.ForcePixel;
+                    return;
+                }
+            }
+
+            if (!Application.isPlaying)
+                return;
+
+            var sunObject = GameObject.Find("K1L0_Sun") ?? new GameObject("K1L0_Sun");
+            sunObject.hideFlags = HideFlags.DontSave;
+            directionalLight = sunObject.GetComponent<Light>() ?? sunObject.AddComponent<Light>();
+            directionalLight.type = LightType.Directional;
+            directionalLight.renderMode = LightRenderMode.ForcePixel;
+            directionalLight.cullingMask = ~0;
+            directionalLight.enabled = true;
+            Debug.Log("[RenderManager] Created runtime K1L0_Sun directional light.");
+        }
+
         // Cache for Skybox updates
         private Cubemap _lastSkybox;
         private float _lastSkyboxRotation = -1f;
         private float _lastSkyboxExposure = -1f;
         private Color _lastSkyboxTint = Color.clear;
-        private GameObject _auroraRoot;
-        private MeshFilter _auroraFilter;
-        private Material _auroraMaterial;
-        private Texture2D _auroraTexture;
-        private float _auroraSpan = -1f, _auroraElLow = -1f, _auroraElHigh = -1f;
-
-        // Live state the aurora sky reflects. Set by the HUD surveillance toggle and the
-        // presence/weather feed. SurveillanceActive: world (map) camera on → vivid green
-        // aurora; off → dim red "offline" sky. WeatherTempF biases the hue warm/cool.
-        public static bool SurveillanceActive = true;
-        public static float WeatherTempF = float.NaN;
         public static string WeatherGlyph = null;   // condition word/emoji from the presence feed
+        public static bool? WeatherIsDay = null;    // daylight state from backend weather/sunrise-sunset
 
         // Manual sky overrides, used only when GPS mode is off (no live time/location).
         public static float ManualHour = 13f;            // 0..24 local hour
         public static string ManualWeatherGlyph = "clear";
+        public static bool ManualWeatherOverrideEnabled = false;
         public static int ManualSkyRevision { get; private set; }
 
         public static void NotifyManualSkyChanged()
         {
             ManualSkyRevision++;
+        }
+
+        // Test override: when on, the manual weather picker + sky-hour slider
+        // beat the live server weather and real clock even with GPS enabled.
+        // Toggled from the Swift settings panel for QA'ing every sky state.
+        public static bool TestSkyOverrideEnabled = false;
+
+        public static string EffectiveWeatherGlyph()
+        {
+            if (TestSkyOverrideEnabled)
+                return ManualWeatherGlyph;
+            if (GPSLocationController.GPSDisabled && ManualWeatherOverrideEnabled)
+                return ManualWeatherGlyph;
+            return !string.IsNullOrWhiteSpace(WeatherGlyph) ? WeatherGlyph : ManualWeatherGlyph;
         }
 
         // Dynamic sky state.
@@ -603,22 +802,20 @@ namespace KiloWorld.Rendering.Systems
             // Apply camera clipping planes from profile
             mainCam.farClipPlane = profile.camera.farClipPlane;
             mainCam.nearClipPlane = profile.camera.nearClipPlane;
-            
-            if (mainCam.clearFlags != CameraClearFlags.Skybox)
-                mainCam.clearFlags = CameraClearFlags.Skybox;
 
             if (global::DynamicSkyVideoController.IsActive)
             {
                 global::DynamicSkyVideoController.ForceApply();
-                ApplyAurora(mainCam);
                 ApplyPrecip(mainCam);
                 return;
             }
+            
+            if (mainCam.clearFlags != CameraClearFlags.Skybox)
+                mainCam.clearFlags = CameraClearFlags.Skybox;
 
             if (profile.sky != null && profile.sky.dynamicSky)
             {
                 ApplyProceduralSky();
-                ApplyAurora(mainCam);
                 ApplyPrecip(mainCam);
                 return;
             }
@@ -663,194 +860,7 @@ namespace KiloWorld.Rendering.Systems
                 RenderSettings.skybox = null;
             }
 
-            ApplyAurora(mainCam);
             ApplyPrecip(mainCam);
-        }
-
-        private void ApplyAurora(Camera mainCam)
-        {
-            if (profile == null || profile.sky == null || !profile.sky.auroraEnabled || profile.sky.auroraIntensity <= 0.001f)
-            {
-                if (_auroraRoot != null) _auroraRoot.SetActive(false);
-                return;
-            }
-
-            EnsureAurora();
-            if (_auroraRoot == null || _auroraMaterial == null) return;
-
-            var sky = profile.sky;
-            _auroraRoot.SetActive(true);
-
-            // HEIGHT → how high the band sits, WIDTH → horizontal sweep, VERTICAL SIZE →
-            // band thickness. Rebuild the arc mesh only when one of these changes.
-            float span = Mathf.Lerp(50f, 220f, Mathf.InverseLerp(80f, 900f, sky.auroraWidth));
-            float elLow = Mathf.Lerp(2f, 45f, Mathf.InverseLerp(20f, 300f, sky.auroraHeight));
-            float elHigh = elLow + Mathf.Lerp(15f, 70f, Mathf.InverseLerp(20f, 320f, sky.auroraVerticalSize));
-            if (_auroraFilter != null &&
-                (Mathf.Abs(span - _auroraSpan) > 0.5f || Mathf.Abs(elLow - _auroraElLow) > 0.5f || Mathf.Abs(elHigh - _auroraElHigh) > 0.5f))
-            {
-                _auroraSpan = span; _auroraElLow = elLow; _auroraElHigh = elHigh;
-                _auroraFilter.sharedMesh = CreateAuroraMesh(span, elLow, elHigh);
-            }
-
-            Vector3 planarForward = mainCam.transform.forward;
-            planarForward.y = 0f;
-            if (planarForward.sqrMagnitude < 0.0001f)
-                planarForward = mainCam.transform.rotation * Vector3.forward;
-            planarForward.Normalize();
-
-            // The band is a unit-radius arc centred on the camera. Keep its radius INSIDE
-            // the far clip plane — the old code parked the quad at auroraDistance (420m)
-            // beyond a 250m far plane, so it was clipped away and never drew regardless of
-            // how high intensity was cranked.
-            float radius = Mathf.Clamp(sky.auroraDistance, 60f, mainCam.farClipPlane * 0.82f);
-            _auroraRoot.transform.position = mainCam.transform.position;
-            _auroraRoot.transform.rotation = Quaternion.LookRotation(planarForward, Vector3.up);
-            _auroraRoot.transform.localScale = Vector3.one * radius;
-
-            // Hue reflects live state: surveillance on → green/teal (warm-biased by weather),
-            // off → dim red. Intensity drives brightness; a slow pulse keeps it alive.
-            float intensity = Mathf.Clamp(sky.auroraIntensity, 0f, 2f);
-            // Aurora belongs to the night — fade it as the sun climbs above the horizon.
-            if (sky.dynamicSky)
-            {
-                float night = Mathf.Clamp01((2f - _sunAlt) / 8f);
-                intensity *= night;
-                if (intensity <= 0.001f) { _auroraRoot.SetActive(false); return; }
-            }
-            float warm = float.IsNaN(WeatherTempF) ? 0.5f : Mathf.Clamp01((WeatherTempF - 35f) / 55f);
-            Color onHue = Color.Lerp(new Color(0.30f, 0.95f, 0.88f), new Color(0.58f, 1f, 0.55f), warm);
-            Color hue = SurveillanceActive ? onHue : new Color(1f, 0.34f, 0.30f);
-            float stateMul = SurveillanceActive ? 1f : 0.45f;
-            float pulse = 0.85f + 0.15f * Mathf.Sin(Time.time * 0.7f);
-
-            Color baseCol = hue * ((0.55f + 0.45f * intensity) * stateMul);
-            baseCol.a = 1f;
-            _auroraMaterial.SetColor("_BaseColor", baseCol);
-            _auroraMaterial.SetColor("_Color", baseCol);
-            _auroraMaterial.SetColor("_EmissionColor",
-                hue * (Mathf.Lerp(0.8f, 3.2f, Mathf.Clamp01(intensity * 0.5f)) * pulse * stateMul));
-
-            // Two layers drift at slightly different rates for a shimmering curtain.
-            float t = Time.time * sky.auroraDriftSpeed;
-            Vector2 offset = new Vector2(t * 0.03f, Mathf.Sin(t * 0.05f) * 0.015f);
-            _auroraMaterial.mainTextureOffset = offset;
-            _auroraMaterial.SetTextureOffset("_BaseMap", offset);
-        }
-
-        private void EnsureAurora()
-        {
-            if (_auroraRoot != null) return;
-
-            _auroraRoot = new GameObject("K1L0_AuroraSky");
-            _auroraRoot.hideFlags = HideFlags.DontSave;
-
-            _auroraFilter = _auroraRoot.AddComponent<MeshFilter>();
-            _auroraFilter.sharedMesh = CreateAuroraMesh(130f, 9f, 54f);
-
-            var meshRenderer = _auroraRoot.AddComponent<MeshRenderer>();
-            Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
-            if (shader == null) shader = Shader.Find("Unlit/Transparent");
-            if (shader == null) shader = Shader.Find("Sprites/Default");
-            _auroraMaterial = new Material(shader);
-            _auroraMaterial.name = "K1L0_AuroraSky_Runtime";
-            _auroraTexture = CreateAuroraTexture();
-            _auroraMaterial.mainTexture = _auroraTexture;
-            _auroraMaterial.SetTexture("_BaseMap", _auroraTexture);
-            ConfigureTransparentMaterial(_auroraMaterial);
-            meshRenderer.material = _auroraMaterial;
-            meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            meshRenderer.receiveShadows = false;
-        }
-
-        // A curved ribbon spanning a wide arc of the upper sky (unit radius — the runtime
-        // scales it to fit inside the far clip). Reads as a sky feature you can pan across,
-        // not a flat billboard parked in front of the camera.
-        private static Mesh CreateAuroraMesh(float spanDeg, float elLowDeg, float elHighDeg)
-        {
-            const int seg = 32;             // horizontal segments
-            float elLow = elLowDeg * Mathf.Deg2Rad;
-            float elHigh = elHighDeg * Mathf.Deg2Rad;
-
-            var verts = new Vector3[(seg + 1) * 2];
-            var uvs = new Vector2[(seg + 1) * 2];
-            var tris = new int[seg * 6];
-
-            for (int i = 0; i <= seg; i++)
-            {
-                float tu = i / (float)seg;
-                float az = Mathf.Deg2Rad * Mathf.Lerp(-spanDeg * 0.5f, spanDeg * 0.5f, tu);
-                Vector3 hdir = new Vector3(Mathf.Sin(az), 0f, Mathf.Cos(az));
-                Vector3 bottom = Mathf.Cos(elLow) * hdir + Mathf.Sin(elLow) * Vector3.up;
-                Vector3 top = Mathf.Cos(elHigh) * hdir + Mathf.Sin(elHigh) * Vector3.up;
-                verts[i * 2 + 0] = bottom.normalized;
-                verts[i * 2 + 1] = top.normalized;
-                uvs[i * 2 + 0] = new Vector2(tu * 3f, 0f); // repeat curtains horizontally
-                uvs[i * 2 + 1] = new Vector2(tu * 3f, 1f);
-            }
-            for (int i = 0; i < seg; i++)
-            {
-                int b = i * 2;
-                int t = i * 6;
-                tris[t + 0] = b; tris[t + 1] = b + 1; tris[t + 2] = b + 2;
-                tris[t + 3] = b + 1; tris[t + 4] = b + 3; tris[t + 5] = b + 2;
-            }
-
-            Mesh mesh = new Mesh { name = "K1L0_AuroraSkyMesh" };
-            mesh.vertices = verts;
-            mesh.uv = uvs;
-            mesh.triangles = tris;
-            mesh.RecalculateNormals();
-            mesh.RecalculateBounds();
-            return mesh;
-        }
-
-        private static Texture2D CreateAuroraTexture()
-        {
-            const int w = 512;
-            const int h = 256;
-            Texture2D tex = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
-            tex.wrapMode = TextureWrapMode.Repeat;
-            tex.filterMode = FilterMode.Bilinear;
-            for (int y = 0; y < h; y++)
-            {
-                float v = y / (float)(h - 1);
-                // Soft vertical envelope: fades in from the bottom, tapers out near the top.
-                float vertical = Mathf.SmoothStep(0f, 0.35f, v) * (1f - Mathf.SmoothStep(0.6f, 1f, v));
-                // Gentle green→teal→violet gradient up the curtain.
-                Color low = new Color(0.45f, 1f, 0.62f);
-                Color mid = new Color(0.40f, 0.95f, 0.95f);
-                Color high = new Color(0.62f, 0.45f, 1f);
-                Color grad = v < 0.5f ? Color.Lerp(low, mid, v * 2f) : Color.Lerp(mid, high, (v - 0.5f) * 2f);
-                for (int x = 0; x < w; x++)
-                {
-                    float u = x / (float)(w - 1);
-                    // Multi-octave vertical curtains for a filamented look.
-                    float c1 = Mathf.Sin(u * 26f + Mathf.Sin(u * 6f) * 2.0f);
-                    float c2 = Mathf.Sin(u * 61f + Mathf.Sin(u * 13f) * 1.3f);
-                    float curtain = Mathf.Pow(Mathf.Clamp01(c1 * 0.5f + 0.5f), 2.4f);
-                    curtain *= 0.7f + 0.3f * Mathf.Clamp01(c2 * 0.5f + 0.5f);
-                    float a = curtain * vertical;
-                    tex.SetPixel(x, y, new Color(grad.r, grad.g, grad.b, a));
-                }
-            }
-            tex.Apply(false, true);
-            return tex;
-        }
-
-        private static void ConfigureTransparentMaterial(Material mat)
-        {
-            if (mat == null) return;
-            mat.SetFloat("_Surface", 1f);
-            mat.SetFloat("_Blend", 0f);
-            mat.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
-            mat.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.One);
-            mat.SetInt("_ZWrite", 0);
-            mat.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
-            mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
-            mat.EnableKeyword("_ALPHAPREMULTIPLY_ON");
-            mat.EnableKeyword("_EMISSION");
-            mat.renderQueue = 3000;
         }
 
         // ---------------------------------------------------------------------
@@ -864,7 +874,7 @@ namespace KiloWorld.Rendering.Systems
         private static void WeatherFactors(out float cloud, out float wet, out bool snow)
         {
             cloud = 0f; wet = 0f; snow = false;
-            string g = GPSLocationController.GPSDisabled ? ManualWeatherGlyph : WeatherGlyph;
+            string g = EffectiveWeatherGlyph();
             if (string.IsNullOrEmpty(g)) return;
             g = g.ToLowerInvariant();
             if (g.Contains("storm") || g.Contains("thunder")) { cloud = 1f; wet = 1f; }
@@ -929,9 +939,9 @@ namespace KiloWorld.Rendering.Systems
 
         private Vector3 CurrentSunDirection(out float altDeg)
         {
-            // GPS off → no live location/time, so the sun follows the manual hour slider:
+            // GPS off (or test override) → the sun follows the manual hour slider:
             // a simple arc (0° at 6h/18h, +60° at noon, below the horizon at night).
-            if (GPSLocationController.GPSDisabled)
+            if (GPSLocationController.GPSDisabled || TestSkyOverrideEnabled)
             {
                 float hr = Mathf.Repeat(ManualHour, 24f);
                 float dayAngle = (hr - 6f) / 12f * Mathf.PI;
@@ -944,33 +954,78 @@ namespace KiloWorld.Rendering.Systems
             GetLatLon(out double lat, out double lon);
             SunAltAz(lat, lon, System.DateTime.UtcNow, out double alt, out double az);
             altDeg = (float)alt;
-            float altR = (float)(alt * Deg2RadD), azR = (float)(az * Deg2RadD);
+            // Backend sunrise/sunset is authoritative for day vs night: if the weather
+            // feed says daylight but the astro sun sits at/below the horizon (stale GPS
+            // fix, clock skew, 0/0 coords), floor the sun so the world never renders
+            // night lighting under a daytime sky.
+            if (WeatherIsDay == true && altDeg < 8f) altDeg = 8f;
+            float altR = (float)(altDeg * Deg2RadD), azR = (float)(az * Deg2RadD);
             // az from north, clockwise. World +Z≈north, +X≈east, +Y up.
             return new Vector3(Mathf.Sin(azR) * Mathf.Cos(altR), Mathf.Sin(altR), Mathf.Cos(azR) * Mathf.Cos(altR));
         }
+
+        // Latest computed sun altitude (degrees above horizon) — real astronomy
+        // from GPS + UTC time, floored by the backend isDay clamp. Exposed so
+        // the sky-video picker can fall back to it when the API is silent.
+        public static float LiveSunAltitudeDeg = 30f;
 
         private void DriveSunLight(Light light)
         {
             Vector3 toSun = CurrentSunDirection(out float alt);
             _sunAlt = alt;
-            // Keep the disc from sitting exactly on the horizon (avoids a hard flicker).
-            light.transform.rotation = Quaternion.LookRotation(-toSun.normalized, Vector3.up);
+            LiveSunAltitudeDeg = alt;
 
             WeatherFactors(out float cloud, out float wet, out bool snow);
 
-            // Colour: warm at low sun, white high, cool moonlight below the horizon.
+            Vector3 lightForward;
+            float intensity;
+            Color col;
+
             Color horizonWarm = new Color(1f, 0.62f, 0.36f);
-            Color midday = new Color(1f, 0.97f, 0.92f);
-            Color day = Color.Lerp(horizonWarm, midday, Mathf.Clamp01(alt / 22f));
-            Color moon = profile.lighting != null ? profile.lighting.moonlightColor : new Color(0.7f, 0.8f, 1f);
-            Color col = Color.Lerp(moon, day, Mathf.Clamp01((alt + 4f) / 9f));
-            // Overcast desaturates and greys the key light.
+            Color midday     = new Color(1f, 0.97f, 0.92f);
+            Color moonColor  = profile.lighting != null ? profile.lighting.moonlightColor : new Color(0.7f, 0.8f, 1f);
+
+            if (alt < 0f)
+            {
+                // Sun underground: use moon approximation — opposite azimuth, ~30° above horizon.
+                // This ensures moonlight shines downward onto rooftops and streets rather than
+                // upward (which was the -toSun direction when toSun.Y < 0).
+                Vector3 antiHoriz = new Vector3(-toSun.x, 0f, -toSun.z);
+                if (antiHoriz.sqrMagnitude < 0.0001f) antiHoriz = Vector3.forward;
+                antiHoriz.Normalize();
+                float moonElevSin = 0.5f; // ~30° elevation — lights roofs and walls
+                Vector3 toMoon = antiHoriz * Mathf.Sqrt(1f - moonElevSin * moonElevSin) + Vector3.up * moonElevSin;
+                lightForward = -toMoon.normalized; // rays travel from moon downward into scene
+
+                float moonInt = profile.lighting != null ? profile.lighting.moonlightIntensity : 0.5f;
+                float nightT   = Mathf.Clamp01((-alt) / 10f); // full moon brightness by 10° below horizon
+                float duskInt  = Mathf.Lerp(0f, moonInt, nightT);
+                intensity = duskInt * (1f - 0.4f * cloud);
+
+                col = moonColor;
+            }
+            else
+            {
+                // Sun above horizon: normal day path.
+                lightForward = -toSun.normalized;
+
+                Color day = Color.Lerp(horizonWarm, midday, Mathf.Clamp01(alt / 22f));
+                col = Color.Lerp(moonColor, day, Mathf.Clamp01((alt + 4f) / 9f));
+
+                float lightScale = profile.lighting != null ? profile.lighting.moonlightIntensity : 1f;
+                float dayInt = Mathf.Lerp(0f, 1.2f, Mathf.Clamp01((alt + 6f) / 30f));
+                intensity = dayInt * lightScale * (1f - 0.5f * cloud);
+            }
+
+            // Overcast desaturates the key light.
             float grey = (col.r + col.g + col.b) / 3f;
             col = Color.Lerp(col, new Color(grey, grey, grey), cloud * 0.6f);
             light.color = col;
+            light.intensity = intensity;
 
-            float dayInt = Mathf.Lerp(0.35f, 1.2f, Mathf.Clamp01((alt + 6f) / 30f));
-            light.intensity = dayInt * (1f - 0.5f * cloud);
+            // Guard against degenerate forward (e.g. exactly at zenith).
+            if (lightForward.sqrMagnitude > 0.001f)
+                light.transform.rotation = Quaternion.LookRotation(lightForward, Vector3.up);
         }
 
         private void ApplyProceduralSky()
@@ -1005,7 +1060,10 @@ namespace KiloWorld.Rendering.Systems
 
                     if (RenderSettings.ambientMode != AmbientMode.Skybox)
                         RenderSettings.ambientMode = AmbientMode.Skybox;
-                    RenderSettings.ambientIntensity = 0.22f;
+                    float ambientMultiplier = profile.lighting != null && profile.lighting.ambientEnabled
+                        ? profile.lighting.ambientIntensity
+                        : 0f;
+                    RenderSettings.ambientIntensity = 0.22f * ambientMultiplier;
                     if (Mathf.Abs(alt - _lastGiSunAlt) > 1.5f || Time.time - _lastGiTime > 20f)
                     {
                         _lastGiSunAlt = alt; _lastGiTime = Time.time;
@@ -1041,7 +1099,10 @@ namespace KiloWorld.Rendering.Systems
             float sunSize = Mathf.Lerp(0.04f, 0.005f, cloud); // hide the disc under cloud
 
             _proceduralSky.SetColor("_SkyTint", skyTint);
-            _proceduralSky.SetColor("_GroundColor", new Color(0.06f, 0.07f, 0.08f));
+            // Below-horizon hemisphere doubles as the skybox-ambient ground bounce:
+            // pale ash in daylight so terrain reads hazy dust, near-black at night.
+            Color groundHaze = Color.Lerp(new Color(0.06f, 0.07f, 0.08f), new Color(0.45f, 0.45f, 0.40f), dayness);
+            _proceduralSky.SetColor("_GroundColor", groundHaze);
             _proceduralSky.SetFloat("_AtmosphereThickness", atmThickness);
             _proceduralSky.SetFloat("_Exposure", Mathf.Max(0.05f, exposure));
             _proceduralSky.SetFloat("_SunSize", sunSize);
@@ -1050,7 +1111,10 @@ namespace KiloWorld.Rendering.Systems
             // when the sun has moved a little or enough time passed.
             if (RenderSettings.ambientMode != AmbientMode.Skybox)
                 RenderSettings.ambientMode = AmbientMode.Skybox;
-            RenderSettings.ambientIntensity = Mathf.Lerp(0.25f, 1f, dayness);
+            float skyAmbientMultiplier = profile.lighting != null && profile.lighting.ambientEnabled
+                ? profile.lighting.ambientIntensity
+                : 0f;
+            RenderSettings.ambientIntensity = Mathf.Lerp(0.25f, 1f, dayness) * skyAmbientMultiplier;
             if (Mathf.Abs(alt - _lastGiSunAlt) > 0.75f || Time.time - _lastGiTime > 12f)
             {
                 _lastGiSunAlt = alt;
@@ -1068,27 +1132,10 @@ namespace KiloWorld.Rendering.Systems
 
         private void ApplyPrecip(Camera cam)
         {
-            WeatherFactors(out float cloud, out float wet, out bool snow);
-            int mode = snow ? 2 : (wet > 0.45f ? 1 : 0);
-
-            EnsurePrecip(cam);
             if (_precip == null) return;
-
-            if (mode != _precipMode)
-            {
-                _precipMode = mode;
-                ConfigurePrecip(mode);
-            }
-
             var em = _precip.emission;
-            if (mode == 0)
-            {
-                em.rateOverTime = 0f;
-                if (_precip.isEmitting) _precip.Stop(true, ParticleSystemStopBehavior.StopEmitting);
-                return;
-            }
-            em.rateOverTime = mode == 1 ? Mathf.Lerp(280f, 1100f, wet) : Mathf.Lerp(120f, 460f, Mathf.Max(cloud, wet));
-            if (!_precip.isPlaying) _precip.Play();
+            em.rateOverTime = 0f;
+            if (_precip.isEmitting) _precip.Stop(true, ParticleSystemStopBehavior.StopEmitting);
         }
 
         private void EnsurePrecip(Camera cam)
@@ -1210,18 +1257,22 @@ namespace KiloWorld.Rendering.Systems
             if (_bloom == null) globalVolume.profile.TryGet(out _bloom);
             if (_bloom == null) _bloom = globalVolume.profile.Add<Bloom>(true);
 
-            _bloom.active = profile.postFX.bloomEnabled;
+            bool bloomEnabled = profile.postFX.bloomEnabled;
+            // Keep the Bloom override active even when "disabled". If we make
+            // the component inactive, URP can fall back to the default volume
+            // profile's Bloom, which makes the scene look like bloom increased.
+            _bloom.active = true;
             _bloom.intensity.overrideState = true;
-            _bloom.intensity.value = Mathf.Max(0f, profile.postFX.bloomIntensity);
+            _bloom.intensity.value = bloomEnabled ? Mathf.Max(0f, profile.postFX.bloomIntensity) : 0f;
             _bloom.threshold.overrideState = true;
-            _bloom.threshold.value = Mathf.Max(0f, profile.postFX.bloomThreshold);
+            _bloom.threshold.value = bloomEnabled ? Mathf.Max(0f, profile.postFX.bloomThreshold) : 999f;
             _bloom.scatter.overrideState = true;
-            _bloom.scatter.value = Mathf.Clamp01(profile.postFX.bloomScatter);
+            _bloom.scatter.value = bloomEnabled ? Mathf.Clamp01(profile.postFX.bloomScatter) : 0f;
             _bloom.tint.overrideState = true;
             _bloom.tint.value = profile.postFX.bloomTint;
 
             // Lens Dirt (subtle overlay)
-            if (profile.postFX.lensDirtTexture != null)
+            if (bloomEnabled && profile.postFX.lensDirtTexture != null)
             {
                 _bloom.dirtTexture.overrideState = true;
                 _bloom.dirtTexture.value = profile.postFX.lensDirtTexture;
@@ -1386,6 +1437,7 @@ namespace KiloWorld.Rendering.Systems
         private void ApplyVolumetricFog()
         {
             var fog = profile.volumetricFog;
+            float fogDayness = Mathf.Clamp01((_sunAlt + 6f) / 14f);
 
             if (_cachedVolumetricFogManager == null)
             {
@@ -1405,7 +1457,10 @@ namespace KiloWorld.Rendering.Systems
 
                 _cachedVolumetricFogManager.scattering = Mathf.Clamp01(Mathf.Max(fog.scattering, specularBoost * 0.15f));
                 _cachedVolumetricFogManager.scatteringThreshold = Mathf.Max(0f, fog.scatteringThreshold - thresholdBias * 0.6f);
-                _cachedVolumetricFogManager.scatteringIntensity = Mathf.Max(0f, fog.scatteringIntensity + specularBoost * 2.5f);
+                
+                float activeScatteringIntensity = Mathf.Lerp(nightFogScatteringIntensity, dayFogScatteringIntensity, fogDayness);
+                _cachedVolumetricFogManager.scatteringIntensity = Mathf.Max(0f, activeScatteringIntensity + specularBoost * 2.5f);
+                
                 _cachedVolumetricFogManager.scatteringAbsorption = fog.scatteringAbsorption;
                 _cachedVolumetricFogManager.scatteringTint = scatteringTint;
                 _cachedVolumetricFogManager.scatteringHighQuality = fog.scatteringHighQuality;
@@ -1417,7 +1472,6 @@ namespace KiloWorld.Rendering.Systems
                 _cachedVolumetricFog = FindObjectOfType<VolumetricFog>();
                 if (_cachedVolumetricFog == null)
                 {
-                    // No volumetric fog in the scene, skip
                     return;
                 }
             }
@@ -1441,14 +1495,14 @@ namespace KiloWorld.Rendering.Systems
 
             // Density & Appearance
             fogProfile.constantDensity = fog.constantDensity;
-            fogProfile.noiseStrength = fog.noiseStrength;
-            fogProfile.noiseScale = fog.noiseScale;
+            fogProfile.noiseStrength = Mathf.Lerp(nightFogNoiseStrength, dayFogNoiseStrength, fogDayness);
+            fogProfile.noiseScale = Mathf.Lerp(nightFogNoiseScale, dayFogNoiseScale, fogDayness);
             fogProfile.noiseFinalMultiplier = fog.noiseFinalMultiplier;
-            fogProfile.density = fog.density;
+            fogProfile.density = Mathf.Lerp(nightFogDensity, dayFogDensity, fogDayness);
 
             // Colors
             fogProfile.albedo = fog.albedo;
-            fogProfile.brightness = fog.brightness;
+            fogProfile.brightness = Mathf.Lerp(nightFogBrightness, dayFogBrightness, fogDayness);
             fogProfile.deepObscurance = fog.deepObscurance;
             fogProfile.specularColor = fog.specularColor;
             fogProfile.specularThreshold = fog.specularThreshold;
@@ -1475,7 +1529,7 @@ namespace KiloWorld.Rendering.Systems
             // Geometry
             fogProfile.border = fog.border;
             fogProfile.customHeight = fog.customHeight;
-            fogProfile.height = fog.height;
+            fogProfile.height = Mathf.Lerp(nightFogHeight, dayFogHeight, fogDayness);
             fogProfile.verticalOffset = fog.verticalOffset;
             fogProfile.distance = fog.distance;
             fogProfile.distanceFallOff = fog.distanceFallOff;
@@ -1484,11 +1538,12 @@ namespace KiloWorld.Rendering.Systems
 
             // Distant Fog
             fogProfile.distantFog = fog.distantFog;
-            fogProfile.distantFogStartDistance = fog.distantFogStartDistance;
-            fogProfile.distantFogDistanceDensity = fog.distantFogDistanceDensity;
+            fogProfile.distantFogStartDistance = Mathf.Lerp(nightFogDistantStart, dayFogDistantStart, fogDayness);
+            fogProfile.distantFogDistanceDensity = Mathf.Lerp(nightFogDistantDensity, dayFogDistantDensity, fogDayness);
             fogProfile.distantFogMaxHeight = fog.distantFogMaxHeight;
             fogProfile.distantFogHeightDensity = fog.distantFogHeightDensity;
-            fogProfile.distantFogColor = fog.distantFogColor;
+            // Daylight horizon fogs to pale radioactive dust; night keeps the authored color.
+            fogProfile.distantFogColor = Color.Lerp(fog.distantFogColor, new Color(0.58f, 0.60f, 0.54f), fogDayness);
             fogProfile.distantFogDiffusionIntensity = fog.distantFogDiffusionIntensity;
             fogProfile.distantFogBaseAltitude = fog.distantFogBaseAltitude;
             fogProfile.distantFogSymmetrical = fog.distantFogSymmetrical;
@@ -1620,8 +1675,9 @@ namespace KiloWorld.Rendering.Systems
                 profile.buildings.zossWallMaterial.SetTextureOffset("_OcclusionMap", Vector2.zero);
 
 
-                // Environment Reflections
-                if (profile.buildings.zossWallEnvironmentReflections)
+                // Environment Reflections (disabled in day)
+                bool isDayTime = _sunAlt >= -4f;
+                if (profile.buildings.zossWallEnvironmentReflections && !isDayTime)
                 {
                     profile.buildings.zossWallMaterial.DisableKeyword("_ENVIRONMENTREFLECTIONS_OFF");
                     profile.buildings.zossWallMaterial.SetFloat("_EnvironmentReflections", 1.0f);
@@ -1681,8 +1737,9 @@ namespace KiloWorld.Rendering.Systems
                 profile.buildings.zossEmissiveMaterial.SetTextureScale("_BaseMap", profile.buildings.zossEmissiveTiling);
                 profile.buildings.zossEmissiveMaterial.SetTextureScale("_EmissionMap", profile.buildings.zossEmissiveTiling);
 
-                // Glass Properties - Environment Reflections
-                if (profile.buildings.windowEnvironmentReflections)
+                // Glass Properties - Environment Reflections (disabled in day)
+                bool isDayTime = _sunAlt >= -4f;
+                if (profile.buildings.windowEnvironmentReflections && !isDayTime)
                 {
                     profile.buildings.zossEmissiveMaterial.DisableKeyword("_ENVIRONMENTREFLECTIONS_OFF");
                     profile.buildings.zossEmissiveMaterial.SetFloat("_EnvironmentReflections", 1.0f);
@@ -1795,8 +1852,9 @@ namespace KiloWorld.Rendering.Systems
             mat.SetTexture("_OcclusionMap", profile.roads.roadOcclusionMap);
             mat.SetFloat("_OcclusionStrength", profile.roads.roadOcclusionStrength);
 
-            // Environment Reflections
-            if (profile.roads.roadEnvironmentReflections)
+            // Environment Reflections (disabled in day)
+            bool isDayTime = _sunAlt >= -4f;
+            if (profile.roads.roadEnvironmentReflections && !isDayTime)
             {
                 mat.DisableKeyword("_ENVIRONMENTREFLECTIONS_OFF");
                 mat.SetFloat("_EnvironmentReflections", 1.0f);
@@ -1858,7 +1916,7 @@ namespace KiloWorld.Rendering.Systems
             // Check if material has these properties before setting
             if (mat.HasProperty("_ReflectionStrength"))
             {
-                mat.SetFloat("_ReflectionStrength", profile.roads.reflectionStrength);
+                mat.SetFloat("_ReflectionStrength", isDayTime ? 0f : profile.roads.reflectionStrength);
                 mat.SetFloat("_ReflectionYOffset", profile.roads.reflectionYOffset);
                 mat.SetFloat("_ReflectionDistortion", profile.roads.reflectionDistortion);
                 mat.SetFloat("_ReflectionWarble", profile.roads.reflectionWarble);
@@ -1901,10 +1959,27 @@ namespace KiloWorld.Rendering.Systems
                 pos.y = profile.ground.groundYPosition;
                 _cachedGroundPlane.transform.position = pos;
 
+                // Daylight adds a little atmospheric haze, but keeps the authored
+                // ground hue strong enough for grass/terrain color tuning to matter.
+                float groundDayness = Mathf.Clamp01((_sunAlt + 6f) / 14f);
+                
+                // Day vs Night ground color interpolation
+                Color.RGBToHSV(profile.ground.groundColor, out _, out _, out float gv);
+                if (gv < 0.05f) gv = 0.5f;
+                float gh = Mathf.Lerp(nightGroundHue, dayGroundHue, groundDayness);
+                float gs = Mathf.Lerp(nightGroundSaturation, dayGroundSaturation, groundDayness);
+                Color activeBaseColor = Color.HSVToRGB(gh, gs, gv);
+
+                Color dayAsh = new Color(0.52f, 0.52f, 0.45f);
+                float daylightHaze = Mathf.Lerp(0.24f, 0.10f, Mathf.Clamp01(gs));
+                Color groundColor = Color.Lerp(activeBaseColor, dayAsh, groundDayness * daylightHaze);
+                float groundBrightness = Mathf.Lerp(profile.ground.groundBrightness,
+                    Mathf.Max(profile.ground.groundBrightness, 1f), groundDayness);
+
                 _cachedGroundPlane.UpdateMaterial(
-                    color: profile.ground.groundColor,
+                    color: groundColor,
                     smoothness: profile.ground.groundSmoothness,
-                    brightness: profile.ground.groundBrightness,
+                    brightness: groundBrightness,
                     metallic: profile.ground.groundMetallic,
                     albedo: profile.ground.groundTexture,
                     normal: profile.ground.groundNormal,

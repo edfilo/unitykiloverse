@@ -22,6 +22,16 @@ public class BuildingFlattener : MonoBehaviour
 {
     public static BuildingFlattener Instance;
 
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    static void AutoBootstrap()
+    {
+        if (Instance != null) return;
+        var go = new GameObject("BuildingFlattener");
+        DontDestroyOnLoad(go);
+        go.AddComponent<BuildingFlattener>();
+        Debug.Log("[BuildingFlattener] Auto-bootstrapped");
+    }
+
     [Header("Toggle")]
     [Tooltip("Master switch. Off = nothing flattens, no per-frame work.")]
     public bool enableFlattening = true;
@@ -95,9 +105,11 @@ public class BuildingFlattener : MonoBehaviour
         {
             var bm = all[i];
             if (bm == null) continue;
-            Vector3 bpos = bm.transform.position;
-            float dx = bpos.x - pos.x, dz = bpos.z - pos.z;
-            if (dx * dx + dz * dz > prefilterSq) continue;
+            var quickRenderer = bm.GetComponentInChildren<MeshRenderer>();
+            if (quickRenderer == null) continue;
+            Bounds quickBounds = quickRenderer.bounds;
+            float quickDistance = DistanceXZPointToBounds(pos, quickBounds);
+            if (quickDistance * quickDistance > prefilterSq) continue;
 
             if (!_states.TryGetValue(bm, out var state))
             {
@@ -106,12 +118,16 @@ public class BuildingFlattener : MonoBehaviour
                 _states[bm] = state;
             }
 
-            // Cheap AABB pre-test in case the player's just brushing the
-            // bounding box but isn't really in the polygon — saves running
-            // point-in-poly on every building in range.
-            if (!state.worldBounds.Contains(new Vector3(pos.x, state.worldBounds.center.y, pos.z))) continue;
+            // Bounds shift with the floating map origin, so refresh them on
+            // each scan instead of trusting the first cached value forever.
+            if (state.renderer != null) state.worldBounds = state.renderer.bounds;
 
-            if (PointInPolygonXZ(pos, state.footprintWorld))
+            // Cheap XZ AABB pre-test. Do not use Bounds.Contains directly:
+            // the player/camera Y can be outside the extruded bounds while
+            // still being inside the 2D footprint.
+            if (!ContainsXZ(state.worldBounds, pos)) continue;
+
+            if (PointInPolygonXZ(pos, state.footprintWorld) || ContainsXZ(state.worldBounds, pos))
             {
                 _frameInside.Add(bm);
                 if (state.overlay == null) Flatten(bm, state);
@@ -163,7 +179,15 @@ public class BuildingFlattener : MonoBehaviour
             // start (verts with y < roofThreshold), the rest are wall geom.
             else if (roofWorld.Count > 0) break;
         }
-        if (roofWorld.Count < 3) return null;
+        if (roofWorld.Count < 3)
+        {
+            Bounds b = mr.bounds;
+            roofWorld.Clear();
+            roofWorld.Add(new Vector3(b.min.x, b.min.y, b.min.z));
+            roofWorld.Add(new Vector3(b.max.x, b.min.y, b.min.z));
+            roofWorld.Add(new Vector3(b.max.x, b.min.y, b.max.z));
+            roofWorld.Add(new Vector3(b.min.x, b.min.y, b.max.z));
+        }
 
         // Drop roof verts to the ground plane for the polygon used in the
         // footprint test AND the flat overlay quad.
@@ -273,5 +297,24 @@ public class BuildingFlattener : MonoBehaviour
             if (intersect) inside = !inside;
         }
         return inside;
+    }
+
+    private static bool ContainsXZ(Bounds bounds, Vector3 point)
+    {
+        return point.x >= bounds.min.x && point.x <= bounds.max.x
+            && point.z >= bounds.min.z && point.z <= bounds.max.z;
+    }
+
+    private static float DistanceXZPointToBounds(Vector3 point, Bounds bounds)
+    {
+        float dx = 0f;
+        if (point.x < bounds.min.x) dx = bounds.min.x - point.x;
+        else if (point.x > bounds.max.x) dx = point.x - bounds.max.x;
+
+        float dz = 0f;
+        if (point.z < bounds.min.z) dz = bounds.min.z - point.z;
+        else if (point.z > bounds.max.z) dz = point.z - bounds.max.z;
+
+        return Mathf.Sqrt(dx * dx + dz * dz);
     }
 }

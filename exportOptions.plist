@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>method</key>
-    <string>development</string>
+    <string>app-store</string>
     <key>teamID</key>
-    <string>CYE232ULMR</string>
+    <string>7R2746UPX7</string>
     <key>signingStyle</key>
     <string>automatic</string>
     <key>destination</key>

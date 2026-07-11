@@ -36,13 +36,8 @@ public class RuntimeLabelSetup : MonoBehaviour
             Debug.Log("[RuntimeLabelSetup] Created OnboardingUI.");
         }
 
-        // 1c. Create Network/Presence Stack (if missing)
-        if (FirebaseRestClient.Instance == null)
-        {
-            GameObject netGO = new GameObject("FirebaseRestClient");
-            netGO.AddComponent<FirebaseRestClient>();
-            Debug.Log("[RuntimeLabelSetup] Created FirebaseRestClient.");
-        }
+        // 1c. Network/presence data is owned by the native iOS layer and backend.
+        // Unity only creates render/bootstrap helpers here.
 
         // DISABLED: UserPresenceManager creation moved to GPSLocationController.EnsureServices()
         // (only after GPS is ready, to prevent sending bogus (0,0) coordinates)

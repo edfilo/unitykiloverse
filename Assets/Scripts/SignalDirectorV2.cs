@@ -1,8 +1,10 @@
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.Networking;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Reflection;
 using TMPro;
 using Kiloverse.Mapbox;
@@ -172,8 +174,8 @@ public class SignalDirectorV2 : MonoBehaviour
     public float ambientRingStepMeters = 75f;
     [Tooltip("Remove and stop spawning ambient beams beyond this many miles.")]
     public float ambientPoolMaxMiles = 1.1f;
-    [Tooltip("Hard cap on the number of ambient ring beams shown at once. 1 = only the single nearest disturbance.")]
-    public int ambientRingMaxCount = 1;
+    [Tooltip("Hard cap on the number of ambient ring beams shown at once. Set high (24+) to render every beam the backend returns; 1 = only the single nearest disturbance.")]
+    public int ambientRingMaxCount = 24;
     [Range(0f, 1f)]
     [Tooltip("Chance each ambient beam is an Artifact (else Transmitter). Ignored when alternating rings is enabled.")]
     public float ambientArtifactChance = 0.5f;
@@ -189,6 +191,8 @@ public class SignalDirectorV2 : MonoBehaviour
     [Header("Ambient Pool (Backend)")]
     [Tooltip("If enabled, non-location beams come from the backend shared Firestore pool (no fake local beams).")]
     public bool useBackendConcentricBeams = true;
+    [Tooltip("Native Swift owns world/nearby. Unity mirrors pushed ambient beams instead of polling the backend.")]
+    public bool useNativeDrivenAmbientBeams = true;
     [Tooltip("How often to refresh ring beams from the backend (seconds).")]
     public float backendBeamRefreshSeconds = 5f;
     [Tooltip("Only rescan beams if the player moved at least this many meters since the last scan.")]
@@ -198,13 +202,13 @@ public class SignalDirectorV2 : MonoBehaviour
     [Tooltip("Do not show or request ambient portals until kilosync is active.")]
     public bool requireKilosyncForAmbientPortals = true;
     [Tooltip("Minimum active walking-session steps required before a new disturbance spawns.")]
-    public int ambientMinStepsToSpawn = 50;
-    [Tooltip("Minutes before a recent walking session expires after momentum drops.")]
-    [Range(1f, 30f)] public float momentumSessionGraceMinutes = 1.5f;
+    public int ambientMinStepsToSpawn = 110;
+    [Tooltip("Step threshold below which a walking bucket is considered inactive — i.e. the user is no longer walking briskly. Drives pedometer reset.")]
+    [Range(10, 500)] public int momentumGraceSteps = 50;
     [Tooltip("Minutes before newly spawned ambient portals expire in Firestore.")]
-    [Range(1f, 240f)] public float ambientBeamTtlMinutes = 20f;
+    [Range(1f, 240f)] public float ambientBeamTtlMinutes = 30f;
     [Tooltip("Meters from an ambient transmission portal required before Enter Portal can collect it.")]
-    [Range(1f, 100f)] public float ambientCollectRadiusMeters = 10f;
+    [Range(1f, 100f)] public float ambientCollectRadiusMeters = 16f;
     [Tooltip("Optional clip played when new ambient portals appear.")]
     public AudioClip ambientPortalSpawnClip;
     [Range(0f, 1f)]
@@ -222,6 +226,14 @@ public class SignalDirectorV2 : MonoBehaviour
     private float _lastAmbientPortalSpawnSoundTime = -999f;
     private bool _ambientPortalsWereAllowed = false;
     private readonly HashSet<string> visitedAmbientBeamIds = new HashSet<string>();
+    private float _nextNativeEnvironmentPushTime = -999f;
+    private bool _sentNativeEnvironmentState = false;
+    private bool _lastNativeInsideBuilding = false;
+
+#if UNITY_IOS && !UNITY_EDITOR
+    [DllImport("__Internal")]
+    private static extern void K1L0SetEnvironmentState(string json);
+#endif
 
     [Serializable]
     private class BackendBeamDoc
@@ -244,6 +256,7 @@ public class SignalDirectorV2 : MonoBehaviour
     private class BackendNearbyBeamsResponse
     {
         public bool ok;
+        public bool includeBeams;
         public float maxMiles;
         public BackendBeamDoc[] beams;
         public bool fillPending;
@@ -449,7 +462,9 @@ public class SignalDirectorV2 : MonoBehaviour
     private const float MomentumSampleIntervalSeconds = 5f;
     private const float MomentumWindowSeconds = 180f;
     private const float MomentumWalkingThreshold = 0.35f;
-    private float MomentumSessionGraceSeconds => Mathf.Clamp(momentumSessionGraceMinutes, 1f, 30f) * 60f;
+    // Walking-momentum time grace stays fixed at 90s now that the user-facing
+    // slider controls a step threshold instead of a minutes value.
+    private const float MomentumSessionGraceSeconds = 90f;
     private float nextInsideBuildingCheckTime;
     private bool cachedInsideBuilding;
     private bool loggedAmbientBlockedByKilosync;
@@ -713,12 +728,17 @@ public class SignalDirectorV2 : MonoBehaviour
         Input.location.Start();
     }
 
+    void Start()
+    {
+        StartCoroutine(LoadSfxConfig());
+    }
+
     private void LoadMomentumGatePrefs()
     {
         if (PlayerPrefs.HasKey("k1lo_ambientMinStepsToSpawn"))
             ambientMinStepsToSpawn = Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_ambientMinStepsToSpawn"));
-        if (PlayerPrefs.HasKey("k1lo_momentumSessionGraceMinutes"))
-            momentumSessionGraceMinutes = PlayerPrefs.GetFloat("k1lo_momentumSessionGraceMinutes");
+        if (PlayerPrefs.HasKey("k1lo_momentumGraceSteps"))
+            momentumGraceSteps = PlayerPrefs.GetInt("k1lo_momentumGraceSteps");
         if (PlayerPrefs.HasKey("k1lo_ambientBeamTtlMinutes"))
             ambientBeamTtlMinutes = PlayerPrefs.GetFloat("k1lo_ambientBeamTtlMinutes");
         else if (PlayerPrefs.HasKey("k1lo_ambientBeamTtlHours"))
@@ -726,13 +746,12 @@ public class SignalDirectorV2 : MonoBehaviour
         if (PlayerPrefs.HasKey("k1lo_ambientCollectRadiusMeters"))
             ambientCollectRadiusMeters = PlayerPrefs.GetFloat("k1lo_ambientCollectRadiusMeters");
         ambientMinStepsToSpawn = Mathf.Clamp(ambientMinStepsToSpawn, 0, 2000);
-        momentumSessionGraceMinutes = Mathf.Clamp(momentumSessionGraceMinutes, 1f, 30f);
+        momentumGraceSteps = Mathf.Clamp(momentumGraceSteps, 10, 500);
         ambientBeamTtlMinutes = Mathf.Clamp(ambientBeamTtlMinutes, 1f, 240f);
         ambientCollectRadiusMeters = Mathf.Clamp(ambientCollectRadiusMeters, 1f, 100f);
-        // Show only the single nearest ambient disturbance (not a field of ~20 in
-        // the distance). Forced here so it wins over any value serialized on the
-        // component in the scene.
-        ambientRingMaxCount = 1;
+        // Render every ambient beam the backend returns — clamp only if a
+        // serialized scene value pushed it absurdly low.
+        if (ambientRingMaxCount < 24) ambientRingMaxCount = 24;
     }
 
     void Update()
@@ -762,6 +781,7 @@ public class SignalDirectorV2 : MonoBehaviour
         UpdateStepsHUD();
 	        UpdatePlayerRing();
 	        UpdatePlayerMarker();
+        PushNativeEnvironmentStateIfNeeded();
 
         if (Time.time - lastTickTime < tickInterval) return;
         lastTickTime = Time.time;
@@ -1111,7 +1131,7 @@ public class SignalDirectorV2 : MonoBehaviour
         int daily = pedometerService != null ? pedometerService.stepsLast24Hours : -1;
         int weekly = pedometerService != null ? pedometerService.stepsLast7Days : -1;
         if (pedometerService != null)
-            pedometerService.RefreshWalkingBucketsIfDue(false, Mathf.RoundToInt(momentumSessionGraceMinutes), Mathf.Max(0, ambientMinStepsToSpawn));
+            pedometerService.RefreshWalkingBucketsIfDue(false, PedometerService.WalkingBucketMinutes, Mathf.Max(0, ambientMinStepsToSpawn), momentumGraceSteps);
         bool active = pedometerService != null && pedometerService.walkBucketReady && !pedometerService.walkCurrentBucketInactive;
         int liveWalkSteps = pedometerService != null && pedometerService.walkBucketReady
             ? Mathf.Max(0, pedometerService.walkWindowSteps)
@@ -1302,8 +1322,21 @@ public class SignalDirectorV2 : MonoBehaviour
     {
         if (pedometerService == null) return "<size=11>walking: no pedometer</size>";
         if (!pedometerService.walkBucketReady) return "<size=11>walking: measuring session...</size>";
-        string state = pedometerService.walkCurrentBucketInactive ? "inactive" : (inert ? "keep walking" : "active");
-        return $"<size=11>walking: {state} session {pedometerService.walkWindowSteps}/{Mathf.Max(0, ambientMinStepsToSpawn)}  current {pedometerService.walkCurrentBucketSteps}st/{pedometerService.walkCurrentBucketMeters:F0}m</size>";
+        bool inactive = pedometerService.walkCurrentBucketInactive;
+        int target = Mathf.Max(1, ambientMinStepsToSpawn);
+        if (!inactive && !inert)
+        {
+            // Signal locked / active (strength bars shown alongside) — emit percent only.
+            int pct = Mathf.Clamp(Mathf.RoundToInt((pedometerService.walkWindowSteps / (float)target) * 100f), 0, 999);
+            return $"<size=11>walking: active {pct}%</size>";
+        }
+        if (inactive)
+        {
+            return $"<size=11>walking: inactive session {pedometerService.walkWindowSteps}/{target}  current {pedometerService.walkCurrentBucketSteps}st/{pedometerService.walkCurrentBucketMeters:F0}m</size>";
+        }
+        // Grace / "keep walking" — show debug steps until signal arrives.
+        int remaining = Mathf.Max(0, target - pedometerService.walkWindowSteps);
+        return $"<size=11>walking: keep walking session {pedometerService.walkWindowSteps}/{target}  current {pedometerService.walkCurrentBucketSteps}st/{pedometerService.walkCurrentBucketMeters:F0}m</size>\n<size=10>(signal in {remaining} steps)</size>";
     }
 
     private string BuildWalkingBucketDiagnostic()
@@ -1325,7 +1358,7 @@ public class SignalDirectorV2 : MonoBehaviour
         if (pedometerService == null) pedometerService = FindFirstObjectByType<PedometerService>();
         if (pedometerService == null) return false;
         int minSteps = Mathf.Max(0, ambientMinStepsToSpawn);
-        pedometerService.RefreshWalkingBucketsIfDue(false, Mathf.RoundToInt(momentumSessionGraceMinutes), minSteps);
+        pedometerService.RefreshWalkingBucketsIfDue(false, PedometerService.WalkingBucketMinutes, minSteps, momentumGraceSteps);
         return pedometerService.HasWalkingBucketSignal(minSteps);
     }
 
@@ -1362,20 +1395,40 @@ public class SignalDirectorV2 : MonoBehaviour
     }
 
     private AudioClip _beamSpawnPewClip;
+    private static readonly string[] _sfxSlotNames = { "beam_spawn", "beam_collect", "incoming_transmission", "response_tap", "proximity_alert" };
+    private readonly Dictionary<string, AudioClip> _sfxSlots = new Dictionary<string, AudioClip>();
 
     private void PlayAmbientPortalSpawnSound()
     {
         if (Time.unscaledTime - _lastAmbientPortalSpawnSoundTime < Mathf.Max(0f, ambientPortalSpawnSoundCooldown)) return;
+        PlayAmbientPortalSoundUnchecked("beam_spawn");
+        _lastAmbientPortalSpawnSoundTime = Time.unscaledTime;
+    }
 
-        // Beam-spawn SFX: the ElevenLabs "pew" laser-appear sound. Loaded from
-        // Resources/Audio/BeamSpawn so it always wins over any stale clip wired
-        // in the inspector; falls back to the serialized clip only if missing.
-        if (_beamSpawnPewClip == null)
-            _beamSpawnPewClip = Resources.Load<AudioClip>("Audio/BeamSpawn");
-        AudioClip clip = _beamSpawnPewClip != null ? _beamSpawnPewClip : ambientPortalSpawnClip;
+    public void PlayAmbientPortalCollectSound()
+    {
+        PlayAmbientPortalSoundUnchecked("beam_collect");
+    }
+
+    public void PlaySfxSlot(string slot)
+    {
+        PlayAmbientPortalSoundUnchecked(slot);
+    }
+
+    private void PlayAmbientPortalSoundUnchecked(string slot = "beam_spawn")
+    {
+        AudioClip clip = null;
+        if (_sfxSlots.TryGetValue(slot, out AudioClip sfxClip) && sfxClip != null)
+            clip = sfxClip;
+        else
+        {
+            // Fall back to the bundled BeamSpawn.wav for any slot not yet configured.
+            if (_beamSpawnPewClip == null)
+                _beamSpawnPewClip = Resources.Load<AudioClip>("Audio/BeamSpawn");
+            clip = _beamSpawnPewClip != null ? _beamSpawnPewClip : ambientPortalSpawnClip;
+        }
         if (clip == null) return;
 
-        _lastAmbientPortalSpawnSoundTime = Time.unscaledTime;
         var go = new GameObject("AmbientPortalSpawnSFX");
         var source = go.AddComponent<AudioSource>();
         source.clip = clip;
@@ -1384,6 +1437,66 @@ public class SignalDirectorV2 : MonoBehaviour
         source.playOnAwake = false;
         source.Play();
         Destroy(go, clip.length + 0.25f);
+    }
+
+    private IEnumerator LoadSfxConfig()
+    {
+        yield return new WaitUntil(() => APIManager.Instance != null);
+        string url = APIManager.Instance.GetBaseURL() + "/api/k1l0/sfx/config";
+        using (var req = UnityWebRequest.Get(url))
+        {
+            yield return req.SendWebRequest();
+            if (req.result == UnityWebRequest.Result.Success)
+            {
+                string json = req.downloadHandler.text;
+                foreach (string slot in _sfxSlotNames)
+                {
+                    string clipUrl = ExtractJsonSlotUrl(json, slot);
+                    if (!string.IsNullOrEmpty(clipUrl))
+                        StartCoroutine(DownloadSfxClip(slot, clipUrl));
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[SignalDirectorV2] SFX config fetch failed: {req.error}");
+            }
+        }
+    }
+
+    private IEnumerator DownloadSfxClip(string slot, string clipUrl)
+    {
+        using (var req = UnityWebRequestMultimedia.GetAudioClip(clipUrl, AudioType.MPEG))
+        {
+            yield return req.SendWebRequest();
+            if (req.result == UnityWebRequest.Result.Success)
+            {
+                AudioClip clip = DownloadHandlerAudioClip.GetContent(req);
+                if (clip != null)
+                {
+                    _sfxSlots[slot] = clip;
+                    Debug.Log($"[SignalDirectorV2] SFX loaded for slot '{slot}'");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[SignalDirectorV2] SFX download failed for slot '{slot}': {req.error}");
+            }
+        }
+    }
+
+    private static string ExtractJsonSlotUrl(string json, string slot)
+    {
+        int ki = json.IndexOf("\"" + slot + "\"", StringComparison.Ordinal);
+        if (ki < 0) return null;
+        int urlKey = json.IndexOf("\"url\"", ki, StringComparison.Ordinal);
+        if (urlKey < 0) return null;
+        int colon = json.IndexOf(':', urlKey + 5);
+        if (colon < 0) return null;
+        int q1 = json.IndexOf('"', colon + 1);
+        if (q1 < 0) return null;
+        int q2 = json.IndexOf('"', q1 + 1);
+        if (q2 < 0) return null;
+        return json.Substring(q1 + 1, q2 - q1 - 1);
     }
 
     private string BuildActivityPrompt(bool inert)
@@ -1432,6 +1545,27 @@ public class SignalDirectorV2 : MonoBehaviour
             }
         }
         return cachedInsideBuilding;
+    }
+
+    public bool IsPlayerLikelyInsideBuilding()
+    {
+        return IsPlayerInsideBuildingCached();
+    }
+
+    private void PushNativeEnvironmentStateIfNeeded()
+    {
+        if (Time.unscaledTime < _nextNativeEnvironmentPushTime) return;
+        _nextNativeEnvironmentPushTime = Time.unscaledTime + 2f;
+
+        bool insideBuilding = IsPlayerInsideBuildingCached();
+        if (_sentNativeEnvironmentState && insideBuilding == _lastNativeInsideBuilding) return;
+
+        _sentNativeEnvironmentState = true;
+        _lastNativeInsideBuilding = insideBuilding;
+
+#if UNITY_IOS && !UNITY_EDITOR
+        K1L0SetEnvironmentState($"{{\"known\":true,\"indoors\":{(insideBuilding ? "true" : "false")}}}");
+#endif
     }
 
     private string BuildStepStatusLine(bool active)
@@ -1790,7 +1924,12 @@ public class SignalDirectorV2 : MonoBehaviour
     private IEnumerator PostBeamVisit(string beamId)
     {
         string safeId = beamId.Replace("\\", "\\\\").Replace("\"", "\\\"");
-        string payload = $"{{\"beamId\":\"{safeId}\"}}";
+        string userId = "";
+        var tm = TransmissionManager.Instance ?? FindFirstObjectByType<TransmissionManager>();
+        if (tm != null)
+            userId = tm.GetUserIdForClient() ?? "";
+        string safeUserId = userId.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        string payload = $"{{\"beamId\":\"{safeId}\",\"userId\":\"{safeUserId}\"}}";
         bool ok = false;
         string response = null;
         yield return APIManager.Instance.Post("/k1l0/beams/visit", payload, (success, text) =>
@@ -2066,11 +2205,8 @@ public class SignalDirectorV2 : MonoBehaviour
                     : $"enter portal\nYou are at {enterTarget.locationName}";
                 break;
             case TransmissionType.Artifact:
-                {
-                    string name = !string.IsNullOrEmpty(enterTarget.specialItem) ? enterTarget.specialItem : "artifact";
-                    subtext = $"enter portal\n{name}";
-                    break;
-                }
+                subtext = "enter portal\nmystery object";
+                break;
             case TransmissionType.Transmitter:
             default:
                 subtext = $"enter portal\n{FormatSignalGpsTitle(enterTarget)}";
@@ -2143,6 +2279,22 @@ public class SignalDirectorV2 : MonoBehaviour
 
 	        bool locAvailable = loc != null && loc.state != SignalState.CoolingDown;
 	        bool revealAllowed = mapInitializedTime > 0f && (Time.time - mapInitializedTime) >= LocationRevealDelaySeconds;
+
+	        // Location names are rendered by SignalBeamBridge at the beam top.
+	        // Keep this legacy teaser row hidden so the same place is not labeled twice.
+	        if (locAvailable && revealAllowed)
+	        {
+	            if (locRow.activeSelf)
+	            {
+	                locRow.SetActive(false);
+	                K1L0HudLayoutController.Refresh();
+	            }
+	            if (locCompassGO != null && locCompassGO.activeSelf) locCompassGO.SetActive(false);
+	            if (locRowButton != null) locRowButton.interactable = false;
+	            locLabel.text = "";
+	            if (locDist != null) locDist.text = "";
+	            return;
+	        }
 
 	        // Always show the location row once HUD exists (it becomes a "scanning..." hint until we have a location).
 	        locRow.SetActive(MapTeaserRowsVisible);
@@ -2444,6 +2596,10 @@ public class SignalDirectorV2 : MonoBehaviour
         for (int i = signals.Count - 1; i >= 0; i--)
             AdvanceSignal(signals[i], playerMerc);
 
+        // 1b. Ambient portal beams are proximity collectibles now. Collection
+        // should not require pressing the old ENTER/modal flow.
+        AutoCollectAmbientPortals(playerMerc);
+
         // 2. Remove finished signals
         for (int i = signals.Count - 1; i >= 0; i--)
         {
@@ -2560,10 +2716,61 @@ public class SignalDirectorV2 : MonoBehaviour
             float d = DistanceTo(s, playerMerc);
             bool keep = !string.IsNullOrEmpty(key) && want.Contains(key) && d <= removeMeters;
             // Avoid create-then-immediate-remove thrash: never prune signals created this sync.
-            if (!keep && !string.IsNullOrEmpty(key) && createdThisSync.Contains(key))
+        if (!keep && !string.IsNullOrEmpty(key) && createdThisSync.Contains(key))
                 keep = true;
             if (!keep)
                 RemoveSignal(s);
+        }
+    }
+
+    private void AutoCollectAmbientPortals(Vector2d playerMerc)
+    {
+        if (!AmbientPortalsAllowedByActivity()) return;
+
+        Signal best = null;
+        float bestDist = float.MaxValue;
+        for (int i = 0; i < signals.Count; i++)
+        {
+            var s = signals[i];
+            if (s == null) continue;
+            if (s.role != SignalRole.SecondaryNearby) continue;
+            if (s.state == SignalState.CoolingDown || s.state == SignalState.Interpreting || s.state == SignalState.Resolved) continue;
+
+            float d = DistanceTo(s, playerMerc);
+            if (d <= AmbientCollectRadiusMeters && d < bestDist)
+            {
+                best = s;
+                bestDist = d;
+            }
+        }
+
+        if (best == null) return;
+
+        string item = !string.IsNullOrWhiteSpace(best.specialItem)
+            ? best.specialItem.Trim()
+            : (!string.IsNullOrWhiteSpace(best.teaser) ? best.teaser.Trim() : "Rare Earth");
+        Debug.Log($"[SignalDirector] Auto-collected ambient portal id={best.id} external={best.externalKey} item='{item}' dist={bestDist:F1}m radius={AmbientCollectRadiusMeters:F1}m");
+
+        PlayAmbientPortalCollectSound();
+        MarkAmbientPortalVisited(best);
+        ClearEnterStateFor(best);
+    }
+
+    private void ClearEnterStateFor(Signal sig)
+    {
+        if (sig == null) return;
+        if (enterTarget == sig) enterTarget = null;
+        if (enterCandidate == sig) enterCandidate = null;
+        if (locEnterStickySignal == sig)
+        {
+            locEnterStickySignal = null;
+            locEnterFirstShownTime = -1f;
+        }
+        showEnter = false;
+        if (locEnterGO != null && locEnterGO.activeSelf)
+        {
+            locEnterGO.SetActive(false);
+            K1L0HudLayoutController.Refresh();
         }
     }
 
@@ -2915,7 +3122,6 @@ public class SignalDirectorV2 : MonoBehaviour
             if (!AmbientPortalsAllowedByActivity())
             {
                 _ambientPortalsWereAllowed = false;
-                RemoveAmbientPortalSignals();
                 if (!loggedAmbientBlockedByKilosync || Time.unscaledTime >= nextAmbientBlockedLogTime)
                 {
                     nextAmbientBlockedLogTime = Time.unscaledTime + 15f;
@@ -2937,6 +3143,11 @@ public class SignalDirectorV2 : MonoBehaviour
                 Debug.Log("[SignalDirector] Ambient portals enabled by activity; forcing immediate backend scan.");
             }
             loggedAmbientBlockedByKilosync = false;
+
+            if (useNativeDrivenAmbientBeams)
+            {
+                return;
+            }
 
 		        if (!useConcentricAmbientPool)
 		        {
@@ -3019,6 +3230,27 @@ public class SignalDirectorV2 : MonoBehaviour
 	        }
 	    }
 
+    public void ApplyNativeWorldNearby(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+
+        BackendNearbyBeamsResponse parsed = null;
+        try
+        {
+            parsed = JsonUtility.FromJson<BackendNearbyBeamsResponse>(json);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[SignalDirector] Native world beam parse failed: {e.Message}");
+            return;
+        }
+
+        if (parsed == null || !parsed.ok || !parsed.includeBeams || parsed.beams == null)
+            return;
+
+        StartCoroutine(SyncAndFillBackendRings(parsed, 0, 0));
+    }
+
     private void FillDistant()
     {
         if (useConcentricAmbientPool) return; // pool replaces distant background beams
@@ -3062,7 +3294,7 @@ public class SignalDirectorV2 : MonoBehaviour
             $"\"longitude\":{longitude}," +
             $"\"maxMiles\":{ambientPoolMaxMiles}," +
             $"\"stepMeters\":{Mathf.Max(5f, ambientRingStepMeters)}," +
-            $"\"minDistanceMeters\":{Mathf.Max(45f, ambientRingStepMeters * 0.8f)}," +
+            $"\"minDistanceMeters\":{Mathf.Max(100f, ambientRingStepMeters * 0.8f)}," +
             $"\"ttlMinutes\":{Mathf.Clamp(ambientBeamTtlMinutes, 1f, 240f).ToString(System.Globalization.CultureInfo.InvariantCulture)}," +
             $"\"movementBearing\":{(_hasMovementBearing ? _lastMovementBearingDegrees.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")}" +
             "}";
@@ -3090,7 +3322,7 @@ public class SignalDirectorV2 : MonoBehaviour
         if (parsed != null && parsed.ok && parsed.beams != null)
         {
             yield return SyncAndFillBackendRings(parsed, latitude, longitude);
-            if ((parsed.fillPending || parsed.beams.Length == 0) && CountByRole(SignalRole.SecondaryNearby) == 0)
+            if (parsed.fillPending || parsed.beams.Length == 0)
             {
                 _lastBackendScanTime = Time.unscaledTime - Mathf.Max(5f, backendBeamMaxIntervalSeconds) + 10f;
                 Debug.Log($"[SignalDirector] Backend beam fill pending/empty; retrying nearby scan in ~10s (fillPending={parsed.fillPending}, beams={parsed.beams.Length})");
@@ -3104,20 +3336,16 @@ public class SignalDirectorV2 : MonoBehaviour
     {
         if (parsed == null || parsed.beams == null) yield break;
 
-        float poolMaxMeters = Mathf.Max(0f, ambientPoolMaxMiles) * 1609.34f;
-        float step = Mathf.Max(5f, ambientRingStepMeters);
-        int ringCount = Mathf.FloorToInt(poolMaxMeters / step);
-        ringCount = Mathf.Clamp(ringCount, 1, Mathf.Max(1, ambientRingMaxCount));
-        if (ringCount <= 0) yield break;
-
-        var chosenByRing = new BackendBeamDoc[ringCount + 1];
+        // Backend/native owns which mystery beams exist and are eligible.
+        // Unity is just the renderer: preserve every valid returned beam
+        // instead of applying a second local ring-count cap.
+        var chosen = new List<BackendBeamDoc>(parsed.beams.Length);
         Array.Sort(parsed.beams, (a, b) =>
         {
             double da = a != null ? a.distanceMeters : double.MaxValue;
             double db = b != null ? b.distanceMeters : double.MaxValue;
             return da.CompareTo(db);
         });
-        int displaySlot = 1;
         for (int i = 0; i < parsed.beams.Length; i++)
         {
             var b = parsed.beams[i];
@@ -3125,14 +3353,16 @@ public class SignalDirectorV2 : MonoBehaviour
             // Artifact beams must have real content to be considered valid.
             if (string.Equals(b.type, "artifact", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(b.material) && string.IsNullOrEmpty(b.label) && string.IsNullOrEmpty(b.lore))
                 continue;
-            if (displaySlot > ringCount) break;
-            chosenByRing[displaySlot] = b;
-            displaySlot++;
+            chosen.Add(b);
         }
 
         // The backend now owns shared placement and replenishment. The client only
-        // culls returned beams into display bands so multiple nearby users do not
-        // stamp independent ring sets into Firestore.
+        // mirrors the returned set so multiple nearby users do not stamp independent
+        // ring sets into Firestore or hide valid backend-authored objects locally.
+        int ringCount = chosen.Count;
+        var chosenByRing = new BackendBeamDoc[ringCount + 1];
+        for (int i = 0; i < chosen.Count; i++)
+            chosenByRing[i + 1] = chosen[i];
 
         // Debug: log the chosen per-ring set so we can diagnose "all blue" (artifact) cases.
         int chosenArtifact = 0, chosenTransmitter = 0;
@@ -3143,7 +3373,7 @@ public class SignalDirectorV2 : MonoBehaviour
             if (string.Equals(b.type, "transmitter", StringComparison.OrdinalIgnoreCase)) chosenTransmitter++;
             else chosenArtifact++;
         }
-        Debug.Log($"[SignalDirector] Backend rings chosen: rings={ringCount} selected={chosenArtifact + chosenTransmitter} artifact={chosenArtifact} transmitter={chosenTransmitter} step={step:F0}m");
+        Debug.Log($"[SignalDirector] Backend beams mirrored: returned={parsed.beams.Length} selected={chosenArtifact + chosenTransmitter} artifact={chosenArtifact} transmitter={chosenTransmitter}");
 
         SyncChosenRingBeams(chosenByRing, ringCount);
     }

@@ -23,11 +23,34 @@ public class UserPresenceManager : MonoBehaviour
     public string lastStoryLog = "";
     public bool editorLightMode = true;
 
+    private const bool UnityHeartbeatEnabled = false;
+
     private string userId;
     private PedometerService pedometer;
     private GPSLocationController gps;
     public float activeBeamRadius = 20f;
     private float lastImmediatePingTime = -999f;
+
+    // Static so the settings slider can poke us from anywhere to fire an
+    // immediate heartbeat carrying the new value. Reading this in the payload
+    // keeps the source of truth in PlayerPrefs and works even before the
+    // singleton wires up.
+    public static int MomentumGraceStepsValue
+    {
+        get
+        {
+            int defaultValue = 50;
+            int v = PlayerPrefs.GetInt("k1lo_momentumGraceSteps", defaultValue);
+            return Mathf.Clamp(v <= 0 ? defaultValue : v, 10, 500);
+        }
+    }
+
+    public static void NotifyMomentumGraceStepsChanged(int n)
+    {
+        if (!UnityHeartbeatEnabled) return;
+        var instance = UnityEngine.Object.FindFirstObjectByType<UserPresenceManager>();
+        instance?.TriggerImmediatePing($"momentumGraceSteps={n}");
+    }
     
     void Start()
     {
@@ -78,7 +101,14 @@ public class UserPresenceManager : MonoBehaviour
     {
         BootDiagnostics.Mark("UserPresenceManager.coroutines queued");
         yield return null;
-        StartCoroutine(HeartbeatRoutine());
+        if (UnityHeartbeatEnabled)
+        {
+            StartCoroutine(HeartbeatRoutine());
+        }
+        else
+        {
+            Debug.Log("[Presence] Unity heartbeat disabled; native Swift owns /ping.");
+        }
         yield return null;
         StartCoroutine(PresenceMonitorRoutine());
         BootDiagnostics.Mark("UserPresenceManager.coroutines started");
@@ -135,6 +165,11 @@ public class UserPresenceManager : MonoBehaviour
 
     IEnumerator SendHeartbeatCoroutine()
     {
+        if (!UnityHeartbeatEnabled)
+        {
+            yield break;
+        }
+
         BootDiagnostics.Mark("Presence.SendHeartbeat begin");
 
         // Yield first to prevent blocking boot sequence
@@ -142,11 +177,14 @@ public class UserPresenceManager : MonoBehaviour
 
         // Prefer Firebase Auth UID — it may not be ready at Start() time, so
         // re-resolve before every ping. Falls back to deviceId if not signed in.
-        var auth = FirebaseAuthManager.Instance;
+        string nativeUserId = K1L0NativeSessionBridge.ResolveUserId("");
+        if (!string.IsNullOrEmpty(nativeUserId)) userId = nativeUserId;
+
+        var auth = FindFirstObjectByType<FirebaseAuthManager>();
         if (auth != null)
         {
             string resolved = auth.GetUserId();
-            if (!string.IsNullOrEmpty(resolved)) userId = resolved;
+            if (string.IsNullOrEmpty(nativeUserId) && !string.IsNullOrEmpty(resolved)) userId = resolved;
         }
 
         // Gather Data
@@ -346,6 +384,9 @@ public class UserPresenceManager : MonoBehaviour
         // Construct JSON manually
         string nearbyJson = string.Join(",", nearbyPOIs.Select(s => $"\"{s}\""));
         string beamsJson = string.Join(",", beamDistances);
+        bool environmentKnown = SignalDirectorV2.Instance != null;
+        bool likelyIndoors = environmentKnown && SignalDirectorV2.Instance.IsPlayerLikelyInsideBuilding();
+        string environmentJson = $@"{{""known"":{environmentKnown.ToString().ToLowerInvariant()},""indoors"":{likelyIndoors.ToString().ToLowerInvariant()},""outdoors"":{(environmentKnown && !likelyIndoors).ToString().ToLowerInvariant()}}}";
         string activeBeamJson = "null";
         if (closestBeamDistance <= activeBeamRadius && closestBeamDistance < float.MaxValue)
         {
@@ -378,7 +419,9 @@ public class UserPresenceManager : MonoBehaviour
             ""beams"": [{beamsJson}],
             ""currentLocation"": {currentLocationJson},
             ""activeBeam"": {activeBeamJson},
-            ""platform"": ""{Application.platform}""
+            ""environment"": {environmentJson},
+            ""platform"": ""{Application.platform}"",
+            ""momentumGraceSteps"": {MomentumGraceStepsValue}
         }}";
 
         BootDiagnostics.Mark("Presence.Ping begin");
@@ -387,6 +430,12 @@ public class UserPresenceManager : MonoBehaviour
 
     public void TriggerImmediatePing(string reason)
     {
+        if (!UnityHeartbeatEnabled)
+        {
+            Debug.Log($"[Presence] Ignoring Unity immediate ping '{reason}' because native Swift owns /ping.");
+            return;
+        }
+
         if (Time.time - lastImmediatePingTime < immediatePingCooldown)
         {
             return;
@@ -419,6 +468,11 @@ public class UserPresenceManager : MonoBehaviour
 
     IEnumerator PingAPI(string json)
     {
+        if (!UnityHeartbeatEnabled)
+        {
+            yield break;
+        }
+
         BootDiagnostics.Mark("Presence.Ping coroutine");
         Debug.Log($"[Presence] Sending heartbeat via APIManager\nPayload: {json}");
 
@@ -450,6 +504,7 @@ public class UserPresenceManager : MonoBehaviour
         public string icon;
         public string glyph;
         public float temperatureF;
+        public bool isDay;
     }
 
     [System.Serializable]
@@ -472,6 +527,10 @@ public class UserPresenceManager : MonoBehaviour
             case "sunny":
             case "clear":
                 return "☀";
+            case "moon":
+            case "night":
+            case "clear-night":
+                return "☾";
             case "cloud":
             case "cloudy":
             case "overcast":
@@ -518,9 +577,10 @@ public class UserPresenceManager : MonoBehaviour
             {
                 if (!string.IsNullOrEmpty(data.weather.icon))
                 {
-                    KiloWorld.Rendering.Systems.RenderManager.WeatherTempF = data.weather.temperatureF;   // biases aurora hue warm/cool
                     KiloWorld.Rendering.Systems.RenderManager.WeatherGlyph =
                         !string.IsNullOrEmpty(data.weather.glyph) ? data.weather.glyph : data.weather.icon; // drives dynamic sky condition
+                    KiloWorld.Rendering.Systems.RenderManager.WeatherIsDay = data.weather.isDay;
+                    KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
                 }
                 var weatherView = FindObjectOfType<WeatherView>();
                 if (weatherView != null)
@@ -581,49 +641,13 @@ public class UserPresenceManager : MonoBehaviour
 
     void CheckPresence()
     {
-        if (FirebaseRestClient.Instance == null) return;
-
-        FirebaseRestClient.Instance.GetData(presencePath, (json) => {
-            // Parse JSON (Dictionary of users)
-            // For now, just log the raw data size or count
-            // Debug.Log($"[Presence] Received presence data: {json.Length} bytes");
-            // TODO: Parse and visualize other users on map
-        }, (err) => {
-            // Debug.LogError($"[Presence] Check failed: {err}");
-        });
+        // Presence is delivered by /ping and the native overlay. Unity must not
+        // poll RTDB directly.
     }
 
     public void FetchRecentStories()
     {
-        if (FirebaseRestClient.Instance == null) return;
-
-        // Firestore Query
-        // We want: collection "stories", where senderId == userId OR receiverId == userId
-        // Note: Firestore REST API "runQuery" is powerful but verbose.
-        // For simplicity, let's just query where senderId == userId for now (Sent)
-        // Implementing OR in Firestore REST requires a composite filter which is verbose to write in raw string JSON.
-        
-        string queryJson = $@"{{
-            ""structuredQuery"": {{
-                ""from"": [{{ ""collectionId"": ""{storiesCollection}"" }}],
-                ""where"": {{
-                    ""fieldFilter"": {{ 
-                        ""field"": {{ ""fieldPath"": ""senderId"" }}, 
-                        ""op"": ""EQUAL"", 
-                        ""value"": {{ ""stringValue"": ""{userId}"" }} 
-                    }}
-                }},
-                ""orderBy"": [{{ ""field"": {{ ""fieldPath"": ""timestamp"" }}, ""direction"": ""DESCENDING"" }}],
-                ""limit"": 10
-            }}
-        }}";
-
-        FirebaseRestClient.Instance.RunFirestoreQuery(storiesCollection, queryJson, (response) => {
-            lastStoryLog = response;
-            Debug.Log($"[Presence] Stories fetched: {response.Length} bytes");
-            // Parse response to extract messages
-        }, (err) => {
-            Debug.LogError($"[Presence] Fetch stories failed: {err}");
-        });
+        // Recent stories/transmissions are owned by native Swift/API endpoints.
+        lastStoryLog = "";
     }
 }

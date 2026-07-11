@@ -82,7 +82,7 @@ static UIImage *K1L0NormalizedVerticalImage(UIImage *image) {
     self.videoOutput = [AVCaptureVideoDataOutput new];
     self.videoOutput.alwaysDiscardsLateVideoFrames = YES;
     self.videoOutput.videoSettings = @{(NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)};
-    self.frameQueue = dispatch_queue_create("com.filowatt.k1lo.camera.frames", DISPATCH_QUEUE_SERIAL);
+    self.frameQueue = dispatch_queue_create("com.filowatt.K1L0.camera.frames", DISPATCH_QUEUE_SERIAL);
     [self.videoOutput setSampleBufferDelegate:self queue:self.frameQueue];
 
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];

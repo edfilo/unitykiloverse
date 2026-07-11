@@ -35,6 +35,7 @@ public class K1L0LocationBeams : MonoBehaviour
     private float lastUpdate;
     private bool loggedOnce;
     private OvertureMapManager overtureManager;
+    private KiloFirstPersonController playerController;
 
     private class BeamEntry
     {
@@ -44,6 +45,74 @@ public class K1L0LocationBeams : MonoBehaviour
         public Renderer labelBackground;
         public string currentName;
         public string currentCategory;
+        // Last applied beam-height target (meters). Tracked so we only push the
+        // particle-system change when the camera distance actually moves it.
+        public float currentTargetHeight;
+    }
+
+    // Close beams shouldn't shoot off the top of the screen; far beams should
+    // still tower above the horizon so they read at distance. Smoothly interp
+    // between a low-near-cap and the full BeamHeight over a few-hundred-meter
+    // ramp.
+    private const float BeamNearDistance = 80f;     // m — below this is "right next to you"
+    private const float BeamFarDistance  = 700f;    // m — beyond this looks great at full height
+    private const float BeamNearHeight   = 16f;     // m — shortened so it stays in-frame
+    private const float BeamTargetPixelsAboveHorizon = 135f;
+    private const float BeamTopSafeMarginPixels = 130f;
+    private const float BeamMinScreenHeightPixels = 70f;
+    private const float LabelTopSnugOffset = 0.35f;
+    static float ComputeTargetBeamHeight(float distance)
+    {
+        if (distance <= BeamNearDistance) return BeamNearHeight;
+        if (distance >= BeamFarDistance)  return BeamHeight;
+        float t = (distance - BeamNearDistance) / (BeamFarDistance - BeamNearDistance);
+        return Mathf.Lerp(BeamNearHeight, BeamHeight, t);
+    }
+
+    static float ComputeScreenClampedBeamHeight(Camera cam, Vector3 baseWorld)
+    {
+        if (cam == null) return BeamHeight;
+
+        Vector3 baseScreen = cam.WorldToScreenPoint(baseWorld);
+        if (baseScreen.z <= 0f) return BeamHeight;
+
+        float horizonY = EstimateHorizonScreenY(cam, baseWorld.y);
+        float targetTopY = Mathf.Clamp(
+            horizonY + BeamTargetPixelsAboveHorizon,
+            baseScreen.y + BeamMinScreenHeightPixels,
+            Screen.height - BeamTopSafeMarginPixels);
+
+        Vector3 fullTopScreen = cam.WorldToScreenPoint(baseWorld + Vector3.up * BeamHeight);
+        if (fullTopScreen.z <= 0f || fullTopScreen.y <= targetTopY)
+            return BeamHeight;
+
+        float low = BeamNearHeight;
+        float high = BeamHeight;
+        for (int i = 0; i < 8; i++)
+        {
+            float mid = (low + high) * 0.5f;
+            Vector3 midScreen = cam.WorldToScreenPoint(baseWorld + Vector3.up * mid);
+            if (midScreen.z > 0f && midScreen.y > targetTopY)
+                high = mid;
+            else
+                low = mid;
+        }
+        return Mathf.Clamp(low, BeamNearHeight, BeamHeight);
+    }
+
+    static float EstimateHorizonScreenY(Camera cam, float groundY)
+    {
+        Vector3 flatForward = Vector3.ProjectOnPlane(cam.transform.forward, Vector3.up);
+        if (flatForward.sqrMagnitude < 0.0001f)
+            return Screen.height * 0.5f;
+
+        Vector3 probe = cam.transform.position + flatForward.normalized * 2000f;
+        probe.y = groundY;
+        Vector3 screen = cam.WorldToScreenPoint(probe);
+        if (screen.z <= 0f || float.IsNaN(screen.y) || float.IsInfinity(screen.y))
+            return Screen.height * 0.5f;
+
+        return Mathf.Clamp(screen.y, Screen.height * 0.2f, Screen.height * 0.8f);
     }
 
     static Color CategoryColor(string group)
@@ -175,10 +244,38 @@ public class K1L0LocationBeams : MonoBehaviour
                 pos.y = 0f;
                 entry.root.transform.position = pos;
 
-                if (!entry.root.activeSelf)
+                // Scale the beam height by distance so close beams stay
+                // in-frame and far ones still tower over the horizon.
+                if (playerController == null)
+                    playerController = Object.FindFirstObjectByType<KiloFirstPersonController>();
+                Vector3 referencePos = playerController != null
+                    ? playerController.transform.position
+                    : (cam != null ? cam.transform.position : pos + Vector3.forward * BeamFarDistance);
+                referencePos.y = pos.y;
+                float distBeam = Vector3.Distance(referencePos, pos);
+                float distanceHeight = ComputeTargetBeamHeight(distBeam);
+                float screenHeight = ComputeScreenClampedBeamHeight(cam, pos);
+                float targetHeight = Mathf.Min(distanceHeight, screenHeight);
+                bool heightChanged = Mathf.Abs(targetHeight - entry.currentTargetHeight) > 1f;
+                bool firstShow = !entry.root.activeSelf;
+
+                if (firstShow)
                 {
                     entry.root.SetActive(true);
+                }
+
+                if (firstShow || heightChanged)
+                {
+                    var psMain = entry.particles.main;
+                    psMain.startLifetimeMultiplier = Mathf.Max(0.01f, targetHeight / BeamHeight);
+                    entry.currentTargetHeight = targetHeight;
+                    if (entry.label != null)
+                        entry.label.transform.localPosition = new Vector3(0f, targetHeight + LabelTopSnugOffset, 0f);
+                    // Repopulate so the visible column instantly snaps to the
+                    // new height rather than drifting up/down as old particles age.
                     entry.particles.Clear();
+                    float simLifetime = psMain.startLifetime.constant * psMain.startLifetimeMultiplier;
+                    entry.particles.Simulate(simLifetime, true, true);
                     entry.particles.Play();
                 }
 
@@ -222,9 +319,9 @@ public class K1L0LocationBeams : MonoBehaviour
                 // Frustum cull + distance fade for labels
                 if (cam != null && entry.label != null)
                 {
-                    float distToCamera = Vector3.Distance(cam.transform.position, pos);
+                    float distToCamera = distBeam;
                     bool inFrustum = frustumPlanes != null &&
-                        GeometryUtility.TestPlanesAABB(frustumPlanes, new Bounds(pos + Vector3.up * LabelHeight, Vector3.one * 5f));
+                        GeometryUtility.TestPlanesAABB(frustumPlanes, new Bounds(pos + Vector3.up * targetHeight, Vector3.one * 5f));
 
                     if (K1L0HUD.IsSurveillanceCameraOn && inFrustum && distToCamera < LabelMaxDistance)
                     {
@@ -284,6 +381,10 @@ public class K1L0LocationBeams : MonoBehaviour
         main.maxParticles = ParticleCount + 50;
         main.simulationSpace = ParticleSystemSimulationSpace.Local;
         main.gravityModifier = 0f;
+        // Prewarm seeds the system as if it had already run one full lifetime,
+        // so the beam appears instantly at full height instead of slowly
+        // filling upward.
+        main.prewarm = true;
 
         var emission = ps.emission;
         emission.rateOverTime = ParticleCount / lifetime;

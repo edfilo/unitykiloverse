@@ -10,6 +10,8 @@ using Kiloverse.Mapbox;
 
 public class KiloFirstPersonController : MonoBehaviour
 {
+    private static KiloFirstPersonController instance;
+
     [Header("References")]
     public CharacterController controller;
     public Transform cameraTransform;
@@ -24,7 +26,7 @@ public class KiloFirstPersonController : MonoBehaviour
     public GameObject motorcycleHelmetPrefab;
     public Vector3 helmetScale = Vector3.one;
     public Vector3 helmetPositionOffset = Vector3.zero;
-    public bool forceHelmetWhite = true;
+    public bool forceHelmetWhite = false;
     public Color helmetOverrideColor = Color.white;
 
     [Header("Movement Settings")]
@@ -42,7 +44,7 @@ public class KiloFirstPersonController : MonoBehaviour
     public Color directionConeColor = new Color(0.25f, 1f, 0.35f, 0.72f);
 
     [Header("God View Player Marker")]
-    public bool snapCharacterToRoadInGodView = true;
+    public bool snapCharacterToRoadInGodView = false;
     public float godViewCharacterScale = 8f;
     public float godViewRoadSnapRefreshSeconds = 0.5f;
     public float godViewRoadYOffset = 0.15f;
@@ -56,6 +58,12 @@ public class KiloFirstPersonController : MonoBehaviour
     public float cameraPitch = 0f;
     public float cameraHeight = 1.6f;
     public float cameraDistance = -0.3f;
+    public float skyViewHeight = 1.6f;
+    public float skyViewDistance = -0.15f;
+    public float skyViewPitch = -70f;
+    [Header("Native HUD Camera")]
+    [Tooltip("Pitch used while the native Swift HUD is open. -31 currently puts the horizon low enough that the HUD reads as all sky.")]
+    public float nativeHudSkyPitch = -31f;
 
     private Vector3 moveDirection = Vector3.zero;
     private float lastLogTime = -5f; // Start at -5 so first log happens immediately
@@ -87,14 +95,31 @@ public class KiloFirstPersonController : MonoBehaviour
     private Vector3 lastGodViewRoadPosition;
     private bool hasGodViewRoadPosition;
 
-    private bool isGodViewActive = false; // Toggles between default and God View
+    private int cameraMode = 0; // 0=first person, 1=god view
+    private bool isGodViewActive = false; // True only for overhead god view
+    private static bool nativePanelOpen;
+    public static bool IsNativePanelOpen => nativePanelOpen;
     public bool IsGodView => isGodViewActive;
+    public bool IsSkyView => false;
     private float currentCameraTransitionTime = 1f; // Start completed (no animation until tap triggers it)
     private Vector3 cameraInitialLocalPos;
     private Quaternion cameraInitialLocalRot;
+    private bool hasStoredNativePanelPostFx;
+    private bool storedVignetteEnabled;
+    private float storedVignetteIntensity;
+    private float storedVignetteSmoothness;
+    private bool nativePanelVignetteFadeActive;
+    private float nativePanelVignetteFadeElapsed;
+    private float nativePanelVignetteFadeStartIntensity;
+    private float nativePanelVignetteFadeStartSmoothness;
+    private const float NativePanelVignetteFadeDuration = 1.4f;
+    private const float NativePanelVignetteStartAtTransition = 0.65f;
+    private const float NativePanelVignetteTargetIntensity = 0.72f;
+    private const float NativePanelVignetteTargetSmoothness = 0.82f;
 
     void Awake()
     {
+        instance = this;
         Debug.Log("[KiloFirstPersonController] Awake() called on " + gameObject.name);
     }
 
@@ -244,6 +269,7 @@ public class KiloFirstPersonController : MonoBehaviour
             // Instantiate helmet
             GameObject newHelmet = Instantiate(motorcycleHelmetPrefab);
             newHelmet.name = "MotorcycleHelmet_Instance";
+            K1L0PlayerIdentitySkinApplier.RegisterHelmetRoot(newHelmet);
             ApplyHelmetColor(newHelmet);
             
             // Apply user defined scale
@@ -275,6 +301,7 @@ public class KiloFirstPersonController : MonoBehaviour
     private void ApplyHelmetColor(GameObject helmet)
     {
         if (!forceHelmetWhite || helmet == null) return;
+        if (HasDynamicHelmetSkin()) return;
 
         var renderers = helmet.GetComponentsInChildren<Renderer>(true);
         for (int i = 0; i < renderers.Length; i++)
@@ -293,6 +320,15 @@ public class KiloFirstPersonController : MonoBehaviour
                 if (mat.HasProperty("_Smoothness")) mat.SetFloat("_Smoothness", Mathf.Max(mat.GetFloat("_Smoothness"), 0.45f));
             }
         }
+    }
+
+    private bool HasDynamicHelmetSkin()
+    {
+        if (!string.IsNullOrWhiteSpace(PlayerPrefs.GetString("K1L0_CachedHelmetUrl", "")))
+            return true;
+
+        string cachedHelmetPath = System.IO.Path.Combine(Application.persistentDataPath, "cached_helmet.png");
+        return System.IO.File.Exists(cachedHelmetPath);
     }
 
     Transform FindDeepChild(Transform aParent, string aName)
@@ -570,31 +606,9 @@ public class KiloFirstPersonController : MonoBehaviour
             return;
         }
 
-        // Touch tap (iOS/Android)
-        if (Touchscreen.current == null)
-            return;
-
-        var touch = Touchscreen.current.primaryTouch;
-        Vector2 pos = touch.position.ReadValue();
-        bool pressed = touch.press.isPressed;
-
-        if (pressed && !_tapTracking)
-        {
-            if (IsPointerOverUI(pos)) return;
-            _tapTracking = true;
-            _tapStartPos = pos;
-            _tapStartTime = Time.unscaledTime;
-            return;
-        }
-
-        if (!pressed && _tapTracking)
-        {
-            _tapTracking = false;
-            float dt = Time.unscaledTime - _tapStartTime;
-            float dist = Vector2.Distance(pos, _tapStartPos);
-            if (dt <= TapMaxDurationSeconds && dist <= TapMaxMovePixels && !IsPointerOverUI(pos))
-                ToggleCameraView();
-        }
+        // Mobile touch taps are handled by MobileInputManager's full-screen touch
+        // panel. Handling them here as well can double-toggle and end up with no
+        // visible camera change.
     }
 
     bool IsPointerOverUI(Vector2 screenPos)
@@ -650,15 +664,14 @@ public class KiloFirstPersonController : MonoBehaviour
         {
             if (swipeMagnitude > 0 && !isGodViewActive) // Swipe Up
             {
-                isGodViewActive = true;
+                SetCameraMode(1);
                 currentCameraTransitionTime = 0f; // Reset transition time
                 Debug.Log($"[Camera] Starting transition to GOD VIEW - transitionTime: {profile?.camera.transitionTime ?? 0}s");
             }
             else if (swipeMagnitude < 0 && isGodViewActive) // Swipe Down
             {
-                isGodViewActive = false;
+                SetCameraMode(0);
                 currentCameraTransitionTime = 0f; // Reset transition time
-                RestorePlayerVisualRoot();
                 Debug.Log($"[Camera] Starting transition to FIRST PERSON - transitionTime: {profile?.camera.transitionTime ?? 0}s");
             }
         }
@@ -666,20 +679,121 @@ public class KiloFirstPersonController : MonoBehaviour
 
     public void ToggleCameraView()
     {
-        isGodViewActive = !isGodViewActive;
+        if (nativePanelOpen)
+        {
+            Debug.Log("[Camera] Ignoring camera toggle while native sky mode is open; use the map control to exit sky mode.");
+            return;
+        }
+
+        SetNativePanelOpen(false);
+        SetCameraMode(isGodViewActive ? 0 : 1);
         currentCameraTransitionTime = 0f;
-        if (!isGodViewActive) RestorePlayerVisualRoot();
-        Debug.Log($"[Camera] Toggled to {(isGodViewActive ? "GOD VIEW" : "FIRST PERSON")}\n{UnityEngine.StackTraceUtility.ExtractStackTrace()}");
+        Debug.Log($"[Camera] Toggled to {CameraModeName()}\n{UnityEngine.StackTraceUtility.ExtractStackTrace()}");
+    }
+
+    public static void SetNativePanelOpen(bool open)
+    {
+        if (nativePanelOpen == open) return;
+        nativePanelOpen = open;
+        if (instance != null)
+            instance.HandleNativePanelOpenChanged(open);
+    }
+
+    private void HandleNativePanelOpenChanged(bool open)
+    {
+        currentCameraTransitionTime = 0f;
+        nativePanelVignetteFadeActive = false;
+        if (!open) RestoreNativePanelVignette();
+        Debug.Log($"[Camera] Native panel sky mode {(open ? "OPEN" : "CLOSED")} - animating camera");
+    }
+
+    private void BeginNativePanelVignetteFade()
+    {
+        var rm = RenderManager.Instance;
+        var pfx = rm != null ? rm.profile?.postFX : profile?.postFX;
+        if (pfx == null) return;
+
+        if (!hasStoredNativePanelPostFx)
+        {
+            storedVignetteEnabled = pfx.vignetteEnabled;
+            storedVignetteIntensity = pfx.vignetteIntensity;
+            storedVignetteSmoothness = pfx.vignetteSmoothness;
+            hasStoredNativePanelPostFx = true;
+        }
+
+        nativePanelVignetteFadeStartIntensity = storedVignetteEnabled ? storedVignetteIntensity : 0f;
+        nativePanelVignetteFadeStartSmoothness = storedVignetteEnabled ? storedVignetteSmoothness : 0.5f;
+        nativePanelVignetteFadeElapsed = 0f;
+        nativePanelVignetteFadeActive = true;
+        pfx.vignetteEnabled = true;
+        pfx.vignetteIntensity = nativePanelVignetteFadeStartIntensity;
+        pfx.vignetteSmoothness = nativePanelVignetteFadeStartSmoothness;
+
+        rm?.Apply();
+    }
+
+    private void UpdateNativePanelVignetteFade()
+    {
+        if (!nativePanelVignetteFadeActive) return;
+        var rm = RenderManager.Instance;
+        var pfx = rm != null ? rm.profile?.postFX : profile?.postFX;
+        if (pfx == null)
+        {
+            nativePanelVignetteFadeActive = false;
+            return;
+        }
+
+        nativePanelVignetteFadeElapsed += Time.unscaledDeltaTime;
+        float t = Mathf.Clamp01(nativePanelVignetteFadeElapsed / NativePanelVignetteFadeDuration);
+        t = t * t * (3f - 2f * t);
+        pfx.vignetteEnabled = true;
+        pfx.vignetteIntensity = Mathf.Lerp(nativePanelVignetteFadeStartIntensity, NativePanelVignetteTargetIntensity, t);
+        pfx.vignetteSmoothness = Mathf.Lerp(nativePanelVignetteFadeStartSmoothness, NativePanelVignetteTargetSmoothness, t);
+        if (t >= 1f)
+            nativePanelVignetteFadeActive = false;
+    }
+
+    private void RestoreNativePanelVignette()
+    {
+        nativePanelVignetteFadeActive = false;
+        var rm = RenderManager.Instance;
+        var pfx = rm != null ? rm.profile?.postFX : profile?.postFX;
+        if (pfx == null) return;
+
+        if (hasStoredNativePanelPostFx)
+        {
+            pfx.vignetteEnabled = storedVignetteEnabled;
+            pfx.vignetteIntensity = storedVignetteIntensity;
+            pfx.vignetteSmoothness = storedVignetteSmoothness;
+            hasStoredNativePanelPostFx = false;
+            rm?.Apply();
+        }
     }
 
     public void SetMapModalCameraActive(bool active)
     {
         if (!active) return;
 
-        isGodViewActive = true;
+        SetCameraMode(1);
         currentCameraTransitionTime = 1f;
         ApplyCameraRotation();
         Debug.Log($"[Camera] Map modal forced GOD VIEW camera pos={cameraTransform?.position} rot={cameraTransform?.rotation.eulerAngles}");
+    }
+
+    private void SetCameraMode(int mode)
+    {
+        cameraMode = Mathf.Clamp(mode, 0, 1);
+        isGodViewActive = cameraMode == 1;
+        if (!isGodViewActive) RestorePlayerVisualRoot();
+    }
+
+    private string CameraModeName()
+    {
+        return cameraMode switch
+        {
+            1 => "GOD VIEW",
+            _ => "FIRST PERSON"
+        };
     }
 
     private void ApplyCameraRotation()
@@ -689,15 +803,33 @@ public class KiloFirstPersonController : MonoBehaviour
         Vector3 targetPos;
         Quaternion targetRot;
 
-        if (isGodViewActive)
+        if (nativePanelOpen)
         {
+            float skyHeight = Mathf.Clamp(profile.camera.godPositionY, 10f, 180f);
+            float skyDistance = Mathf.Clamp(profile.camera.godPositionZ, 10f, 180f);
             targetPos = new Vector3(
                 0f,
-                profile.camera.godPositionY,
-                -profile.camera.godPositionZ
+                skyHeight,
+                -skyDistance
             );
             targetRot = Quaternion.Euler(
-                profile.camera.godRotationX,
+                nativeHudSkyPitch,
+                0f,
+                0f
+            );
+        }
+        else if (isGodViewActive)
+        {
+            float godHeight = Mathf.Clamp(profile.camera.godPositionY, 10f, 180f);
+            float godDistance = Mathf.Clamp(profile.camera.godPositionZ, 10f, 180f);
+            float godPitch = Mathf.Clamp(profile.camera.godRotationX, -90f, 80f);
+            targetPos = new Vector3(
+                0f,
+                godHeight,
+                -godDistance
+            );
+            targetRot = Quaternion.Euler(
+                godPitch,
                 0f,
                 0f
             );
@@ -765,7 +897,7 @@ public class KiloFirstPersonController : MonoBehaviour
 
     private void UpdateGodViewPlayerMarker()
     {
-        if (!snapCharacterToRoadInGodView || !isGodViewActive)
+        if (!isGodViewActive)
         {
             RestorePlayerVisualRoot();
             return;
@@ -774,13 +906,13 @@ public class KiloFirstPersonController : MonoBehaviour
         CachePlayerVisualRoot();
         if (playerVisualRoot == null || !playerVisualOriginalCached) return;
 
-        if (Time.unscaledTime >= nextGodViewSnapTime)
+        if (snapCharacterToRoadInGodView && Time.unscaledTime >= nextGodViewSnapTime)
         {
             nextGodViewSnapTime = Time.unscaledTime + Mathf.Max(0.1f, godViewRoadSnapRefreshSeconds);
             hasGodViewRoadPosition = TryFindNearestRoadWorldPoint(transform.position, out lastGodViewRoadPosition);
         }
 
-        Vector3 markerWorldPosition = hasGodViewRoadPosition ? lastGodViewRoadPosition : transform.position;
+        Vector3 markerWorldPosition = snapCharacterToRoadInGodView && hasGodViewRoadPosition ? lastGodViewRoadPosition : transform.position;
         markerWorldPosition.y += godViewRoadYOffset;
         playerVisualRoot.localPosition = transform.InverseTransformPoint(markerWorldPosition);
         playerVisualRoot.localScale = playerVisualOriginalLocalScale * Mathf.Max(1f, godViewCharacterScale);

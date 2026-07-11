@@ -3,11 +3,12 @@ using UnityEngine.UI;
 using TMPro;
 using System;
 using System.Collections;
+using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using UnityEngine.Networking;
 using UnityEngine.EventSystems;
 using System.Collections.Generic;
-using Firebase.Database;
 using KiloWorld.Rendering.Systems;
 using KiloWorld.UI.Stories;
 
@@ -75,9 +76,22 @@ public class K1L0HUD : MonoBehaviour
     private const string PanelMapBrightnessPref = "k1lo_panelMapBrightness.v2";
     private const float DimmerSpeed = 4f;
     private float lastDockDebugUploadTime = -999f;
+    private float lastNativeStepStatePushTime = -999f;
+    private string lastNativeStepStateSignature = "";
 
     public static Sprite RoundedRectSprite { get; private set; }
-    public static float PanelMapBrightness => Mathf.Clamp01(PlayerPrefs.GetFloat(PanelMapBrightnessPref, 0.01f));
+    public static float PanelMapBrightness => Mathf.Clamp01(PlayerPrefs.GetFloat(PanelMapBrightnessPref, 0.34f));
+    private static bool NativeOverlayOwnsHud
+    {
+        get
+        {
+#if (UNITY_IOS || UNITY_STANDALONE_OSX) && !UNITY_EDITOR
+            return true;
+#else
+            return false;
+#endif
+        }
+    }
     public static bool IsSurveillanceCameraOn => Instance != null && Instance._mapVisible;
 
     void Awake()
@@ -86,11 +100,13 @@ public class K1L0HUD : MonoBehaviour
         if (gameObject.name != "K1L0HUD")
             gameObject.name = "K1L0HUD";
         SubscribeNativeTransmissionResults();
+        SubscribeNativeAuth();
     }
 
     void OnDestroy()
     {
         UnsubscribeNativeTransmissionResults();
+        UnsubscribeNativeAuth();
     }
 
     // ---- Native transmission-result bridge -----------------------------------------------
@@ -101,15 +117,22 @@ public class K1L0HUD : MonoBehaviour
 #if UNITY_IOS && !UNITY_EDITOR
     [DllImport("__Internal")] private static extern void K1L0DeliverTransmissionResult(string json);
     [DllImport("__Internal")] private static extern void K1L0DeliverUserMetadataSaveResult(string json);
+    [DllImport("__Internal")] private static extern void K1L0DeliverNativeAuthState(string json);
+    [DllImport("__Internal")] private static extern void K1L0DeliverStepState(string json);
 #elif UNITY_STANDALONE_OSX && !UNITY_EDITOR
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverTransmissionResult(string json);
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverUserMetadataSaveResult(string json);
+    [DllImport("K1L0Overlay")] private static extern void K1L0DeliverNativeAuthState(string json);
+    [DllImport("K1L0Overlay")] private static extern void K1L0DeliverStepState(string json);
 #else
     private static void K1L0DeliverTransmissionResult(string json) { /* no-op in editor */ }
     private static void K1L0DeliverUserMetadataSaveResult(string json) { /* no-op in editor */ }
+    private static void K1L0DeliverNativeAuthState(string json) { /* no-op in editor */ }
+    private static void K1L0DeliverStepState(string json) { /* no-op in editor */ }
 #endif
 
     private bool nativeTransmissionSubscribed;
+    private bool nativeAuthSubscribed;
 
     private void SubscribeNativeTransmissionResults()
     {
@@ -121,6 +144,23 @@ public class K1L0HUD : MonoBehaviour
         }
         TransmissionManager.Instance.OnTransmissionReady += HandleTransmissionReady;
         nativeTransmissionSubscribed = true;
+    }
+
+    private void SubscribeNativeAuth()
+    {
+        if (nativeAuthSubscribed) return;
+        if (FirebaseAuthManager.Instance != null)
+        {
+            FirebaseAuthManager.Instance.OnAuthStateChanged += HandleNativeAuthStateChanged;
+            FirebaseAuthManager.Instance.OnAuthError += HandleNativeAuthError;
+        }
+        if (AppleSignInHandler.Instance != null)
+        {
+            AppleSignInHandler.Instance.OnAppleSignInSuccess += HandleNativeAppleSignInSuccess;
+            AppleSignInHandler.Instance.OnAppleSignInFailed += HandleNativeAppleSignInFailed;
+        }
+        nativeAuthSubscribed = true;
+        SendNativeAuthState("auth ready.");
     }
 
     private IEnumerator WaitForTransmissionManager()
@@ -141,6 +181,22 @@ public class K1L0HUD : MonoBehaviour
         nativeTransmissionSubscribed = false;
     }
 
+    private void UnsubscribeNativeAuth()
+    {
+        if (!nativeAuthSubscribed) return;
+        if (FirebaseAuthManager.Instance != null)
+        {
+            FirebaseAuthManager.Instance.OnAuthStateChanged -= HandleNativeAuthStateChanged;
+            FirebaseAuthManager.Instance.OnAuthError -= HandleNativeAuthError;
+        }
+        if (AppleSignInHandler.Instance != null)
+        {
+            AppleSignInHandler.Instance.OnAppleSignInSuccess -= HandleNativeAppleSignInSuccess;
+            AppleSignInHandler.Instance.OnAppleSignInFailed -= HandleNativeAppleSignInFailed;
+        }
+        nativeAuthSubscribed = false;
+    }
+
     [Serializable]
     private struct NativeTransmissionResultPayload
     {
@@ -151,6 +207,38 @@ public class K1L0HUD : MonoBehaviour
         public string lyrics;
         public string responsePlot;
         public string[] responseOptions;
+    }
+
+    [Serializable]
+    private struct NativeAuthStatePayload
+    {
+        public string userId;
+        public string email;
+        public string displayName;
+        public bool isAuthenticated;
+        public string status;
+    }
+
+    private static void DeliverNativeTransmissionStatus(string status, string message)
+    {
+        try
+        {
+            var payload = new NativeTransmissionResultPayload
+            {
+                status = status ?? "",
+                imageUrl = "",
+                videoUrl = "",
+                audioUrl = "",
+                lyrics = "",
+                responsePlot = message ?? "",
+                responseOptions = Array.Empty<string>(),
+            };
+            K1L0DeliverTransmissionResult(JsonUtility.ToJson(payload));
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[K1L0HUD] native transmission status deliver failed: {ex.Message}");
+        }
     }
 
     private void HandleTransmissionReady(TransmissionData data)
@@ -226,6 +314,14 @@ public class K1L0HUD : MonoBehaviour
         if (!oldUIHidden)
             TryHideOldUI();
 
+        if (NativeOverlayOwnsHud)
+        {
+            PushNativeStepStateIfNeeded();
+            if (K1L0CanvasRoot.HUD != null && K1L0CanvasRoot.HUD.gameObject.activeSelf)
+                K1L0CanvasRoot.HUD.gameObject.SetActive(false);
+            return;
+        }
+
         HandleDockTouchFallback();
 
         if (sceneDimmer != null)
@@ -275,6 +371,45 @@ public class K1L0HUD : MonoBehaviour
             weatherText.text = result.ToUpper();
     }
 
+    void PushNativeStepStateIfNeeded()
+    {
+#if (UNITY_IOS || UNITY_STANDALONE_OSX) && !UNITY_EDITOR
+        if (Time.realtimeSinceStartup - lastNativeStepStatePushTime < 0.5f)
+            return;
+
+        var pedometer = FindFirstObjectByType<PedometerService>();
+        if (pedometer == null)
+            return;
+
+        int liveSteps = Mathf.Max(0, pedometer.walkWindowSteps > 0 ? pedometer.walkWindowSteps : pedometer.stepCount);
+        int steps24h = Mathf.Max(0, pedometer.stepsLast24Hours);
+        int steps7d = Mathf.Max(0, pedometer.stepsLast7Days);
+        double latitude = double.NaN;
+        double longitude = double.NaN;
+        var player = FindFirstObjectByType<KiloFirstPersonController>();
+        if (player != null)
+        {
+            latitude = player.playerGPS.Latitude;
+            longitude = player.playerGPS.Longitude;
+        }
+
+        string latText = double.IsNaN(latitude) ? "null" : latitude.ToString("R", CultureInfo.InvariantCulture);
+        string lonText = double.IsNaN(longitude) ? "null" : longitude.ToString("R", CultureInfo.InvariantCulture);
+        string locationSignature = double.IsNaN(latitude) || double.IsNaN(longitude)
+            ? "noloc"
+            : $"{Math.Round(latitude, 5).ToString(CultureInfo.InvariantCulture)}|{Math.Round(longitude, 5).ToString(CultureInfo.InvariantCulture)}";
+        string signature = $"{liveSteps}|{steps24h}|{steps7d}|{locationSignature}";
+        if (signature == lastNativeStepStateSignature)
+            return;
+
+        lastNativeStepStatePushTime = Time.realtimeSinceStartup;
+        lastNativeStepStateSignature = signature;
+        string json = $"{{\"liveSteps\":{liveSteps},\"steps24h\":{steps24h},\"steps7d\":{steps7d},\"latitude\":{latText},\"longitude\":{lonText}}}";
+        try { K1L0DeliverStepState(json); }
+        catch (Exception e) { Debug.LogWarning($"[K1L0HUD] Native step state push failed: {e.Message}"); }
+#endif
+    }
+
     void DoInitialize()
     {
         if (initialized) return;
@@ -297,12 +432,24 @@ public class K1L0HUD : MonoBehaviour
         K1L0SceneCapture.EnsureExists();
         UseSharedCanvas();
         EnsureEventSystem();
+
+        if (NativeOverlayOwnsHud)
+        {
+            EnsureScreenshot();
+            HideOldUI();
+            if (K1L0CanvasRoot.HUD != null)
+                K1L0CanvasRoot.HUD.gameObject.SetActive(false);
+            Debug.Log("[K1L0HUD] Native overlay owns HUD; legacy Unity HUD visuals disabled");
+            return;
+        }
+
         CreateSceneDimmer();
         CreateWeatherBar();
         CreateDock();
         CreateTerminalHudToggle();
         CreateSurveillanceCamBadge();
         CreatePanels();
+        CreateTransmitStatusCard();
 
         EnsureStoriesUI();
         EnsureScreenshot();
@@ -527,7 +674,6 @@ public class K1L0HUD : MonoBehaviour
     void SetMapVisible(bool visible)
     {
         _mapVisible = visible;
-        KiloWorld.Rendering.Systems.RenderManager.SurveillanceActive = visible;   // aurora sky reflects camera on/off
         var cam = WorldCam();
         if (cam != null)
         {
@@ -649,6 +795,11 @@ public class K1L0HUD : MonoBehaviour
         RefreshTerminalToggle();
     }
 
+    void CreateTransmitStatusCard()
+    {
+        K1L0TransmitStatusCard.Create(safeArea, monoFont, ShowTransmitterPanel);
+    }
+
     void CreateTransmitButton()
     {
         if (transmitButton != null) return;
@@ -698,6 +849,11 @@ public class K1L0HUD : MonoBehaviour
             modal.Show(null);
     }
 
+    public void ShowTransmitterPanel()
+    {
+        TogglePanel(3, true);
+    }
+
     void ToggleHudVisible()
     {
         SetHudVisible(!hudUserVisible);
@@ -706,6 +862,13 @@ public class K1L0HUD : MonoBehaviour
     public void SetNativeOverlayMode(string enabled)
     {
         bool nativeOverlay = enabled == "1" || string.Equals(enabled, "true", System.StringComparison.OrdinalIgnoreCase);
+        if (NativeOverlayOwnsHud)
+        {
+            hudUserVisible = false;
+            if (K1L0CanvasRoot.HUD != null)
+                K1L0CanvasRoot.HUD.gameObject.SetActive(false);
+            return;
+        }
         SetHudVisible(!nativeOverlay);
     }
 
@@ -715,11 +878,165 @@ public class K1L0HUD : MonoBehaviour
         SetMapVisible(visible);
     }
 
+    public void SetNativePanelOpen(string enabled)
+    {
+        bool open = enabled == "1" || string.Equals(enabled, "true", System.StringComparison.OrdinalIgnoreCase);
+        DynamicSkyVideoController.SetNativePanelOpen(open);
+        KiloFirstPersonController.SetNativePanelOpen(open);
+        if (!NativeOverlayOwnsHud)
+            ApplyMapHudSuppression(open);
+    }
+
     public void PlayNativeBeamCollectSound(string _)
     {
         var director = SignalDirectorV2.Instance;
         if (director != null)
             director.PlayAmbientPortalCollectSound();
+    }
+
+    public void ApplyNativeWorldNearby(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+
+        var scanner = TransmitterScanner.Instance;
+        if (scanner != null)
+            scanner.ApplyNativeWorldNearby(json);
+
+        var director = SignalDirectorV2.Instance;
+        if (director != null)
+            director.ApplyNativeWorldNearby(json);
+    }
+
+    public void ApplyNativeLocationMode(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+        var teleporter = FindFirstObjectByType<TeleportManager>();
+        if (teleporter != null)
+            teleporter.ApplyNativeLocationMode(json);
+        else
+            Debug.LogWarning("[K1L0HUD] ApplyNativeLocationMode: TeleportManager not found.");
+    }
+
+    public void ApplyNativeSimulatedLocation(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+        var teleporter = FindFirstObjectByType<TeleportManager>();
+        if (teleporter != null)
+            teleporter.ApplyNativeSimulatedLocation(json);
+        else
+            Debug.LogWarning("[K1L0HUD] ApplyNativeSimulatedLocation: TeleportManager not found.");
+    }
+
+    // Native overlay (Swift) forwards the resolved cloak/helmet texture URLs
+    // here after a metadata load/save or identity render so the 3D avatar stays
+    // in sync with the user-panel design. Without this bridge the freshly
+    // generated textures never reach the meshes.
+    public void ApplyNativeIdentitySkin(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+        try
+        {
+            var skin = JsonUtility.FromJson<NativeIdentitySkinPayload>(json);
+            K1L0PlayerIdentitySkinApplier.ApplyFromMetadata(
+                skin.helmetUrl ?? "",
+                skin.cloakUrl ?? "",
+                skin.avatarUrl ?? "",
+                skin.helmetDesign ?? "",
+                skin.cloakDesign ?? "",
+                skin.helmetTextureUrl ?? "",
+                skin.cloakTextureUrl ?? "",
+                skin.skinRevision);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[K1L0HUD] ApplyNativeIdentitySkin parse failed: {ex.Message}");
+        }
+    }
+
+    [Serializable]
+    private class NativeIdentitySkinPayload
+    {
+        public string helmetUrl;
+        public string cloakUrl;
+        public string avatarUrl;
+        public string helmetTextureUrl;
+        public string cloakTextureUrl;
+        public long skinRevision;
+        public string helmetDesign;
+        public string cloakDesign;
+    }
+
+    public void BeginNativeAppleSignIn(string _)
+    {
+        SubscribeNativeAuth();
+        if (AppleSignInHandler.Instance == null || !AppleSignInHandler.Instance.IsAvailable())
+        {
+            SendNativeAuthState("apple sign in is unavailable on this build.");
+            return;
+        }
+        SendNativeAuthState("opening apple sign in...");
+        AppleSignInHandler.Instance.SignIn();
+    }
+
+    public void LogoutNativeSession(string _)
+    {
+        SubscribeNativeAuth();
+        if (FirebaseAuthManager.Instance != null)
+            FirebaseAuthManager.Instance.SignOut();
+
+        PlayerPrefs.DeleteKey("FirebaseUserId");
+        PlayerPrefs.DeleteKey("K1L0UserId");
+        PlayerPrefs.DeleteKey("FirebaseEmail");
+        PlayerPrefs.DeleteKey("FirebaseDisplayName");
+        PlayerPrefs.Save();
+        SendNativeAuthState("signed out.");
+    }
+
+    private void HandleNativeAppleSignInSuccess(string idToken, string nonce, string fullName, string appleUserId)
+    {
+        SendNativeAuthState("connecting apple id...");
+        if (FirebaseAuthManager.Instance == null)
+        {
+            SendNativeAuthState("auth manager is unavailable.");
+            return;
+        }
+        FirebaseAuthManager.Instance.SignInWithNativeApple(appleUserId, fullName, "", idToken);
+    }
+
+    private void HandleNativeAppleSignInFailed(string error)
+    {
+        SendNativeAuthState(string.IsNullOrWhiteSpace(error) ? "apple sign in failed." : error);
+    }
+
+    private void HandleNativeAuthError(string error)
+    {
+        SendNativeAuthState(string.IsNullOrWhiteSpace(error) ? "auth failed." : error);
+    }
+
+    private void HandleNativeAuthStateChanged(bool authenticated)
+    {
+        SendNativeAuthState(authenticated ? "signed in." : "signed out.");
+    }
+
+    private void SendNativeAuthState(string status)
+    {
+        try
+        {
+            var auth = FirebaseAuthManager.Instance;
+            var payload = new NativeAuthStatePayload
+            {
+                userId = auth != null && auth.isAuthenticated ? (auth.userId ?? "") : PlayerPrefs.GetString("FirebaseUserId", ""),
+                email = auth != null ? (auth.email ?? "") : PlayerPrefs.GetString("FirebaseEmail", ""),
+                displayName = auth != null ? (auth.displayName ?? "") : PlayerPrefs.GetString("FirebaseDisplayName", ""),
+                isAuthenticated = auth != null ? auth.isAuthenticated : !string.IsNullOrWhiteSpace(PlayerPrefs.GetString("FirebaseUserId", "")),
+                status = status ?? ""
+            };
+            K1L0DeliverNativeAuthState(JsonUtility.ToJson(payload));
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[K1L0HUD] native auth deliver failed: {ex.Message}");
+        }
     }
 
     public void BeginNativeTransmission(string payload)
@@ -730,12 +1047,14 @@ public class K1L0HUD : MonoBehaviour
         catch (Exception ex)
         {
             Debug.LogWarning($"[K1L0HUD] Native transmission payload parse failed: {ex.Message}");
+            DeliverNativeTransmissionStatus("error", $"payload parse failed: {ex.Message}");
             return;
         }
 
         if (parsed == null)
         {
             Debug.LogWarning("[K1L0HUD] Native transmission payload missing");
+            DeliverNativeTransmissionStatus("error", "transmission payload missing");
             return;
         }
 
@@ -770,48 +1089,57 @@ public class K1L0HUD : MonoBehaviour
     private IEnumerator LoadNativeUserMetadataCoroutine()
     {
         var tm = TransmissionManager.Instance ?? FindFirstObjectByType<TransmissionManager>();
-        string userId = tm != null ? tm.GetUserIdForClient() : null;
-        if (string.IsNullOrWhiteSpace(userId) && FirebaseAuthManager.Instance != null)
-            userId = FirebaseAuthManager.Instance.GetUserId();
+        string userId = K1L0NativeSessionBridge.ResolveUserId("");
+        if (string.IsNullOrWhiteSpace(userId))
+            userId = tm != null ? tm.GetUserIdForClient() : null;
         if (string.IsNullOrWhiteSpace(userId)) userId = "anon";
 
-        bool firebaseReady = FirebaseBootstrap.IsReady;
-        if (!firebaseReady)
+        if (APIManager.Instance == null)
         {
-            FirebaseBootstrap.WhenReady(() => firebaseReady = true);
-            float start = Time.realtimeSinceStartup;
-            while (!firebaseReady && Time.realtimeSinceStartup - start < 10f)
-                yield return null;
-        }
-        if (!firebaseReady)
-        {
-            DeliverUserMetadataSaveResult(false, "firebase not ready");
+            DeliverUserMetadataSaveResult(false, "api unavailable");
             yield break;
         }
 
-        string safeUser = SanitizeFirebaseKey(userId);
-        var metadataTask = FirebaseDatabase.DefaultInstance.GetReference($"users/{safeUser}/metadata").GetValueAsync();
-        while (!metadataTask.IsCompleted) yield return null;
-
-        if (metadataTask.IsFaulted)
+        string response = null;
+        bool ok = false;
+        string endpoint = $"/api/k1l0/user/metadata?userId={UnityWebRequest.EscapeURL(userId)}";
+        yield return APIManager.Instance.Get(endpoint, (success, resp) =>
         {
-            DeliverUserMetadataSaveResult(false, metadataTask.Exception != null ? metadataTask.Exception.GetBaseException().Message : "metadata load failed");
+            ok = success;
+            response = resp;
+        });
+
+        if (!ok || string.IsNullOrWhiteSpace(response))
+        {
+            DeliverUserMetadataSaveResult(false, string.IsNullOrWhiteSpace(response) ? "metadata load failed" : response);
             yield break;
         }
 
-        var result = new NativeUserMetadataSaveResultPayload { ok = true, status = "user metadata loaded." };
-        if (metadataTask.Result != null && metadataTask.Result.Exists)
+        NativeUserMetadataSaveResultPayload result = null;
+        try { result = JsonUtility.FromJson<NativeUserMetadataSaveResultPayload>(response); }
+        catch (Exception ex)
         {
-            var m = metadataTask.Result;
-            result.name = m.Child("name").Value?.ToString() ?? "";
-            result.callsign = m.Child("callsign").Value?.ToString() ?? "";
-            result.cloakDesign = m.Child("cloakDesign").Value?.ToString() ?? "";
-            result.helmetDesign = m.Child("helmetDesign").Value?.ToString() ?? "";
-            result.selfieUrl = m.Child("selfieUrl").Value?.ToString() ?? "";
-            result.helmetUrl = m.Child("helmetUrl").Value?.ToString() ?? "";
-            result.cloakUrl = m.Child("cloakUrl").Value?.ToString() ?? "";
-            result.avatarUrl = m.Child("avatarUrl").Value?.ToString() ?? "";
+            DeliverUserMetadataSaveResult(false, $"metadata parse failed: {ex.Message}");
+            yield break;
         }
+
+        if (result == null || !result.ok)
+        {
+            DeliverUserMetadataSaveResult(false, result != null ? result.error : "metadata load failed");
+            yield break;
+        }
+
+        if (string.IsNullOrWhiteSpace(result.status))
+            result.status = "user metadata loaded.";
+        K1L0PlayerIdentitySkinApplier.ApplyFromMetadata(
+            result.helmetUrl,
+            result.cloakUrl,
+            result.avatarUrl,
+            result.helmetDesign,
+            result.cloakDesign,
+            result.helmetTextureUrl,
+            result.cloakTextureUrl,
+            result.skinRevision);
         DeliverUserMetadataSaveResult(result);
     }
 
@@ -822,72 +1150,72 @@ public class K1L0HUD : MonoBehaviour
             yield return UploadNativeTransmissionPhoto(payload.selfiePath, url => selfieUrl = url);
 
         var tm = TransmissionManager.Instance ?? FindFirstObjectByType<TransmissionManager>();
-        string userId = tm != null ? tm.GetUserIdForClient() : null;
-        if (string.IsNullOrWhiteSpace(userId) && FirebaseAuthManager.Instance != null)
-            userId = FirebaseAuthManager.Instance.GetUserId();
+        string userId = K1L0NativeSessionBridge.ResolveUserId("");
+        if (string.IsNullOrWhiteSpace(userId))
+            userId = tm != null ? tm.GetUserIdForClient() : null;
         if (string.IsNullOrWhiteSpace(userId)) userId = "anon";
 
-        bool firebaseReady = FirebaseBootstrap.IsReady;
-        if (!firebaseReady)
+        if (APIManager.Instance == null)
         {
-            FirebaseBootstrap.WhenReady(() => firebaseReady = true);
-            float start = Time.realtimeSinceStartup;
-            while (!firebaseReady && Time.realtimeSinceStartup - start < 10f)
-                yield return null;
-        }
-
-        if (!firebaseReady)
-        {
-            Debug.LogWarning("[K1L0HUD] Native user metadata save failed: Firebase not ready");
-            DeliverUserMetadataSaveResult(false, "firebase not ready");
+            DeliverUserMetadataSaveResult(false, "api unavailable");
             yield break;
         }
 
-        var metadata = new Dictionary<string, object>
+        var request = new NativeUserMetadataApiRequest
         {
-            { "name", payload.name ?? "" },
-            { "callsign", payload.callsign ?? "" },
-            { "cloakDesign", payload.cloakDesign ?? "" },
-            { "helmetDesign", payload.helmetDesign ?? "" },
-            { "updatedAt", ServerValue.Timestamp }
+            userId = userId,
+            name = payload.name ?? "",
+            callsign = payload.callsign ?? "",
+            cloakDesign = payload.cloakDesign ?? "",
+            helmetDesign = payload.helmetDesign ?? "",
+            selfieUrl = selfieUrl
         };
-        if (!string.IsNullOrWhiteSpace(selfieUrl))
-            metadata["selfieUrl"] = selfieUrl;
 
-        string path = $"users/{SanitizeFirebaseKey(userId)}/metadata";
-        var task = FirebaseDatabase.DefaultInstance.GetReference(path).UpdateChildrenAsync(metadata);
-        while (!task.IsCompleted) yield return null;
-
-        if (task.IsFaulted)
+        bool ok = false;
+        string response = null;
+        yield return APIManager.Instance.Post("/api/k1l0/user/metadata", JsonUtility.ToJson(request), (success, resp) =>
         {
-            Debug.LogWarning($"[K1L0HUD] Native user metadata save failed: {task.Exception}");
-            DeliverUserMetadataSaveResult(false, task.Exception != null ? task.Exception.GetBaseException().Message : "firebase write failed");
+            ok = success;
+            response = resp;
+        });
+
+        if (!ok || string.IsNullOrWhiteSpace(response))
+        {
+            DeliverUserMetadataSaveResult(false, string.IsNullOrWhiteSpace(response) ? "metadata save failed" : response, selfieUrl);
+            yield break;
         }
+
+        NativeUserMetadataSaveResultPayload saved = null;
+        try { saved = JsonUtility.FromJson<NativeUserMetadataSaveResultPayload>(response); }
+        catch (Exception ex)
+        {
+            DeliverUserMetadataSaveResult(false, $"metadata save parse failed: {ex.Message}", selfieUrl);
+            yield break;
+        }
+
+        if (saved == null || !saved.ok)
+        {
+            DeliverUserMetadataSaveResult(false, saved != null ? saved.error : "metadata save failed", selfieUrl);
+            yield break;
+        }
+
+        Debug.Log($"[K1L0HUD] Native user metadata saved via API user={userId} selfie={(string.IsNullOrWhiteSpace(saved.selfieUrl) ? "none" : "yes")}");
+        K1L0PlayerIdentitySkinApplier.ApplyFromMetadata(
+            saved.helmetUrl,
+            saved.cloakUrl,
+            saved.avatarUrl,
+            payload.helmetDesign,
+            payload.cloakDesign,
+            saved.helmetTextureUrl,
+            saved.cloakTextureUrl,
+            saved.skinRevision);
+
+        string effectiveSelfieUrl = !string.IsNullOrWhiteSpace(selfieUrl) ? selfieUrl : saved.selfieUrl;
+        DeliverUserMetadataSaveResult(true, "", effectiveSelfieUrl, saved.helmetUrl, saved.cloakUrl, saved.avatarUrl, "", saved.helmetTextureUrl, saved.cloakTextureUrl, saved.skinRevision);
+        if (!string.IsNullOrWhiteSpace(effectiveSelfieUrl))
+            StartCoroutine(RenderNativeUserIdentityCoroutine(userId, payload, effectiveSelfieUrl));
         else
-        {
-            Debug.Log($"[K1L0HUD] Native user metadata saved path={path} selfie={(string.IsNullOrWhiteSpace(selfieUrl) ? "none" : "yes")}");
-
-            // Re-render identity on EVERY save (not just when a new selfie is
-            // attached). Prompt-only edits to cloak/helmet design were
-            // silently skipping the render endpoint, so the avatar never
-            // refreshed. Fall back to the existing persisted selfieUrl when
-            // the user didn't attach a fresh one.
-            string effectiveSelfieUrl = selfieUrl;
-            if (string.IsNullOrWhiteSpace(effectiveSelfieUrl))
-            {
-                var existingTask = FirebaseDatabase.DefaultInstance
-                    .GetReference($"{path}/selfieUrl").GetValueAsync();
-                while (!existingTask.IsCompleted) yield return null;
-                if (!existingTask.IsFaulted && existingTask.Result != null && existingTask.Result.Exists)
-                    effectiveSelfieUrl = existingTask.Result.Value?.ToString() ?? "";
-            }
-
-            DeliverUserMetadataSaveResult(true, "", effectiveSelfieUrl);
-            if (!string.IsNullOrWhiteSpace(effectiveSelfieUrl))
-                StartCoroutine(RenderNativeUserIdentityCoroutine(userId, payload, effectiveSelfieUrl));
-            else
-                Debug.LogWarning("[K1L0HUD] Skipping identity render — no selfie attached or stored.");
-        }
+            Debug.LogWarning("[K1L0HUD] Skipping identity render — no selfie attached or stored.");
     }
 
     private IEnumerator RenderNativeUserIdentityCoroutine(string userId, NativeUserMetadataPayload payload, string selfieUrl)
@@ -927,7 +1255,16 @@ public class K1L0HUD : MonoBehaviour
             yield break;
         }
 
-            DeliverUserMetadataSaveResult(true, "", selfieUrl, parsed.helmetUrl, parsed.cloakUrl, parsed.avatarUrl, "identity rendered.");
+        K1L0PlayerIdentitySkinApplier.ApplyFromMetadata(
+            parsed.helmetUrl,
+            parsed.cloakUrl,
+            parsed.avatarUrl,
+            payload.helmetDesign,
+            payload.cloakDesign,
+            parsed.helmetTextureUrl,
+            parsed.cloakTextureUrl,
+            parsed.skinRevision);
+        DeliverUserMetadataSaveResult(true, "", selfieUrl, parsed.helmetUrl, parsed.cloakUrl, parsed.avatarUrl, "identity rendered.", parsed.helmetTextureUrl, parsed.cloakTextureUrl, parsed.skinRevision);
     }
 
     private IEnumerator BeginNativeTransmissionCoroutine(NativeTransmissionPayload payload)
@@ -939,6 +1276,7 @@ public class K1L0HUD : MonoBehaviour
             if (string.IsNullOrWhiteSpace(imageUrl))
             {
                 Debug.LogWarning($"[K1L0HUD] Native transmission photo upload failed path={payload.photoPath}");
+                DeliverNativeTransmissionStatus("error", "photo upload failed");
                 yield break;
             }
         }
@@ -947,6 +1285,7 @@ public class K1L0HUD : MonoBehaviour
         if (tm == null)
         {
             Debug.LogWarning("[K1L0HUD] Native transmission failed: TransmissionManager missing");
+            DeliverNativeTransmissionStatus("error", "TransmissionManager missing");
             yield break;
         }
 
@@ -954,6 +1293,7 @@ public class K1L0HUD : MonoBehaviour
         string mood = string.IsNullOrWhiteSpace(payload.mood) ? "wired" : payload.mood.Trim();
         string element = string.IsNullOrWhiteSpace(payload.element) ? "" : payload.element.Trim();
         Debug.Log($"[K1L0HUD] Native transmission start mood='{mood}' image={(string.IsNullOrWhiteSpace(imageUrl) ? "none" : "yes")}");
+        DeliverNativeTransmissionStatus("queued", "transmission queued");
         tm.StartTransmitterInteraction(null, element, message, imageUrl, mood);
     }
 
@@ -974,9 +1314,15 @@ public class K1L0HUD : MonoBehaviour
         }
 
         var tm = TransmissionManager.Instance ?? FindFirstObjectByType<TransmissionManager>();
+        if (APIManager.Instance == null)
+        {
+            Debug.LogWarning("[K1L0HUD] Native transmission photo upload failed: APIManager missing");
+            done?.Invoke(null);
+            yield break;
+        }
         var req = new NativeImageUploadRequest
         {
-            userId = tm != null ? tm.GetUserIdForClient() : "anon",
+            userId = K1L0NativeSessionBridge.ResolveUserId(tm != null ? tm.GetUserIdForClient() : "anon"),
             filename = Path.GetFileName(path),
             contentType = path.ToLowerInvariant().EndsWith(".png") ? "image/png" : "image/jpeg",
             imageBase64 = Convert.ToBase64String(bytes)
@@ -1012,7 +1358,7 @@ public class K1L0HUD : MonoBehaviour
             .Replace("/", "_");
     }
 
-    private static void DeliverUserMetadataSaveResult(bool ok, string error, string selfieUrl = "", string helmetUrl = "", string cloakUrl = "", string avatarUrl = "", string status = "")
+    private static void DeliverUserMetadataSaveResult(bool ok, string error, string selfieUrl = "", string helmetUrl = "", string cloakUrl = "", string avatarUrl = "", string status = "", string helmetTextureUrl = "", string cloakTextureUrl = "", long skinRevision = 0)
     {
         try
         {
@@ -1024,6 +1370,9 @@ public class K1L0HUD : MonoBehaviour
                 helmetUrl = helmetUrl ?? "",
                 cloakUrl = cloakUrl ?? "",
                 avatarUrl = avatarUrl ?? "",
+                helmetTextureUrl = helmetTextureUrl ?? "",
+                cloakTextureUrl = cloakTextureUrl ?? "",
+                skinRevision = skinRevision,
                 status = status ?? ""
             };
             K1L0DeliverUserMetadataSaveResult(JsonUtility.ToJson(payload));
@@ -1179,33 +1528,233 @@ public class K1L0HUD : MonoBehaviour
                     profile.camera.farClipPlane = Mathf.Max(50f, floatValue);
                     SaveFloat("farClipPlane", profile.camera.farClipPlane);
                     break;
-                case "auroraEnabled":
-                    profile.sky.auroraEnabled = boolValue;
-                    SaveBool("auroraEnabled", boolValue);
+                case "moonlightEnabled":
+                    profile.lighting.moonlightEnabled = boolValue;
+                    SaveBool("moonlightEnabled", boolValue);
                     break;
-                case "auroraIntensity":
-                    profile.sky.auroraIntensity = floatValue;
-                    SaveFloat("auroraIntensity", floatValue);
+                case "moonlightManualOverride":
+                    SaveBool("moonlightManualOverride", boolValue);
                     break;
-                case "auroraHeight":
-                    profile.sky.auroraHeight = floatValue;
-                    SaveFloat("auroraHeight", floatValue);
+                case "moonlightIntensity":
+                    profile.lighting.moonlightIntensity = Mathf.Clamp(floatValue, 0f, 8f);
+                    SaveFloat("moonlightIntensity", profile.lighting.moonlightIntensity);
                     break;
-                case "auroraDistance":
-                    profile.sky.auroraDistance = floatValue;
-                    SaveFloat("auroraDistance", floatValue);
+                case "moonlightRed":
+                    profile.lighting.moonlightColor.r = Mathf.Clamp(floatValue, 0f, 2f);
+                    SaveFloat("moonlightRed", profile.lighting.moonlightColor.r);
                     break;
-                case "auroraWidth":
-                    profile.sky.auroraWidth = floatValue;
-                    SaveFloat("auroraWidth", floatValue);
+                case "moonlightGreen":
+                    profile.lighting.moonlightColor.g = Mathf.Clamp(floatValue, 0f, 2f);
+                    SaveFloat("moonlightGreen", profile.lighting.moonlightColor.g);
                     break;
-                case "auroraVerticalSize":
-                    profile.sky.auroraVerticalSize = floatValue;
-                    SaveFloat("auroraVerticalSize", floatValue);
+                case "moonlightBlue":
+                    profile.lighting.moonlightColor.b = Mathf.Clamp(floatValue, 0f, 2f);
+                    SaveFloat("moonlightBlue", profile.lighting.moonlightColor.b);
                     break;
-                case "auroraDriftSpeed":
-                    profile.sky.auroraDriftSpeed = floatValue;
-                    SaveFloat("auroraDriftSpeed", floatValue);
+                case "moonlightPitch":
+                    profile.lighting.moonlightRotation.x = Mathf.Clamp(floatValue, -180f, 180f);
+                    SaveFloat("moonlightPitch", profile.lighting.moonlightRotation.x);
+                    break;
+                case "moonlightYaw":
+                    profile.lighting.moonlightRotation.y = Mathf.Clamp(floatValue, -180f, 180f);
+                    SaveFloat("moonlightYaw", profile.lighting.moonlightRotation.y);
+                    break;
+                case "moonlightRoll":
+                    profile.lighting.moonlightRotation.z = Mathf.Clamp(floatValue, -180f, 180f);
+                    SaveFloat("moonlightRoll", profile.lighting.moonlightRotation.z);
+                    break;
+                case "ambientEnabled":
+                    profile.lighting.ambientEnabled = boolValue;
+                    SaveBool("ambientEnabled", boolValue);
+                    break;
+                case "ambientIntensity":
+                    profile.lighting.ambientIntensity = Mathf.Clamp(floatValue, 0f, 8f);
+                    SaveFloat("ambientIntensity", profile.lighting.ambientIntensity);
+                    break;
+                case "enableShadows":
+                    profile.lighting.enableShadows = boolValue;
+                    SaveBool("enableShadows", boolValue);
+                    break;
+                case "shadowStrength":
+                    profile.lighting.shadowStrength = Mathf.Clamp01(floatValue);
+                    SaveFloat("shadowStrength", profile.lighting.shadowStrength);
+                    break;
+                case "shadowDistance":
+                    profile.lighting.shadowDistance = Mathf.Clamp(floatValue, 0f, 500f);
+                    SaveFloat("shadowDistance", profile.lighting.shadowDistance);
+                    break;
+                case "spotlightEnabled":
+                    profile.lighting.spotlightEnabled = boolValue;
+                    if (boolValue && profile.lighting.spotlightIntensity <= 0.01f)
+                        profile.lighting.spotlightIntensity = 1f;
+                    SaveBool("spotlightEnabled", boolValue);
+                    SaveFloat("spotlightIntensity", profile.lighting.spotlightIntensity);
+                    break;
+                case "spotlightIntensity":
+                    profile.lighting.spotlightIntensity = Mathf.Clamp(floatValue, 0f, 12f);
+                    SaveFloat("spotlightIntensity", profile.lighting.spotlightIntensity);
+                    break;
+                case "reflectionsEnabled":
+                    profile.lighting.reflectionsEnabled = boolValue;
+                    SaveBool("reflectionsEnabled", boolValue);
+                    break;
+                case "reflectionIntensity":
+                    profile.lighting.reflectionIntensity = Mathf.Clamp(floatValue, 0f, 2f);
+                    SaveFloat("reflectionIntensity", profile.lighting.reflectionIntensity);
+                    break;
+                case "fogConstantDensity":
+                    profile.volumetricFog.constantDensity = boolValue;
+                    SaveBool("fogConstantDensity", boolValue);
+                    break;
+                case "fogDensity":
+                    profile.volumetricFog.density = Mathf.Clamp(floatValue, 0f, 3f);
+                    SaveFloat("fogDensity", profile.volumetricFog.density);
+                    if (rm != null) rm.dayFogDensity = profile.volumetricFog.density;
+                    break;
+                case "fogNoiseStrength":
+                    profile.volumetricFog.noiseStrength = Mathf.Clamp(floatValue, 0f, 3f);
+                    SaveFloat("fogNoiseStrength", profile.volumetricFog.noiseStrength);
+                    if (rm != null) rm.dayFogNoiseStrength = profile.volumetricFog.noiseStrength;
+                    break;
+                case "fogNoiseScale":
+                    profile.volumetricFog.noiseScale = Mathf.Clamp(floatValue, 0.1f, 80f);
+                    SaveFloat("fogNoiseScale", profile.volumetricFog.noiseScale);
+                    if (rm != null) rm.dayFogNoiseScale = profile.volumetricFog.noiseScale;
+                    break;
+                case "fogBrightness":
+                    profile.volumetricFog.brightness = Mathf.Clamp(floatValue, 0f, 2f);
+                    SaveFloat("fogBrightness", profile.volumetricFog.brightness);
+                    if (rm != null) rm.dayFogBrightness = profile.volumetricFog.brightness;
+                    break;
+                case "fogScatteringIntensity":
+                    profile.volumetricFog.scatteringIntensity = Mathf.Clamp(floatValue, 0f, 4f);
+                    SaveFloat("fogScatteringIntensity", profile.volumetricFog.scatteringIntensity);
+                    if (rm != null) rm.dayFogScatteringIntensity = profile.volumetricFog.scatteringIntensity;
+                    break;
+                case "fogHeight":
+                    profile.volumetricFog.customHeight = true;
+                    profile.volumetricFog.height = Mathf.Clamp(floatValue, 0f, 500f);
+                    SaveBool("fogCustomHeight", true);
+                    SaveFloat("fogHeight", profile.volumetricFog.height);
+                    if (rm != null) rm.dayFogHeight = profile.volumetricFog.height;
+                    break;
+                case "fogDistantFog":
+                    profile.volumetricFog.distantFog = boolValue;
+                    SaveBool("fogDistantFog", boolValue);
+                    break;
+                case "fogDistantDensity":
+                    profile.volumetricFog.distantFogDistanceDensity = Mathf.Clamp(floatValue, 0f, 2f);
+                    SaveFloat("fogDistantDensity", profile.volumetricFog.distantFogDistanceDensity);
+                    if (rm != null) rm.dayFogDistantDensity = profile.volumetricFog.distantFogDistanceDensity;
+                    break;
+                case "fogDistantStart":
+                    profile.volumetricFog.distantFogStartDistance = Mathf.Clamp(floatValue, 0f, 12000f);
+                    SaveFloat("fogDistantStart", profile.volumetricFog.distantFogStartDistance);
+                    if (rm != null) rm.dayFogDistantStart = profile.volumetricFog.distantFogStartDistance;
+                    break;
+                case "fogNativeLights":
+                    profile.volumetricFog.enableNativeLights = boolValue;
+                    SaveBool("fogNativeLights", boolValue);
+                    break;
+                case "fogNativeLightsMultiplier":
+                    profile.volumetricFog.nativeLightsMultiplier = Mathf.Clamp(floatValue, 0f, 10f);
+                    SaveFloat("fogNativeLightsMultiplier", profile.volumetricFog.nativeLightsMultiplier);
+                    break;
+
+                // Night Fog & Ground Settings
+                case "fogDensity_night":
+                    SaveFloat("fogDensity_night", floatValue);
+                    if (rm != null) rm.nightFogDensity = floatValue;
+                    break;
+                case "fogNoiseStrength_night":
+                    SaveFloat("fogNoiseStrength_night", floatValue);
+                    if (rm != null) rm.nightFogNoiseStrength = floatValue;
+                    break;
+                case "fogNoiseScale_night":
+                    SaveFloat("fogNoiseScale_night", floatValue);
+                    if (rm != null) rm.nightFogNoiseScale = floatValue;
+                    break;
+                case "fogBrightness_night":
+                    SaveFloat("fogBrightness_night", floatValue);
+                    if (rm != null) rm.nightFogBrightness = floatValue;
+                    break;
+                case "fogScatteringIntensity_night":
+                    SaveFloat("fogScatteringIntensity_night", floatValue);
+                    if (rm != null) rm.nightFogScatteringIntensity = floatValue;
+                    break;
+                case "fogHeight_night":
+                    SaveFloat("fogHeight_night", floatValue);
+                    if (rm != null) rm.nightFogHeight = floatValue;
+                    break;
+                case "fogDistantDensity_night":
+                    SaveFloat("fogDistantDensity_night", floatValue);
+                    if (rm != null) rm.nightFogDistantDensity = floatValue;
+                    break;
+                case "fogDistantStart_night":
+                    SaveFloat("fogDistantStart_night", floatValue);
+                    if (rm != null) rm.nightFogDistantStart = floatValue;
+                    break;
+                case "groundHue_night":
+                    SaveFloat("groundHue_night", floatValue);
+                    if (rm != null) rm.nightGroundHue = floatValue;
+                    break;
+                case "groundSaturation_night":
+                    SaveFloat("groundSaturation_night", floatValue);
+                    if (rm != null) rm.nightGroundSaturation = floatValue;
+                    break;
+
+                case "groundHue":
+                {
+                    Color.RGBToHSV(profile.ground.groundColor, out _, out var s, out var v);
+                    if (v < 0.05f) v = 0.5f; // default white reads as v=1; this guards against pure-black
+                    profile.ground.groundColor = Color.HSVToRGB(Mathf.Clamp01(floatValue), Mathf.Max(0.05f, s), v);
+                    SaveFloat("groundHue", floatValue);
+                    if (rm != null) rm.dayGroundHue = floatValue;
+                    break;
+                }
+                case "groundSaturation":
+                {
+                    Color.RGBToHSV(profile.ground.groundColor, out var h, out _, out var v);
+                    if (v < 0.05f) v = 0.5f;
+                    profile.ground.groundColor = Color.HSVToRGB(h, Mathf.Clamp01(floatValue), v);
+                    SaveFloat("groundSaturation", floatValue);
+                    if (rm != null) rm.dayGroundSaturation = floatValue;
+                    break;
+                }
+                case "zossEmissiveIntensity":
+                    profile.buildings.zossEmissiveIntensity = Mathf.Clamp(floatValue, 0f, 50f);
+                    SaveFloat("zossEmissiveIntensity", profile.buildings.zossEmissiveIntensity);
+                    break;
+                case "zossEmissiveSmoothness":
+                    profile.buildings.zossEmissiveSmoothness = Mathf.Clamp01(floatValue);
+                    SaveFloat("zossEmissiveSmoothness", profile.buildings.zossEmissiveSmoothness);
+                    break;
+                case "zossEmissiveMetallic":
+                    profile.buildings.zossEmissiveMetallic = Mathf.Clamp01(floatValue);
+                    SaveFloat("zossEmissiveMetallic", profile.buildings.zossEmissiveMetallic);
+                    break;
+                case "zossEmissiveHue":
+                {
+                    // Recolor the window-glow emissive material by replacing the
+                    // hue channel of the current color (keeps S/V).
+                    Color.RGBToHSV(profile.buildings.zossEmissiveColor, out _, out var s, out var v);
+                    var c = Color.HSVToRGB(Mathf.Clamp01(floatValue), s, Mathf.Max(0.01f, v));
+                    profile.buildings.zossEmissiveColor = c;
+                    profile.buildings.zossEmissiveEmission = c;
+                    SaveFloat("zossEmissiveHue", floatValue);
+                    break;
+                }
+                case "zossEmissiveSaturation":
+                {
+                    Color.RGBToHSV(profile.buildings.zossEmissiveColor, out var h, out _, out var v);
+                    var c = Color.HSVToRGB(h, Mathf.Clamp01(floatValue), Mathf.Max(0.01f, v));
+                    profile.buildings.zossEmissiveColor = c;
+                    profile.buildings.zossEmissiveEmission = c;
+                    SaveFloat("zossEmissiveSaturation", floatValue);
+                    break;
+                }
+                case "skyTargetFps":
+                    DynamicSkyVideoController.SetSkyFps(floatValue);
                     break;
             }
         }
@@ -1227,6 +1776,9 @@ public class K1L0HUD : MonoBehaviour
             case "panelMapBrightness":
                 SetPanelMapBrightness(floatValue);
                 break;
+            case "musicRadioEnabled":
+                PlayerPrefs.SetInt("k1lo_musicRadioEnabled", boolValue ? 1 : 0);
+                break;
             case "manualHour":
                 KiloWorld.Rendering.Systems.RenderManager.ManualHour = Mathf.Repeat(floatValue, 24f);
                 PlayerPrefs.SetFloat("k1lo_manualHour", KiloWorld.Rendering.Systems.RenderManager.ManualHour);
@@ -1235,15 +1787,28 @@ public class K1L0HUD : MonoBehaviour
             case "manualWeather":
                 int weatherIndex = Mathf.Clamp(Mathf.RoundToInt(floatValue), 0, ManualWeatherGlyphs.Length - 1);
                 KiloWorld.Rendering.Systems.RenderManager.ManualWeatherGlyph = ManualWeatherGlyphs[weatherIndex];
+                KiloWorld.Rendering.Systems.RenderManager.ManualWeatherOverrideEnabled = true;
                 PlayerPrefs.SetFloat("k1lo_manualWeather", weatherIndex);
                 PlayerPrefs.SetString("k1lo_manualWeatherGlyph", ManualWeatherGlyphs[weatherIndex]);
+                PlayerPrefs.SetInt("k1lo_manualWeatherOverrideEnabled", 1);
                 KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
+                break;
+            case "skyVideoUrl":
+                DynamicSkyVideoController.SetVideoUrl(value);
+                break;
+            case "testSkyOverride":
+                KiloWorld.Rendering.Systems.RenderManager.TestSkyOverrideEnabled = boolValue;
+                PlayerPrefs.SetInt("k1lo_testSkyOverride", boolValue ? 1 : 0);
+                KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
+                break;
+            case "transmissionFizzyEdges":
+                PlayerPrefs.SetInt("k1lo_transmissionFizzyEdges", boolValue ? 1 : 0);
                 break;
             case "ambientMinStepsToSpawn":
                 SetSignalFloat("k1lo_ambientMinStepsToSpawn", Mathf.Clamp(floatValue, 0f, 2000f));
                 break;
-            case "momentumSessionGraceMinutes":
-                SetSignalFloat("k1lo_momentumSessionGraceMinutes", Mathf.Clamp(floatValue, 1f, 30f));
+            case "momentumGraceSteps":
+                SetSignalFloat("k1lo_momentumGraceSteps", Mathf.Clamp(floatValue, 10f, 500f));
                 break;
             case "ambientBeamTtlMinutes":
                 SetSignalFloat("k1lo_ambientBeamTtlMinutes", Mathf.Clamp(floatValue, 1f, 240f));
@@ -1256,6 +1821,23 @@ public class K1L0HUD : MonoBehaviour
         PlayerPrefs.Save();
         rm?.Apply();
         Debug.Log($"[K1L0HUD] Native setting {key}={value}");
+    }
+
+    public void CaptureSnapshot(string mode)
+    {
+        EnsureScreenshot();
+        var ss = K1L0Screenshot.Instance;
+        if (ss == null)
+        {
+            Debug.LogWarning("[K1L0HUD] Snapshot requested but K1L0Screenshot is missing.");
+            return;
+        }
+
+        bool analyze = string.IsNullOrWhiteSpace(mode) ||
+                       mode == "1" ||
+                       mode.Equals("true", System.StringComparison.OrdinalIgnoreCase) ||
+                       mode.Equals("analyze", System.StringComparison.OrdinalIgnoreCase);
+        ss.Capture(analyze);
     }
 
     private static void SaveFloat(string key, float value)
@@ -1275,8 +1857,13 @@ public class K1L0HUD : MonoBehaviour
         if (director == null) return;
         if (key == "k1lo_ambientMinStepsToSpawn")
             director.ambientMinStepsToSpawn = Mathf.RoundToInt(value);
-        else if (key == "k1lo_momentumSessionGraceMinutes")
-            director.momentumSessionGraceMinutes = value;
+        else if (key == "k1lo_momentumGraceSteps")
+        {
+            int n = Mathf.Clamp(Mathf.RoundToInt(value), 10, 500);
+            director.momentumGraceSteps = n;
+            PlayerPrefs.SetInt(key, n);
+            UserPresenceManager.NotifyMomentumGraceStepsChanged(n);
+        }
         else if (key == "k1lo_ambientBeamTtlMinutes")
             director.ambientBeamTtlMinutes = value;
         else if (key == "k1lo_ambientCollectRadiusMeters")
@@ -1292,6 +1879,14 @@ public class K1L0HUD : MonoBehaviour
 
     void SetHudVisible(bool visible)
     {
+        if (NativeOverlayOwnsHud)
+        {
+            hudUserVisible = false;
+            if (K1L0CanvasRoot.HUD != null)
+                K1L0CanvasRoot.HUD.gameObject.SetActive(false);
+            return;
+        }
+
         hudUserVisible = visible;
 
         if (!visible)
@@ -1769,6 +2364,17 @@ class NativeUserMetadataPayload
 }
 
 [Serializable]
+class NativeUserMetadataApiRequest
+{
+    public string userId;
+    public string name;
+    public string callsign;
+    public string cloakDesign;
+    public string helmetDesign;
+    public string selfieUrl;
+}
+
+[Serializable]
 class NativeUserMetadataSaveResultPayload
 {
     public bool ok;
@@ -1781,6 +2387,9 @@ class NativeUserMetadataSaveResultPayload
     public string helmetUrl;
     public string cloakUrl;
     public string avatarUrl;
+    public string helmetTextureUrl;
+    public string cloakTextureUrl;
+    public long skinRevision;
     public string status;
 }
 
@@ -1803,6 +2412,9 @@ class NativeUserIdentityRenderResponse
     public string helmetUrl;
     public string cloakUrl;
     public string avatarUrl;
+    public string helmetTextureUrl;
+    public string cloakTextureUrl;
+    public long skinRevision;
 }
 
 [Serializable]

@@ -1,6 +1,7 @@
 using UnityEditor;
 using UnityEditor.Build.Reporting;
 using System.Linq;
+using System.IO;
 
 public class CommandLineBuild
 {
@@ -39,14 +40,11 @@ public class CommandLineBuild
         PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
         EnsureAlwaysIncludedShaders("Skybox/Procedural", "Skybox/Cubemap", "Universal Render Pipeline/Unlit", "Universal Render Pipeline/Particles/Unlit");
 
-        // Manual code signing for device builds. Scoping the team/profile to the Unity
-        // targets here (rather than passing them globally to xcodebuild) keeps the signing
-        // settings off the SwiftPM/Firebase package targets, which reject provisioning
-        // profiles. Team 7R2746UPX7 with the local "com.filowatt.k1lo" development profile.
-        PlayerSettings.iOS.appleEnableAutomaticSigning = false;
+        // Let Xcode select the current K1L0 provisioning profile. A previously pinned
+        // profile UUID resolved to the stale lowercase K1L0 bundle id.
+        PlayerSettings.iOS.appleEnableAutomaticSigning = true;
         PlayerSettings.iOS.appleDeveloperTeamID = "7R2746UPX7";
-        PlayerSettings.iOS.iOSManualProvisioningProfileType = ProvisioningProfileType.Development;
-        PlayerSettings.iOS.iOSManualProvisioningProfileID = "67f9ab53-0e20-4359-86f4-41dc044a69e0";
+        PlayerSettings.iOS.iOSManualProvisioningProfileID = "";
 
         var scenes = EditorBuildSettings.scenes
             .Where(s => s.enabled)
@@ -136,6 +134,11 @@ public class CommandLineBuild
             .ToArray();
 
         const string appPath = "/Users/kiloverse/unitykiloverse/Builds/Mac/K1L0.app";
+        if (Directory.Exists(appPath))
+        {
+            Directory.Delete(appPath, true);
+            UnityEngine.Debug.Log($"[BuildMac] Deleted stale app bundle before build: {appPath}");
+        }
         var options = new BuildPlayerOptions
         {
             scenes = scenes,
@@ -188,13 +191,15 @@ public class CommandLineBuild
         // Prefer the installed Apple Development identity so Gatekeeper accepts the build.
         // Fallback to ad-hoc if no identity is available.
         string identity = "640064C92384F0D2AF983CECF45421DFCE72882B";
+        string entitlements = System.IO.Path.GetFullPath("BuildResources/K1L0.entitlements");
+        string entitlementsArg = System.IO.File.Exists(entitlements) ? $"--entitlements \"{entitlements}\"" : "";
         try
         {
-            RunCmd("/usr/bin/codesign", $"--force --deep --sign {identity} \"{appPath}\"");
+            RunCmd("/usr/bin/codesign", $"--force --deep {entitlementsArg} --sign {identity} \"{appPath}\"");
         }
         catch
         {
-            RunCmd("/usr/bin/codesign", $"--force --deep --sign - \"{appPath}\"");
+            RunCmd("/usr/bin/codesign", $"--force --deep {entitlementsArg} --sign - \"{appPath}\"");
         }
     }
 

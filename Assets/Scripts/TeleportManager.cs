@@ -2,6 +2,8 @@ using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
 using System.Collections;
+using System;
+using System.Runtime.InteropServices;
 using Kiloverse.Mapbox;
 using KiloWorld.Rendering;
 using KiloWorld.Rendering.Systems;
@@ -40,7 +42,29 @@ public class TeleportManager : MonoBehaviour
         }
     }
 
+    [System.Serializable]
+    private class NativeLocationModePayload
+    {
+        public string mode;
+        public bool liveGps;
+        public string name;
+        public double latitude;
+        public double longitude;
+    }
+
     private LatitudeLongitude? _startupCoords; // Cached startup coordinates from profile
+
+    private static bool s_receivedFirstMacLocation = false;
+    private static double s_firstMacLat = 0;
+    private static double s_firstMacLon = 0;
+
+#if UNITY_IOS && !UNITY_EDITOR
+    [DllImport("__Internal")]
+    private static extern IntPtr K1L0CurrentNativeLocationModeJson();
+#elif UNITY_STANDALONE_OSX && !UNITY_EDITOR
+    [DllImport("K1L0Overlay")]
+    private static extern IntPtr K1L0CurrentNativeLocationModeJson();
+#endif
 
     void Awake()
     {
@@ -109,12 +133,8 @@ public class TeleportManager : MonoBehaviour
         // Editor/Desktop: skip heavy UI/bootstrap and just apply startup location.
         if (!Application.isMobilePlatform)
         {
-            // Firebase + label plumbing still has to come up on desktop — without
-            // RuntimeLabelSetup running, FirebaseRestClient.Instance stays null and
-            // TransmissionManager can't open the SSE listener that delivers shot
-            // images. This used to only run on the mobile branch (line ~150), which
-            // left Mac standalone builds permanently stuck on loading placeholders.
-            if (FirebaseRestClient.Instance == null)
+            // Label/render bootstrap still has to come up on desktop.
+            if (FindObjectOfType<RuntimeLabelSetup>() == null)
             {
                 new GameObject("AutoBootstrapper").AddComponent<RuntimeLabelSetup>().Setup();
             }
@@ -240,6 +260,13 @@ public class TeleportManager : MonoBehaviour
         while (map == null || !mapReady)
         {
             yield return null;
+        }
+
+        if (TryGetStoredFixedNativeLocationMode(out var nativePayload))
+        {
+            Debug.Log($"[TeleportManager] Native fixed location boot: {nativePayload.mode} ({nativePayload.latitude:F6}, {nativePayload.longitude:F6})");
+            ApplyNativeLocationMode(JsonUtility.ToJson(nativePayload));
+            yield break;
         }
 
         // DELEGATE TO GPSLocationController - do NOT call Input.location.Start() here!
@@ -549,6 +576,26 @@ public class TeleportManager : MonoBehaviour
         }
 
         LatitudeLongitude coords = new LatitudeLongitude(lat, lon);
+
+        if (Application.isMobilePlatform && map.MapboxMap == null)
+        {
+            Debug.Log($"[TeleportManager] Initializing mobile map at fixed location {name}: {lat}, {lon}");
+            float currentZoom = map.MapInformation != null ? (float)map.MapInformation.Zoom : 16f;
+            map.MapInformation.SetInformation(coords, currentZoom);
+
+            var player = FindObjectOfType<KiloFirstPersonController>();
+            if (player != null)
+            {
+                player.playerGPS = coords;
+                player.transform.position = new Vector3(0, 2f, 0);
+                Debug.Log($"[TeleportManager] Fixed boot: Updated playerGPS to ({lat:F6}, {lon:F6}) before map init");
+            }
+
+            ClearLocationMemoryForJump();
+            map.Initialize();
+            mapReady = true;
+            return;
+        }
         
         if (!mapReady || map.MapboxMap == null)
         {
@@ -563,6 +610,132 @@ public class TeleportManager : MonoBehaviour
         Debug.Log($"[TeleportManager] Teleporting to {name}: {lat}, {lon}");
         LogNearbyPOIs();
         UpdateMapLocation(coords);
+    }
+
+    public void ApplyNativeLocationMode(string json)
+    {
+        NativeLocationModePayload payload = null;
+        try
+        {
+            payload = JsonUtility.FromJson<NativeLocationModePayload>(json);
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning($"[TeleportManager] ApplyNativeLocationMode parse failed: {ex.Message}");
+            return;
+        }
+
+        if (payload == null)
+        {
+            Debug.LogWarning("[TeleportManager] ApplyNativeLocationMode missing payload.");
+            return;
+        }
+
+        if (payload.liveGps || string.Equals(payload.mode, "live", System.StringComparison.OrdinalIgnoreCase))
+        {
+            GPSLocationController.GPSDisabled = false;
+            ClearLocationMemoryForJump();
+            Debug.Log("[TeleportManager] Native location mode: live GPS");
+            if (Application.isMobilePlatform)
+                TeleportToGPS();
+            return;
+        }
+
+        if (double.IsNaN(payload.latitude) || double.IsNaN(payload.longitude) ||
+            (Mathf.Approximately((float)payload.latitude, 0f) && Mathf.Approximately((float)payload.longitude, 0f)))
+        {
+            Debug.LogWarning($"[TeleportManager] ApplyNativeLocationMode invalid coordinates mode={payload.mode}");
+            return;
+        }
+
+        GPSLocationController.GPSDisabled = true;
+        if (Application.isMobilePlatform && Input.location.status != LocationServiceStatus.Stopped)
+            Input.location.Stop();
+        ClearLocationMemoryForJump();
+        TeleportToCoordinates(string.IsNullOrEmpty(payload.name) ? payload.mode : payload.name, payload.latitude, payload.longitude);
+    }
+
+    public void ApplyNativeSimulatedLocation(string json)
+    {
+        NativeLocationModePayload payload = null;
+        try
+        {
+            payload = JsonUtility.FromJson<NativeLocationModePayload>(json);
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning($"[TeleportManager] ApplyNativeSimulatedLocation parse failed: {ex.Message}");
+            return;
+        }
+
+        if (payload == null ||
+            payload.liveGps ||
+            double.IsNaN(payload.latitude) ||
+            double.IsNaN(payload.longitude) ||
+            (Mathf.Approximately((float)payload.latitude, 0f) && Mathf.Approximately((float)payload.longitude, 0f)))
+        {
+            return;
+        }
+
+        GPSLocationController.GPSDisabled = true;
+        var target = new LatitudeLongitude(payload.latitude, payload.longitude);
+        var player = FindObjectOfType<KiloFirstPersonController>();
+        if (player != null)
+        {
+            player.playerGPS = target;
+            player.transform.position = new Vector3(0f, player.transform.position.y, 0f);
+        }
+
+        if (map != null)
+        {
+            map.SetPosition(target.Latitude, target.Longitude);
+        }
+    }
+
+    public static bool StoredNativeLocationModeIsFixed()
+    {
+        return TryGetStoredFixedNativeLocationMode(out _);
+    }
+
+    private static bool TryGetStoredFixedNativeLocationMode(out NativeLocationModePayload payload)
+    {
+        payload = null;
+#if (UNITY_IOS || UNITY_STANDALONE_OSX) && !UNITY_EDITOR
+        IntPtr ptr = IntPtr.Zero;
+        try
+        {
+            ptr = K1L0CurrentNativeLocationModeJson();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[TeleportManager] Native location mode query failed: {ex.Message}");
+            return false;
+        }
+
+        if (ptr == IntPtr.Zero) return false;
+        string json = Marshal.PtrToStringAnsi(ptr);
+        if (string.IsNullOrWhiteSpace(json)) return false;
+
+        try
+        {
+            payload = JsonUtility.FromJson<NativeLocationModePayload>(json);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[TeleportManager] Stored native location parse failed: {ex.Message}");
+            payload = null;
+            return false;
+        }
+
+        if (payload == null || payload.liveGps || string.Equals(payload.mode, "live", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return !double.IsNaN(payload.latitude)
+            && !double.IsNaN(payload.longitude)
+            && !(Mathf.Approximately((float)payload.latitude, 0f) && Mathf.Approximately((float)payload.longitude, 0f));
+#else
+        return false;
+#endif
     }
 
     public void TeleportToLocation(int index)
@@ -714,9 +887,7 @@ public class TeleportManager : MonoBehaviour
             return;
         }
 
-        // NO CLEARING: We keep all discovered POIs in memory.
-        // Sorting by distance naturally handles "local" relevance.
-        // Old city POIs will just be at the bottom of the list.
+        ClearLocationMemoryForJump();
 
         // 1. Reset Player Position to (0,0,0) AND UPDATE playerGPS
         // CRITICAL: playerGPS must be updated or OvertureMapManager will load tiles for old location!
@@ -765,6 +936,21 @@ public class TeleportManager : MonoBehaviour
         {
             BuildingColliderManager.Instance.ForceUpdate();
         }
+    }
+
+    private void ClearLocationMemoryForJump()
+    {
+        var scanner = TransmitterScanner.Instance;
+        if (scanner != null)
+            scanner.ClearAll();
+
+        var director = SignalDirectorV2.Instance;
+        if (director != null)
+            director.ApplyNativeWorldNearby("{\"ok\":true,\"includeBeams\":true,\"beams\":[]}");
+
+        var overture = FindFirstObjectByType<OvertureMapManager>();
+        if (overture != null)
+            overture.ClearLoadedTilesForLocationJump();
     }
 
     private IEnumerator WaitAndTeleport(LatitudeLongitude target)

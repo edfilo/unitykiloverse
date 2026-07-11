@@ -1,6 +1,8 @@
 using UnityEngine;
 using UnityEngine.Profiling;
 using TMPro;
+using System.Globalization;
+using Kiloverse.Mapbox;
 #if UNITY_IOS && !UNITY_EDITOR
 using System.Runtime.InteropServices;
 #endif
@@ -40,6 +42,9 @@ public class K1L0PerfOverlay : MonoBehaviour
 #if UNITY_IOS && !UNITY_EDITOR
     [DllImport("__Internal")]
     private static extern int _GetThermalState();
+
+    [DllImport("__Internal")]
+    private static extern void K1L0DeliverPerfStats(string json);
 #endif
 
     private static K1L0PerfOverlay _instance;
@@ -159,6 +164,33 @@ public class K1L0PerfOverlay : MonoBehaviour
             $"<#{fpsHex}>{_currentFps:F0} FPS</color> <color=#888>{worstMs:F0}ms</color>\n" +
             $"<#{thermHex}>{_thermalState}</color> {allocMB}MB  {stepsStr}\n" +
             $"{batStr} {drainStr}%/hr ({totalDrop:F1}% in {totalElapsed / 60f:F0}m)";
+
+        PushNativePerfStats(worstMs, allocMB, reservedMB, bat, _drainPerHour);
+    }
+
+    void PushNativePerfStats(float worstMs, long allocMB, long reservedMB, float batteryLevel, float drainPerHour)
+    {
+#if UNITY_IOS && !UNITY_EDITOR
+        string json = string.Format(
+            CultureInfo.InvariantCulture,
+            "{{\"fps\":{0:F1},\"frameMs\":{1:F1},\"allocMB\":{2},\"reservedMB\":{3},\"thermal\":\"{4}\",\"batteryPct\":{5:F1},\"batteryDrainPctPerHour\":{6:F2},{7}}}",
+            _currentFps,
+            worstMs,
+            allocMB,
+            reservedMB,
+            EscapeJson(_thermalState),
+            batteryLevel >= 0 ? batteryLevel * 100f : -1f,
+            drainPerHour,
+            OvertureMapManager.RenderDebugJson()
+        );
+        K1L0DeliverPerfStats(json);
+#endif
+    }
+
+    static string EscapeJson(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
     }
 
     void UpdateThermalState()

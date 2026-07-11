@@ -197,7 +197,17 @@ public class PedometerService : MonoBehaviour
         // Restore the persisted session counter so it continues across restarts.
         // iOS overwrites stepCount from the native pedometer anyway, so only the
         // local-accumulation platforms (Mac/editor/Android) need this restore.
-        #if !UNITY_IOS || UNITY_EDITOR
+        #if UNITY_STANDALONE_OSX && !UNITY_EDITOR
+        loadedSimulatedStepState = false;
+        stepCount = 0;
+        previousStepCount = 0;
+        distanceMeters = 0d;
+        virtualStepRemainderMeters = 0f;
+        ResetSimulatedStepTotals();
+        SaveSimulatedStepState();
+        PlayerPrefs.Save();
+        Debug.Log("[PedometerService] Mac simulated steps reset to zero on launch.");
+        #elif !UNITY_IOS || UNITY_EDITOR
         loadedSimulatedStepState = LoadSimulatedStepState();
         if (!loadedSimulatedStepState)
             stepCount = Mathf.Max(stepCount, PlayerPrefs.GetInt(KEY_SESSION_STEPS, 0));
@@ -319,12 +329,13 @@ public class PedometerService : MonoBehaviour
         tempHistoryList = new List<DailyStepData>();
         pendingHistoryRequests = 7;
 
+        System.DateTime now = System.DateTime.Now;
         System.DateTime today = System.DateTime.Today; // Local time midnight
 
         for (int i = 0; i < 7; i++)
         {
             System.DateTime dayStart = today.AddDays(-i);
-            System.DateTime dayEnd = dayStart.AddDays(1).AddSeconds(-1);
+            System.DateTime dayEnd = i == 0 ? now : dayStart.AddDays(1);
 
             double startTs = (dayStart.ToUniversalTime() - new System.DateTime(1970, 1, 1)).TotalSeconds;
             double endTs = (dayEnd.ToUniversalTime() - new System.DateTime(1970, 1, 1)).TotalSeconds;
@@ -361,8 +372,8 @@ public class PedometerService : MonoBehaviour
 
         for (int i = 0; i < hours; i++)
         {
-            double endTs = topOfHour - (i * 3600);
-            double startTs = endTs - 3600;
+            double startTs = topOfHour - (i * 3600);
+            double endTs = i == 0 ? now : startTs + 3600;
 
             _QueryPedometerData(startTs, endTs, OnHourlyBreakdownReceived);
         }
@@ -473,13 +484,13 @@ public class PedometerService : MonoBehaviour
         return cachedStepIntervals.ContainsKey(minutes) ? cachedStepIntervals[minutes] : -1;
     }
 
-    public void RefreshWalkingBucketsIfDue(bool force = false, int inactivityBucketMinutes = WalkingBucketMinutes, int minActiveSteps = 50)
+    public void RefreshWalkingBucketsIfDue(bool force = false, int inactivityBucketMinutes = WalkingBucketMinutes, int minActiveSteps = 50, int inactivityStepThreshold = -1)
     {
         if (!force && Time.unscaledTime < nextWalkingBucketRefresh) return;
         if (walkBucketInFlight) return;
 
         nextWalkingBucketRefresh = Time.unscaledTime + WalkingBucketRefreshSeconds;
-        ConfigureWalkingSessionClassifier(inactivityBucketMinutes, minActiveSteps);
+        ConfigureWalkingSessionClassifier(inactivityBucketMinutes, minActiveSteps, inactivityStepThreshold);
 
         #if UNITY_IOS && !UNITY_EDITOR
         QueryMinuteStepsFromPedometer();
@@ -500,15 +511,33 @@ public class PedometerService : MonoBehaviour
     {
         if (!walkBucketReady)
             return "<size=11>walking: measuring last 25m...</size>";
-        string state = walkCurrentBucketInactive ? "inactive" : (HasWalkingBucketSignal(minSteps) ? "active" : "keep walking");
-        return $"<size=11>walking: {state} session {walkWindowSteps}/{Mathf.Max(0, minSteps)}  current {walkCurrentBucketSteps}st/{walkCurrentBucketMeters:F0}m</size>";
+        bool gotSignal = HasWalkingBucketSignal(minSteps);
+        int target = Mathf.Max(1, minSteps);
+        if (gotSignal)
+        {
+            // Signal locked — strength bars are shown elsewhere; here just emit the percent.
+            int pct = Mathf.Clamp(Mathf.RoundToInt((walkWindowSteps / (float)target) * 100f), 0, 999);
+            return $"<size=11>walking: active {pct}%</size>";
+        }
+        if (walkCurrentBucketInactive)
+        {
+            return $"<size=11>walking: inactive session {walkWindowSteps}/{target}  current {walkCurrentBucketSteps}st/{walkCurrentBucketMeters:F0}m</size>";
+        }
+        // Grace / "keep walking" — show debug steps so the user can see how many more they need.
+        int remaining = Mathf.Max(0, target - walkWindowSteps);
+        return $"<size=11>walking: keep walking session {walkWindowSteps}/{target}  current {walkCurrentBucketSteps}st/{walkCurrentBucketMeters:F0}m</size>\n<size=10>(signal in {remaining} steps)</size>";
     }
 
-    private void ConfigureWalkingSessionClassifier(int inactivityBucketMinutes, int minActiveSteps)
+    private void ConfigureWalkingSessionClassifier(int inactivityBucketMinutes, int minActiveSteps, int inactivityStepThreshold = -1)
     {
         walkInactiveBucketMinutes = Mathf.Clamp(inactivityBucketMinutes, 1, 30);
-        int scaledStepThreshold = Mathf.RoundToInt(walkInactiveBucketMinutes * 4f);
-        walkInactiveStepThreshold = Mathf.Clamp(scaledStepThreshold, 3, Mathf.Max(3, Mathf.Max(0, minActiveSteps) - 1));
+        // If caller supplies an explicit step threshold (the new "RESET GRACE"
+        // user slider), use it directly. Otherwise fall back to the old
+        // minutes-derived value (4 steps/min) for backward compatibility.
+        int chosenThreshold = inactivityStepThreshold > 0
+            ? inactivityStepThreshold
+            : Mathf.RoundToInt(walkInactiveBucketMinutes * 4f);
+        walkInactiveStepThreshold = Mathf.Clamp(chosenThreshold, 3, 500);
         walkInactiveMetersThreshold = System.Math.Max(2d, walkInactiveBucketMinutes * 3d);
     }
 
@@ -773,50 +802,8 @@ public class PedometerService : MonoBehaviour
 
     private void WriteMinuteStepsToRtdb(List<MinuteStepBucket> minuteBuckets)
     {
-        if (minuteBuckets == null || minuteBuckets.Count == 0) return;
-        if (FirebaseRestClient.Instance == null || DeviceIDManager.Instance == null) return;
-
-        string userId = DeviceIDManager.Instance.GetCurrentUserId();
-        if (string.IsNullOrWhiteSpace(userId)) return;
-
-        string signature = BuildMinuteStepSignature(minuteBuckets);
-        if (signature == lastMinuteStepSyncSignature) return;
-        lastMinuteStepSyncSignature = signature;
-
-        #if UNITY_IOS && !UNITY_EDITOR
-        string source = "ios_pedometer";
-        #else
-        string source = "virtual";
-        #endif
-
-        var sb = new StringBuilder(4096);
-        sb.Append("{");
-        sb.Append("\"updatedAt\":").Append(minuteStepSyncUpdatedAt).Append(",");
-        sb.Append("\"bucketSeconds\":60,");
-        sb.Append("\"source\":\"").Append(source).Append("\",");
-        sb.Append("\"liveSteps\":").Append(Mathf.Max(0, walkWindowSteps)).Append(",");
-        sb.Append("\"currentBucketSteps\":").Append(Mathf.Max(0, walkCurrentBucketSteps)).Append(",");
-        sb.Append("\"currentBucketMeters\":").Append(System.Math.Max(0d, walkCurrentBucketMeters).ToString("F2", CultureInfo.InvariantCulture)).Append(",");
-        sb.Append("\"inactive\":").Append(walkCurrentBucketInactive ? "true" : "false").Append(",");
-        sb.Append("\"minutes\":[");
-        int count = Mathf.Min(MinuteStepBucketCount, minuteBuckets.Count);
-        for (int i = 0; i < count; i++)
-        {
-            if (i > 0) sb.Append(",");
-            long start = new DateTimeOffset(minuteBuckets[i].start.ToUniversalTime()).ToUnixTimeSeconds();
-            long end = new DateTimeOffset(minuteBuckets[i].end.ToUniversalTime()).ToUnixTimeSeconds();
-            sb.Append("{\"start\":").Append(start)
-                .Append(",\"end\":").Append(end)
-                .Append(",\"steps\":").Append(Mathf.Max(0, minuteBuckets[i].steps))
-                .Append(",\"meters\":").Append(System.Math.Max(0d, minuteBuckets[i].distanceMeters).ToString("F2", CultureInfo.InvariantCulture))
-                .Append("}");
-        }
-        sb.Append("]}");
-
-        string path = $"users/{userId}/{StepMinuteSyncPathName}";
-        FirebaseRestClient.Instance.SetData(path, sb.ToString(),
-            _ => Debug.Log($"[PedometerService] RTDB step minute sync wrote {count} rows live={walkWindowSteps} inactive={walkCurrentBucketInactive}"),
-            err => Debug.LogWarning($"[PedometerService] RTDB step minute sync failed: {err}"));
+        // Native iOS owns user-scoped realtime step sync. Unity only computes
+        // local movement state now; it must not write directly to RTDB.
     }
 
     private string BuildMinuteStepSignature(List<MinuteStepBucket> minuteBuckets)
@@ -1070,7 +1057,8 @@ public class PedometerService : MonoBehaviour
         RefreshLiveKilosyncState();
         UpdateSimulatedIntervalCache();
         #if !UNITY_IOS || UNITY_EDITOR
-        RefreshWalkingBucketsIfDue(true);
+        UpdateWalkingBucketsFromVirtualEvents();
+        RefreshWalkingBucketsIfDue(false);
         SaveSimulatedStepState();
         #endif
     }

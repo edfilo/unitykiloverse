@@ -52,6 +52,10 @@ public class PedometerUI : MonoBehaviour
             case "sunny":
             case "clear":
                 return "☀";
+            case "moon":
+            case "night":
+            case "clear-night":
+                return "☾";
             case "cloud":
             case "cloudy":
             case "overcast":

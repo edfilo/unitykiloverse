@@ -11,10 +11,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleExecutable</key><string>K1L0MacHUD</string>
-  <key>CFBundleIdentifier</key><string>com.filowatt.k1lo.machud</string>
+  <key>CFBundleIdentifier</key><string>com.filowatt.K1L0.machud</string>
   <key>CFBundleName</key><string>K1L0 Mac HUD</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><false/>
 </dict></plist>
 PLIST
 pkill -f K1L0MacHUD.app/Contents/MacOS/K1L0MacHUD 2>/dev/null || true

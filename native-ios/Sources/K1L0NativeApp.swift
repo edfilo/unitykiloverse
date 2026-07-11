@@ -597,7 +597,7 @@ struct NearbyPlacesPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Nearby")
+                    Text("Live Drops")
                         .font(.system(size: 25, weight: .bold))
                     Text(model.subtitle)
                         .font(.system(size: 13, weight: .medium))
@@ -972,15 +972,18 @@ final class StepModel: ObservableObject {
 
     private func queryTotals() {
         let now = Date()
-        if let dayStart = Calendar.current.date(byAdding: .hour, value: -24, to: now) {
-            pedometer.queryPedometerData(from: dayStart, to: now) { [weak self] data, _ in
+        let calendar = Calendar.current
+        let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
+        let todayStart = calendar.startOfDay(for: now)
+        if let hourWindowStart = calendar.date(byAdding: .hour, value: -23, to: currentHour) {
+            pedometer.queryPedometerData(from: hourWindowStart, to: now) { [weak self] data, _ in
                 DispatchQueue.main.async {
                     self?.steps24h = data?.numberOfSteps.intValue ?? 0
                 }
             }
         }
-        if let weekStart = Calendar.current.date(byAdding: .day, value: -7, to: now) {
-            pedometer.queryPedometerData(from: weekStart, to: now) { [weak self] data, _ in
+        if let weekWindowStart = calendar.date(byAdding: .day, value: -6, to: todayStart) {
+            pedometer.queryPedometerData(from: weekWindowStart, to: now) { [weak self] data, _ in
                 DispatchQueue.main.async {
                     self?.steps7d = data?.numberOfSteps.intValue ?? 0
                 }
@@ -990,15 +993,19 @@ final class StepModel: ObservableObject {
 
     private func queryHourlyBuckets() {
         let now = Date()
+        let calendar = Calendar.current
+        let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
         let group = DispatchGroup()
         var results = Array(repeating: 0, count: 24)
         let lock = NSLock()
 
         for index in 0..<24 {
             guard
-                let start = Calendar.current.date(byAdding: .hour, value: index - 24, to: now),
-                let end = Calendar.current.date(byAdding: .hour, value: index - 23, to: now)
+                let start = calendar.date(byAdding: .hour, value: index - 23, to: currentHour)
             else { continue }
+            let end = index == 23
+                ? now
+                : (calendar.date(byAdding: .hour, value: 1, to: start) ?? now)
 
             group.enter()
             pedometer.queryPedometerData(from: start, to: end) { data, _ in

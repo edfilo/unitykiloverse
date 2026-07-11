@@ -12,7 +12,7 @@ if [[ "$1" == "--ota" ]]; then MODE="ota"; fi
 UNITY="/Applications/Unity/Hub/Editor/6000.3.12f1/Unity.app/Contents/MacOS/Unity"
 PROJECT="/Users/kiloverse/unitykiloverse"
 IOS_BUILD="/Users/kiloverse/unitykiloverse/Builds/iOS"
-BUNDLE_ID="com.filowatt.k1lo"
+BUNDLE_ID="com.filowatt.K1L0"
 TEAM_ID="7R2746UPX7"
 APP_NAME="K1L0"
 LOG="/tmp/k1l0_unity_build.log"
@@ -22,11 +22,10 @@ USE_UNITY="${K1L0_USE_UNITY:-0}"
 NATIVE_BUILD_SCRIPT="$PROJECT/native-ios/build_native_ota.sh"
 NATIVE_APP="/tmp/k1l0_native_build/K1L0.app"
 
-# Detect connected iPhone — returns "XCODE_ID|DEVICECTL_ID"
 detect_device() {
     # xcodebuild uses ECID, devicectl uses CoreDevice UUID
     local XCODE_ID=$(xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" -scheme Unity-iPhone -showdestinations 2>/dev/null | grep "platform:iOS, arch" | head -1 | sed 's/.*id:\([^,]*\).*/\1/')
-    local DEVCTL_ID=$(xcrun devicectl list devices 2>/dev/null | grep -i "iphone" | grep "connected" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[A-F0-9]{8}-/) print $i}')
+    local DEVCTL_ID=$(xcrun devicectl list devices 2>/dev/null | grep -i "iphone" | grep -E "connected|available" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[A-F0-9]{8}-/) print $i}')
     if [ -n "$XCODE_ID" ] && [ -n "$DEVCTL_ID" ]; then
         echo "${XCODE_ID}|${DEVCTL_ID}"
     fi
@@ -81,7 +80,7 @@ rm -f "$LOG"
 STEP_START=$(date +%s)
 "$UNITY" -batchmode -quit -nographics \
   -projectPath "$PROJECT" \
-  -executeMethod HeadlessBuilder.BuildIOS \
+  -executeMethod CommandLineBuild.BuildiOS \
   -logFile "$LOG" 2>&1 &
 UNITY_PID=$!
 
@@ -122,6 +121,14 @@ printf '#!/bin/sh\nexit 0\n' > "$IOS_BUILD/process_symbols.sh"
 chmod +x "$IOS_BUILD/process_symbols.sh"
 sed -i "" "s/CYE232ULMR/$TEAM_ID/g" "$IOS_BUILD/Unity-iPhone.xcodeproj/project.pbxproj"
 
+# Drop any hardcoded provisioning-profile UUID baked into the project by Unity.
+# The generated pbxproj pins PROVISIONING_PROFILE_APP to an old profile created
+# for the legacy lowercase bundle id (com.filowatt.k1lo); with CODE_SIGN_STYLE
+# already Automatic that stale reference trips a "conflicting provisioning
+# settings" error. Removing it lets Xcode auto-resolve the correct caps profile
+# (com.filowatt.K1L0).
+sed -i "" '/PROVISIONING_PROFILE_APP *= *"[0-9A-Fa-f-]*";/d' "$IOS_BUILD/Unity-iPhone.xcodeproj/project.pbxproj" 2>/dev/null || true
+
 # Strip Location Push entitlement but keep Sign in with Apple
 if [ -f "$IOS_BUILD/Unity-iPhone.entitlements" ]; then
   cat > "$IOS_BUILD/Unity-iPhone.entitlements" << 'ENTITLEMENTS'
@@ -156,7 +163,7 @@ if [[ "$MODE" == "ota" ]]; then
       PROVISIONING_PROFILE="" \
       DEVELOPMENT_TEAM=$TEAM_ID \
       CODE_SIGN_IDENTITY="Apple Development" \
-      clean archive 2>&1 | tee /tmp/k1l0_xcode_archive.log | tail -5
+      archive 2>&1 | tee /tmp/k1l0_xcode_archive.log | tail -5
 
     if [ ! -d "$ARCHIVE" ]; then
       echo "  ✗ Archive FAILED after $(($(date +%s) - STEP_START))s"
@@ -211,6 +218,8 @@ else
       -allowProvisioningUpdates \
       ONLY_ACTIVE_ARCH=YES \
       CODE_SIGN_STYLE=Automatic \
+      PROVISIONING_PROFILE_SPECIFIER="" \
+      PROVISIONING_PROFILE="" \
       DEVELOPMENT_TEAM=$TEAM_ID \
       CODE_SIGN_IDENTITY="Apple Development" \
       build > "$XCODE_LOG" 2>&1 || true

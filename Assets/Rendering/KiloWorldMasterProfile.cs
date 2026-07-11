@@ -119,8 +119,9 @@ namespace KiloWorld.Rendering
         public class LightingSettings
         {
             [Header("Moonlight (Directional Light)")]
+            public bool moonlightEnabled = true;
             public Color moonlightColor = new Color(0.7f, 0.8f, 1.0f, 1.0f); // Cool blue moonlight
-            [Range(0, 2)] public float moonlightIntensity = 0.5f;
+            [Range(0, 8)] public float moonlightIntensity = 0.5f;
             public Vector3 moonlightRotation = new Vector3(90, 0, 0); // Straight down (Zenith)
 
             [Header("Shadows")]
@@ -131,8 +132,9 @@ namespace KiloWorld.Rendering
             [Range(1, 4)] public int shadowCascades = 2; // More cascades = better quality at distance
 
             [Header("Ambient Lighting")]
+            public bool ambientEnabled = true;
             public UnityEngine.Rendering.AmbientMode ambientMode = UnityEngine.Rendering.AmbientMode.Skybox;
-            [Range(0, 2)] public float ambientIntensity = 1.0f;
+            [Range(0, 8)] public float ambientIntensity = 1.0f;
 
             [Header("Ambient Colors (Flat/Trilight)")]
             [Tooltip("Used when Ambient Mode is Flat")]
@@ -146,6 +148,7 @@ namespace KiloWorld.Rendering
             [ColorUsage(false, true)] public Color ambientGroundColor = new Color(0.05f, 0.05f, 0.05f);
 
             [Header("Environment Reflections")]
+            public bool reflectionsEnabled = true;
             public UnityEngine.Rendering.DefaultReflectionMode reflectionMode = UnityEngine.Rendering.DefaultReflectionMode.Skybox;
             public Cubemap customReflectionCubemap;
             [Range(0, 2)] public float reflectionIntensity = 1.0f;
@@ -159,7 +162,7 @@ namespace KiloWorld.Rendering
             [Tooltip("Spotlight color with HDR support")]
             public Color spotlightColor = new Color(0.9f, 0.95f, 1f, 1f); // Slightly blue-white
 
-            [Range(0, 2)]
+            [Range(0, 12)]
             [Tooltip("Light intensity")]
             public float spotlightIntensity = 1f;
 
@@ -181,13 +184,6 @@ namespace KiloWorld.Rendering
             [Tooltip("Enable/disable spotlight")]
             public bool spotlightEnabled = true;
 
-            [Header("Experimental Point Light")]
-            public bool enableExperimentalPointLight = false;
-            [ColorUsage(false, true)] public Color experimentalPointColor = new Color(1f, 0f, 0f); // Red
-            [Range(0, 100)] public float experimentalPointRange = 50f;
-            [Range(0, 10)] public float experimentalPointIntensity = 2f;
-            public float experimentalPointOffsetZ = 20f;
-            public bool experimentalLightFollowsBuilding = true;
         }
 
         [System.Serializable]
@@ -206,14 +202,6 @@ namespace KiloWorld.Rendering
             [Range(0, 360)] public float skyboxRotation = 0f; // Y-axis rotation in degrees
             public Color skyboxTint = Color.white; // Color tint for skybox
 
-            [Header("Aurora")]
-            public bool auroraEnabled = true;
-            [Range(0f, 2f)] public float auroraIntensity = 0.75f;
-            [Range(20f, 300f)] public float auroraHeight = 115f;
-            [Range(80f, 900f)] public float auroraDistance = 420f;
-            [Range(80f, 900f)] public float auroraWidth = 520f;
-            [Range(20f, 320f)] public float auroraVerticalSize = 140f;
-            [Range(0f, 2f)] public float auroraDriftSpeed = 0.28f;
         }
 
         [System.Serializable]

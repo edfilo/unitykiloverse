@@ -13,6 +13,7 @@ public class LoginUI : MonoBehaviour
     private GameObject loginCanvas;
     private TextMeshProUGUI _statusTMP;
     private bool isShowing = false;
+    private bool subscribedToUnityAuth = false;
 
     void Start()
     {
@@ -23,12 +24,17 @@ public class LoginUI : MonoBehaviour
         FirebaseAuthManager.Instance.SignInAnonymously();
         return;
 #endif
+#if UNITY_IOS
+        Debug.Log("[LoginUI] iOS native overlay owns auth; Unity login UI disabled.");
+        return;
+#endif
 
         // Always subscribe to auth events so we can re-show login if token refresh fails
         FirebaseAuthManager.Instance.OnAuthStateChanged += OnAuthStateChanged;
         FirebaseAuthManager.Instance.OnAuthError += OnAuthError;
         AppleSignInHandler.Instance.OnAppleSignInSuccess += OnAppleSignInSuccess;
         AppleSignInHandler.Instance.OnAppleSignInFailed += OnAppleSignInFailed;
+        subscribedToUnityAuth = true;
 
         if (FirebaseAuthManager.Instance != null && FirebaseAuthManager.Instance.isAuthenticated)
         {
@@ -43,6 +49,9 @@ public class LoginUI : MonoBehaviour
 
     void OnDestroy()
     {
+        if (!subscribedToUnityAuth)
+            return;
+
         if (FirebaseAuthManager.Instance != null)
         {
             FirebaseAuthManager.Instance.OnAuthStateChanged -= OnAuthStateChanged;
@@ -302,8 +311,7 @@ public class LoginUI : MonoBehaviour
     {
         Debug.Log($"[LoginUI] Apple sign-in successful! appleUserId={appleUserId}, name={fullName}");
         SetStatus("EXCHANGING TOKEN...", Color.yellow);
-        // Exchange Apple token for a real Firebase credential so RTDB accepts us.
-        FirebaseAuthManager.Instance.SignInWithApple(idToken, nonce, fullName);
+        FirebaseAuthManager.Instance.SignInWithNativeApple(appleUserId, fullName, "", idToken);
     }
 
     void OnAppleSignInFailed(string error)
@@ -358,6 +366,10 @@ public class LoginUI : MonoBehaviour
 
     public void ShowLogin()
     {
+#if UNITY_IOS
+        Debug.Log("[LoginUI] ShowLogin ignored; native overlay owns iOS auth.");
+        return;
+#endif
         // Cancel any pending HideLogin from a previous auth success
         CancelInvoke("HideLogin");
         isShowing = true;

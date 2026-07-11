@@ -4,6 +4,7 @@ import CoreLocation
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
+    private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("[K1L0MacHUD] applicationDidFinishLaunching")
@@ -20,6 +21,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         window = panel
+
+        // Set up system tray status item
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem?.button {
+            button.image = NSImage(systemSymbolName: "antenna.radiowaves.left.and.right", accessibilityDescription: "K1L0 HUD")
+            button.action = #selector(toggleHUD)
+            button.target = self
+        }
+    }
+
+    @objc func toggleHUD() {
+        guard let window = window else { return }
+        if window.isVisible {
+            window.orderOut(nil)
+        } else {
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -98,7 +118,7 @@ private struct K1L0MacHUDView: View {
 
                     GlassCard {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("Nearby")
+                            Text("Live Drops")
                                 .font(.system(size: 25, weight: .bold))
                             Text(model.locationStatus)
                                 .font(.system(size: 13, weight: .medium))
@@ -205,8 +225,8 @@ final class K1L0MacHUDModel: ObservableObject {
 
     private var timer: Timer?
     private var clock: Timer?
-    private let latitude = 40.700636
-    private let longitude = -80.109190
+    private let latitude = 40.703155506631546
+    private let longitude = -73.9238789473517
     private let apiCandidates = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",

@@ -31,6 +31,9 @@ public class POICanvasManager : MonoBehaviour
     [Tooltip("Hide labels that overlap closer labels on screen")]
     public bool useOverlapCulling = true;
 
+    [Tooltip("Hide legacy POI canvas labels while SignalDirectorV2 renders stacked beam labels.")]
+    public bool suppressWhenSignalDirectorActive = true;
+
     private Dictionary<Transform, GameObject> _trackedPOIs = new Dictionary<Transform, GameObject>();
     private Camera _mainCamera;
 
@@ -73,6 +76,15 @@ private void LateUpdate()
         }
 
         if (_mainCamera == null || canvas == null) return;
+
+        if (suppressWhenSignalDirectorActive && SignalDirectorV2.Instance != null)
+        {
+            foreach (var label in _trackedPOIs.Values)
+            {
+                if (label != null && label.activeSelf) label.SetActive(false);
+            }
+            return;
+        }
 
         List<Transform> toRemove = new List<Transform>();
         Vector3 camPos = _mainCamera.transform.position;

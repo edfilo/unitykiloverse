@@ -529,51 +529,9 @@ public class ProfileEditorModal : MonoBehaviour
 
     IEnumerator LoadProfileData()
     {
-        // Get User ID (Firebase UID or device ID fallback)
-        string userId = DeviceIDManager.Instance.GetCurrentUserId();
-
-        statusText.text = "Loading profile...";
+        statusText.text = "Native profile editor owns user data";
         statusText.color = Color.yellow;
-
-        // Check if FirebaseRestClient is available
-        if (FirebaseRestClient.Instance == null)
-        {
-            Debug.LogWarning("[ProfileEditorModal] FirebaseRestClient not available");
-            statusText.text = "Firebase not initialized";
-            statusText.color = Color.red;
-            yield break;
-        }
-
-        // Fetch current profile from Firestore
-        FirebaseRestClient.Instance.GetFirestoreData("users", userId,
-            (response) => {
-                try
-                {
-                    var profile = JsonUtility.FromJson<UserProfile>(response);
-
-                    firstNameInput.text = profile.firstName ?? "";
-                    callSignInput.text = profile.callSign ?? "";
-                    instagramInput.text = profile.instagram ?? "";
-                    webInput.text = profile.web ?? "";
-                    bioInput.text = profile.bio ?? "";
-
-                    statusText.text = "";
-                    Debug.Log("[ProfileEditorModal] Profile loaded successfully");
-                }
-                catch (System.Exception e)
-                {
-                    Debug.LogWarning($"[ProfileEditorModal] Failed to parse profile: {e.Message}");
-                    statusText.text = "Failed to load profile data";
-                    statusText.color = Color.red;
-                }
-            },
-            (error) => {
-                Debug.LogWarning($"[ProfileEditorModal] Failed to load profile: {error}");
-                statusText.text = "Could not load profile (using defaults)";
-                statusText.color = Color.yellow;
-            }
-        );
-
+        Debug.Log("[ProfileEditorModal] Legacy Unity profile load skipped; native overlay owns user metadata.");
         yield break;
     }
 
@@ -584,51 +542,10 @@ public class ProfileEditorModal : MonoBehaviour
 
     IEnumerator SaveProfile()
     {
-        // Get User ID (Firebase UID or device ID fallback)
-        string userId = DeviceIDManager.Instance.GetCurrentUserId();
-
-        // Check if FirebaseRestClient is available
-        if (FirebaseRestClient.Instance == null)
-        {
-            statusText.text = "Firebase not initialized";
-            statusText.color = Color.red;
-            Debug.LogError("[ProfileEditorModal] FirebaseRestClient not available");
-            yield break;
-        }
-
-        // Build data object
-        var profileData = new System.Collections.Generic.Dictionary<string, object>
-        {
-            { "userId", userId },
-            { "firstName", firstNameInput.text.Trim() },
-            { "callSign", callSignInput.text.Trim() },
-            { "instagram", instagramInput.text.Trim() },
-            { "web", webInput.text.Trim() },
-            { "bio", bioInput.text.Trim() }
-        };
-
-        statusText.text = "Saving...";
+        statusText.text = "Use native profile editor";
         statusText.color = Color.yellow;
-
-        Debug.Log($"[ProfileEditorModal] Saving profile to Firestore: {userId}");
-
-        // Write directly to Firestore
-        FirebaseRestClient.Instance.SetFirestoreData("users", userId, profileData,
-            (response) => {
-                statusText.text = "✓ Saved successfully!";
-                statusText.color = Color.green;
-                Debug.Log($"[ProfileEditorModal] Profile saved: {response}");
-
-                // Auto-close after 2 seconds
-                StartCoroutine(AutoClose());
-            },
-            (error) => {
-                statusText.text = $"✗ Save failed: {error}";
-                statusText.color = Color.red;
-                Debug.LogError($"[ProfileEditorModal] Save failed: {error}");
-            }
-        );
-
+        Debug.Log("[ProfileEditorModal] Legacy Unity profile save skipped; native overlay owns user metadata.");
+        StartCoroutine(AutoClose());
         yield break;
     }
 
