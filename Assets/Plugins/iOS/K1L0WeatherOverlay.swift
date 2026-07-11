@@ -2365,17 +2365,9 @@ private struct K1L0WeatherOverlayRoot: View {
 
         if videoPlaying {
             K1L0WeatherOverlayInstaller.setUnityPlaybackPaused(true)
-        } else if panelOpen {
-            // Let Unity finish the transition into Sky Mode, then preserve its
-            // final frame while the native screens are displayed over it.
-            let work = DispatchWorkItem {
-                K1L0WeatherOverlayInstaller.setUnityPlaybackPaused(true)
-            }
-            unityPauseWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.10, execute: work)
         } else {
-            // Resume before animating away the native screen so the map is live
-            // by the time it is uncovered.
+            // Sky Mode keeps Unity running so its layered sky remains alive.
+            // World geometry and particle fountains are suppressed in Unity.
             K1L0WeatherOverlayInstaller.setUnityPlaybackPaused(false)
         }
     }

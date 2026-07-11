@@ -882,6 +882,7 @@ public class K1L0HUD : MonoBehaviour
     {
         bool open = enabled == "1" || string.Equals(enabled, "true", System.StringComparison.OrdinalIgnoreCase);
         DynamicSkyVideoController.SetNativePanelOpen(open);
+        SkyModeWorldVisibility.SetSkyMode(open);
         KiloFirstPersonController.SetNativePanelOpen(open);
         if (!NativeOverlayOwnsHud)
             ApplyMapHudSuppression(open);
