@@ -474,8 +474,13 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetFloat("_CloudSpeed", PlayerPrefs.GetFloat("k1lo_layeredCloudSpeed", .08f));
         layeredSkyMaterial.SetFloat("_CloudScale", PlayerPrefs.GetFloat("k1lo_layeredCloudScale", 2.2f));
         layeredSkyMaterial.SetFloat("_CloudContrast", PlayerPrefs.GetFloat("k1lo_layeredCloudContrast", 1.5f));
-        layeredSkyMaterial.SetFloat("_RainStrength", PlayerPrefs.GetFloat("k1lo_layeredRain", 0f));
-        layeredSkyMaterial.SetFloat("_AuroraStrength", PlayerPrefs.GetFloat("k1lo_layeredAurora", 0f));
+        int effect = Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_layeredSkyEffect", 0f));
+        float rain = PlayerPrefs.GetFloat("k1lo_layeredRain", 0f);
+        float aurora = PlayerPrefs.GetFloat("k1lo_layeredAurora", 0f);
+        layeredSkyMaterial.SetFloat("_RainStrength", effect == 1 ? Mathf.Max(.7f, rain) : effect == 4 ? Mathf.Max(.9f, rain) : 0f);
+        layeredSkyMaterial.SetFloat("_SnowStrength", effect == 2 ? .85f : 0f);
+        layeredSkyMaterial.SetFloat("_AuroraStrength", effect == 3 ? Mathf.Max(.75f, aurora) : 0f);
+        layeredSkyMaterial.SetFloat("_StormStrength", effect == 4 ? 1f : 0f);
     }
 
     private void UpdateCelestialParameters()
@@ -503,6 +508,8 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         float moonX = .5f + Mathf.DeltaAngle(cam.transform.eulerAngles.y, moonAz) / Mathf.Max(1f, horizontalFov);
         layeredSkyMaterial.SetVector("_MoonUV", new Vector4(moonX, .38f, 0, 0));
         float night = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-2f, -10f, altitude));
+        if (bypass && Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_layeredSkyEffect", 0f)) == 3)
+            night = 1f;
         layeredSkyMaterial.SetFloat("_MoonVisibility", night);
         layeredSkyMaterial.SetFloat("_StarsVisibility", night);
         layeredSkyMaterial.SetFloat("_NightAmount", night);

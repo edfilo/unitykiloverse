@@ -143,6 +143,7 @@ private enum K1L0NativeSettingsDefaults {
         "k1lo_native_skyTargetFps": 30.0,
         "k1lo_native_experimentalLayeredSky": true,
         "k1lo_native_layeredBypassWeather": false,
+        "k1lo_native_layeredSkyEffect": 0,
         "k1lo_native_layeredRain": 0.0,
         "k1lo_native_layeredAurora": 0.0,
         "k1lo_native_layeredSkyTopHue": 0.62,
@@ -4456,6 +4457,7 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_skyTargetFps") private var skyTargetFps = 30.0
     @AppStorage("k1lo_native_experimentalLayeredSky") private var experimentalLayeredSky = true
     @AppStorage("k1lo_native_layeredBypassWeather") private var layeredBypassWeather = false
+    @AppStorage("k1lo_native_layeredSkyEffect") private var layeredSkyEffect = 0
     @AppStorage("k1lo_native_layeredRain") private var layeredRain = 0.0
     @AppStorage("k1lo_native_layeredAurora") private var layeredAurora = 0.0
     @AppStorage("k1lo_native_layeredSkyTopHue") private var layeredSkyTopHue = 0.62
@@ -5093,6 +5095,7 @@ private struct NativeSettingsPanel: View {
                         SettingsSection(title: "Experimental Layered Sky", resetAction: {
                             experimentalLayeredSky = true
                             layeredBypassWeather = false
+                            layeredSkyEffect = 0
                             layeredRain = 0
                             layeredAurora = 0
                             layeredSkyTopHue = 0.62
@@ -5103,6 +5106,7 @@ private struct NativeSettingsPanel: View {
                             layeredCloudContrast = 1.5
                             K1L0WeatherOverlayInstaller.setUnitySetting("experimentalLayeredSky", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredBypassWeather", "0")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyEffect", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredRain", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredAurora", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyTopHue", "0.620")
@@ -5118,9 +5122,13 @@ private struct NativeSettingsPanel: View {
                             SettingToggleRow(title: "Bypass Live Weather", value: $layeredBypassWeather, key: "layeredBypassWeather")
                             if layeredBypassWeather {
                                 SettingSkyTimeRow(manualHour: $manualHour)
-                                SettingWeatherSegmentRow(selection: $manualWeather)
-                                SettingSliderRow(title: "Rain Preview", value: $layeredRain, range: 0...1, step: 0.05, key: "layeredRain")
-                                SettingSliderRow(title: "Aurora Preview", value: $layeredAurora, range: 0...1, step: 0.05, key: "layeredAurora")
+                                SettingLayeredSkyEffectRow(selection: $layeredSkyEffect)
+                                if layeredSkyEffect == 1 || layeredSkyEffect == 4 {
+                                    SettingSliderRow(title: "Rain Intensity", value: $layeredRain, range: 0...1, step: 0.05, key: "layeredRain")
+                                }
+                                if layeredSkyEffect == 3 {
+                                    SettingSliderRow(title: "Aurora Intensity", value: $layeredAurora, range: 0...1, step: 0.05, key: "layeredAurora")
+                                }
                             }
                             SettingSliderRow(title: "Zenith Hue", value: $layeredSkyTopHue, range: 0...1, step: 0.01, key: "layeredSkyTopHue")
                             SettingSliderRow(title: "Horizon Hue", value: $layeredSkyHorizonHue, range: 0...1, step: 0.01, key: "layeredSkyHorizonHue")
@@ -5151,6 +5159,7 @@ private struct NativeSettingsPanel: View {
     private func syncLayeredSkySettings() {
         K1L0WeatherOverlayInstaller.setUnitySetting("experimentalLayeredSky", experimentalLayeredSky ? "1" : "0")
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredBypassWeather", layeredBypassWeather ? "1" : "0")
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyEffect", "\(layeredSkyEffect)")
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredRain", String(format: "%.3f", layeredRain))
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredAurora", String(format: "%.3f", layeredAurora))
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyTopHue", String(format: "%.3f", layeredSkyTopHue))
@@ -5555,6 +5564,27 @@ private struct SettingWeatherSegmentRow: View {
 	            }
 	        }
 	    }
+}
+
+private struct SettingLayeredSkyEffectRow: View {
+    @Binding var selection: Int
+    private let options = ["Clear", "Rain", "Snow", "Aurora", "Storm"]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Sky Effect")
+                .font(.system(size: 14, weight: .medium))
+            Picker("Sky Effect", selection: $selection) {
+                ForEach(options.indices, id: \.self) { index in
+                    Text(options[index]).tag(index)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: selection) { value in
+                K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyEffect", "\(value)")
+            }
+        }
+    }
 }
 
 private struct NativeUserEditorDraft: Codable, Equatable {
