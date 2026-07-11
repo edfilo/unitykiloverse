@@ -141,6 +141,13 @@ private enum K1L0NativeSettingsDefaults {
         "k1lo_native_fogNativeLights": false,
         "k1lo_native_fogNativeLightsMultiplier": 0.0,
         "k1lo_native_skyTargetFps": 30.0,
+        "k1lo_native_experimentalLayeredSky": false,
+        "k1lo_native_layeredSkyTopHue": 0.62,
+        "k1lo_native_layeredSkyHorizonHue": 0.94,
+        "k1lo_native_layeredCloudOpacity": 0.72,
+        "k1lo_native_layeredCloudSpeed": 0.08,
+        "k1lo_native_layeredCloudScale": 2.2,
+        "k1lo_native_layeredCloudContrast": 1.5,
         "k1lo_native_fogDensity_night": 0.37,
         "k1lo_native_fogNoiseStrength_night": 1.67,
         "k1lo_native_fogNoiseScale_night": 17.4,
@@ -4452,6 +4459,13 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_fogNativeLightsMultiplier") private var fogNativeLightsMultiplier = 0.0
     @AppStorage(NativeLocationPreset.storageKey) private var locationMode = NativeLocationPreset.liveId
     @AppStorage("k1lo_native_skyTargetFps") private var skyTargetFps = 30.0
+    @AppStorage("k1lo_native_experimentalLayeredSky") private var experimentalLayeredSky = false
+    @AppStorage("k1lo_native_layeredSkyTopHue") private var layeredSkyTopHue = 0.62
+    @AppStorage("k1lo_native_layeredSkyHorizonHue") private var layeredSkyHorizonHue = 0.94
+    @AppStorage("k1lo_native_layeredCloudOpacity") private var layeredCloudOpacity = 0.72
+    @AppStorage("k1lo_native_layeredCloudSpeed") private var layeredCloudSpeed = 0.08
+    @AppStorage("k1lo_native_layeredCloudScale") private var layeredCloudScale = 2.2
+    @AppStorage("k1lo_native_layeredCloudContrast") private var layeredCloudContrast = 1.5
     @AppStorage("k1lo_native_fogDensity_night") private var fogDensityNight = 0.37
     @AppStorage("k1lo_native_fogNoiseStrength_night") private var fogNoiseStrengthNight = 1.67
     @AppStorage("k1lo_native_fogNoiseScale_night") private var fogNoiseScaleNight = 17.4
@@ -4482,6 +4496,7 @@ private struct NativeSettingsPanel: View {
         SettingsSectionInfo(id: "Music", title: "Music"),
         SettingsSectionInfo(id: "Timers", title: "Timers"),
         SettingsSectionInfo(id: "Weather", title: "Weather"),
+        SettingsSectionInfo(id: "Layered Sky", title: "Sky Lab"),
         SettingsSectionInfo(id: "Transmission FX", title: "Tx FX")
     ]
 
@@ -5073,6 +5088,36 @@ private struct NativeSettingsPanel: View {
                             SettingToggleRow(title: "Glitch FX", value: $transmissionFXEnabled, key: "transmissionFX")
                             SettingSliderRow(title: "FX Intensity", value: $transmissionFXIntensity, range: 0...1, step: 0.05, key: "transmissionFXIntensity")
                             SettingToggleRow(title: "Fizzy Edges", value: $transmissionFizzyEdges, key: "transmissionFizzyEdges")
+                        }
+                    }
+
+                    if selectedSection == "Layered Sky" {
+                        SettingsSection(title: "Experimental Layered Sky", resetAction: {
+                            experimentalLayeredSky = false
+                            layeredSkyTopHue = 0.62
+                            layeredSkyHorizonHue = 0.94
+                            layeredCloudOpacity = 0.72
+                            layeredCloudSpeed = 0.08
+                            layeredCloudScale = 2.2
+                            layeredCloudContrast = 1.5
+                            K1L0WeatherOverlayInstaller.setUnitySetting("experimentalLayeredSky", "0")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyTopHue", "0.620")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyHorizonHue", "0.940")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudOpacity", "0.720")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudSpeed", "0.080")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudScale", "2.200")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudContrast", "1.500")
+                        }) {
+                            SettingToggleRow(title: "Use Layered Metal Sky", value: $experimentalLayeredSky, key: "experimentalLayeredSky")
+                            Text("Experimental renderer. Off returns instantly to the existing weather-video sky.")
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.58))
+                            SettingSliderRow(title: "Zenith Hue", value: $layeredSkyTopHue, range: 0...1, step: 0.01, key: "layeredSkyTopHue")
+                            SettingSliderRow(title: "Horizon Hue", value: $layeredSkyHorizonHue, range: 0...1, step: 0.01, key: "layeredSkyHorizonHue")
+                            SettingSliderRow(title: "Cloud Opacity", value: $layeredCloudOpacity, range: 0...1, step: 0.02, key: "layeredCloudOpacity")
+                            SettingSliderRow(title: "Cloud Speed", value: $layeredCloudSpeed, range: -0.5...0.5, step: 0.01, key: "layeredCloudSpeed")
+                            SettingSliderRow(title: "Cloud Scale", value: $layeredCloudScale, range: 0.5...6, step: 0.1, key: "layeredCloudScale")
+                            SettingSliderRow(title: "Cloud Contrast", value: $layeredCloudContrast, range: 0.2...4, step: 0.1, key: "layeredCloudContrast")
                         }
                     }
                     }

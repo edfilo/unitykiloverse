@@ -1778,6 +1778,17 @@ public class K1L0HUD : MonoBehaviour
             case "skyVideoUrl":
                 DynamicSkyVideoController.SetVideoUrl(value);
                 break;
+            case "experimentalLayeredSky":
+                DynamicSkyVideoController.SetExperimentalLayeredSky(boolValue);
+                break;
+            case "layeredSkyTopHue":
+            case "layeredSkyHorizonHue":
+            case "layeredCloudOpacity":
+            case "layeredCloudSpeed":
+            case "layeredCloudScale":
+            case "layeredCloudContrast":
+                DynamicSkyVideoController.SetExperimentalSkyFloat(key, floatValue);
+                break;
             case "testSkyOverride":
                 KiloWorld.Rendering.Systems.RenderManager.TestSkyOverrideEnabled = boolValue;
                 PlayerPrefs.SetInt("k1lo_testSkyOverride", boolValue ? 1 : 0);
