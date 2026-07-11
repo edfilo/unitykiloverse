@@ -132,9 +132,14 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         if (videoMaterial.HasProperty("_Cull")) videoMaterial.SetFloat("_Cull", 0f);
         if (videoMaterial.HasProperty("_ZWrite")) videoMaterial.SetFloat("_ZWrite", 0f);
         SetVideoTexture(videoMaterial, renderTexture);
-        var layeredShader = Shader.Find("K1L0/Experimental Layered Sky");
+        // A Resources reference keeps the experimental shader in device builds;
+        // Shader.Find alone can be stripped when no serialized material uses it.
+        var layeredShader = Resources.Load<Shader>("K1L0LayeredSky");
+        if (layeredShader == null) layeredShader = Shader.Find("K1L0/Experimental Layered Sky");
         if (layeredShader != null)
             layeredSkyMaterial = new Material(layeredShader) { name = "K1L0 Experimental Layered Sky" };
+        else
+            Debug.LogError("[DynamicSkyVideo] Experimental layered sky shader missing from player build.");
         EnsureSkyPlane();
         ApplySkyRenderer();
         ApplyVideoSurface(forceGi: true);

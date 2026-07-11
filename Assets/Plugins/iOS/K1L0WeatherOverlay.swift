@@ -5134,7 +5134,18 @@ private struct NativeSettingsPanel: View {
             perfStats.startNativeSampling()
             resetNativeFogDefaultsOnce()
             syncLightingSettings()
+            syncLayeredSkySettings()
         }
+    }
+
+    private func syncLayeredSkySettings() {
+        K1L0WeatherOverlayInstaller.setUnitySetting("experimentalLayeredSky", experimentalLayeredSky ? "1" : "0")
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyTopHue", String(format: "%.3f", layeredSkyTopHue))
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyHorizonHue", String(format: "%.3f", layeredSkyHorizonHue))
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudOpacity", String(format: "%.3f", layeredCloudOpacity))
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudSpeed", String(format: "%.3f", layeredCloudSpeed))
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudScale", String(format: "%.3f", layeredCloudScale))
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudContrast", String(format: "%.3f", layeredCloudContrast))
     }
 
     private func resetNativeFogDefaultsOnce() {
@@ -7426,7 +7437,9 @@ private struct NativeTransmissionPanel: View {
                         snapshot: activeTransmission.snapshot,
                         availableHeight: geometry.size.height,
                         onStop: { activeTransmission.stop() },
-                        onFailureReset: { restoreFailedDraft(activeTransmission.snapshot) }
+                        onFailureReset: { restoreFailedDraft(activeTransmission.snapshot) },
+                        fullscreenPlayer: true,
+                        onClose: onClose
                     )
                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
                     .background(Color.black)
@@ -7891,6 +7904,11 @@ private struct ActiveTransmissionTerminal: View {
     let availableHeight: CGFloat
     let onStop: () -> Void
     let onFailureReset: () -> Void
+    // Fullscreen transmitter mode: render the exact same fullscreen chain
+    // player used everywhere else (settings gear, camera-roll save, tattered
+    // frame) and overlay only the pencil (tweak) and END controls.
+    var fullscreenPlayer: Bool = false
+    var onClose: () -> Void = {}
     @ObservedObject private var keyboard = K1L0KeyboardObserver.shared
     @State private var showingEndConfirmation = false
     @State private var showingSignalFailure = false
@@ -7911,6 +7929,152 @@ private struct ActiveTransmissionTerminal: View {
     }
 
     var body: some View {
+        Group {
+            if fullscreenPlayer {
+                fullscreenPlayerBody
+            } else {
+                panelBody
+            }
+        }
+        .alert("End transmission?", isPresented: $showingEndConfirmation) {
+            Button("End", role: .destructive) {
+                onStop()
+            }
+            Button("Keep Transmitting", role: .cancel) { }
+        } message: {
+            Text("This removes this transmission from the transmitter. It will not come back here.")
+        }
+        .alert("Couldn't Establish Signal", isPresented: $showingSignalFailure) {
+            Button("Try Again") {
+                onFailureReset()
+            }
+        } message: {
+            Text("Please try again.")
+        }
+        .onAppear {
+            let buildAge = Date().timeIntervalSince1970 - snapshot.startedAt
+            showingSignalFailure = !snapshot.error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || (snapshot.videoUrl.isEmpty && buildAge >= 300)
+            if showingTweakPanel {
+                loadTweakDetails()
+            }
+        }
+        .onChange(of: snapshot.jobId) { _ in
+            if showingTweakPanel {
+                loadTweakDetails(force: true)
+            }
+        }
+        .onChange(of: snapshot.error) { error in
+            if !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                showingSignalFailure = true
+            }
+        }
+        .onChange(of: transmissionFizzyEdges) { val in
+            K1L0WeatherOverlayInstaller.setUnitySetting("transmissionFizzyEdges", val ? "1" : "0")
+        }
+        .onChange(of: transmissionFXEnabled) { val in
+            K1L0WeatherOverlayInstaller.setUnitySetting("transmissionFX", val ? "1" : "0")
+        }
+        .onChange(of: transmissionFXIntensity) { val in
+            K1L0WeatherOverlayInstaller.setUnitySetting("transmissionFXIntensity", String(format: "%.2f", val))
+        }
+    }
+
+    // The live transmission wrapped as a result so the shared fullscreen chain
+    // player renders it exactly like a received transmission. No response
+    // UI — the sender doesn't respond to their own live signal.
+    private var livePlayerResult: K1L0TransmissionResult {
+        let videoURL = URL(string: snapshot.videoUrl)
+        let audioURL = snapshot.audioUrl.isEmpty ? nil : URL(string: snapshot.audioUrl)
+        let imageURL = snapshot.imageUrl.isEmpty ? nil : URL(string: snapshot.imageUrl)
+        let clip = K1L0TransmissionClip(
+            videoURL: videoURL,
+            imageURL: imageURL,
+            audioURL: audioURL,
+            responsePlot: snapshot.responsePlot,
+            responseOptions: [],
+            selectedResponse: "",
+            sourceJobId: snapshot.jobId
+        )
+        return K1L0TransmissionResult(
+            status: "live",
+            imageURL: imageURL,
+            videoURL: videoURL,
+            audioURL: audioURL,
+            lyrics: "",
+            responsePlot: snapshot.responsePlot,
+            responseOptions: [],
+            jobId: snapshot.jobId,
+            clips: [clip]
+        )
+    }
+
+    private var fullscreenPlayerBody: some View {
+        ZStack(alignment: .topLeading) {
+            TransmissionResultPanel(
+                result: livePlayerResult,
+                onSelectOption: { _ in },
+                onClose: onClose
+            )
+            // Rebuild the player when a tweak regenerates the video or music.
+            .id("live-\(snapshot.jobId)-\(snapshot.videoUrl)-\(snapshot.audioUrl)")
+
+            // Pencil + END pinned top-left, mirroring the player's own
+            // top-right save/settings/close row.
+            HStack(spacing: 10) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        showingTweakPanel.toggle()
+                    }
+                    if showingTweakPanel {
+                        loadTweakDetails()
+                    }
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 16, weight: .black))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Color.black.opacity(0.38), in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    showingEndConfirmation = true
+                } label: {
+                    Text("END")
+                        .font(.system(size: 12, weight: .black, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .frame(height: 44)
+                        .padding(.horizontal, 14)
+                        .background(Color.black.opacity(0.38), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.leading, 12)
+            .padding(.top, k1l0DeviceSafeAreaInsets().top + 2)
+
+            if showingTweakPanel {
+                TransmissionTweakPanel(
+                    snapshot: snapshot,
+                    imageUrl: tweakImageUrl.isEmpty ? snapshot.imageUrl : tweakImageUrl,
+                    photoPrompt: $tweakPhotoPrompt,
+                    videoPrompt: $tweakVideoPrompt,
+                    musicPrompt: $tweakMusicPrompt,
+                    status: tweakStatus,
+                    onClose: { withAnimation(.easeInOut(duration: 0.18)) { showingTweakPanel = false } },
+                    onRefresh: { loadTweakDetails(force: true) },
+                    onRegenerateImage: { regenerate(endpoint: "regen-nb", promptKey: "nbPrompt", prompt: tweakPhotoPrompt) },
+                    onRegenerateVideo: { regenerate(endpoint: "regen-video", promptKey: "wanPrompt", prompt: tweakVideoPrompt) },
+                    onRegenerateMusic: { regenerate(endpoint: "regen-music", promptKey: "musicPrompt", prompt: tweakMusicPrompt) }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.opacity)
+            }
+        }
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+    }
+
+    private var panelBody: some View {
         ZStack(alignment: .topTrailing) {
             VStack(spacing: 8) {
                 GeometryReader { proxy in
@@ -8003,48 +8167,6 @@ private struct ActiveTransmissionTerminal: View {
         }
         .frame(maxWidth: .infinity, maxHeight: availableHeight, alignment: .top)
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .alert("End transmission?", isPresented: $showingEndConfirmation) {
-            Button("End", role: .destructive) {
-                onStop()
-            }
-            Button("Keep Transmitting", role: .cancel) { }
-        } message: {
-            Text("This removes this transmission from the transmitter. It will not come back here.")
-        }
-        .alert("Couldn't Establish Signal", isPresented: $showingSignalFailure) {
-            Button("Try Again") {
-                onFailureReset()
-            }
-        } message: {
-            Text("Please try again.")
-        }
-        .onAppear {
-            let buildAge = Date().timeIntervalSince1970 - snapshot.startedAt
-            showingSignalFailure = !snapshot.error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || (snapshot.videoUrl.isEmpty && buildAge >= 300)
-            if showingTweakPanel {
-                loadTweakDetails()
-            }
-        }
-        .onChange(of: snapshot.jobId) { _ in
-            if showingTweakPanel {
-                loadTweakDetails(force: true)
-            }
-        }
-        .onChange(of: snapshot.error) { error in
-            if !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                showingSignalFailure = true
-            }
-        }
-        .onChange(of: transmissionFizzyEdges) { val in
-            K1L0WeatherOverlayInstaller.setUnitySetting("transmissionFizzyEdges", val ? "1" : "0")
-        }
-        .onChange(of: transmissionFXEnabled) { val in
-            K1L0WeatherOverlayInstaller.setUnitySetting("transmissionFX", val ? "1" : "0")
-        }
-        .onChange(of: transmissionFXIntensity) { val in
-            K1L0WeatherOverlayInstaller.setUnitySetting("transmissionFXIntensity", String(format: "%.2f", val))
-        }
     }
 
     private func transmitterToolButton(label: String?, systemImage: String?, action: @escaping () -> Void) -> some View {
