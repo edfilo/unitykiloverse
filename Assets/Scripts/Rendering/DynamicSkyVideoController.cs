@@ -404,7 +404,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
         if (skyPlane == null)
         {
-            var plane = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            var plane = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             plane.name = "K1L0 Layered Sky Plane";
             var collider = plane.GetComponent<Collider>();
             if (collider != null) Destroy(collider);
@@ -417,22 +417,10 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         }
 
         float distance = Mathf.Max(30f, Mathf.Min(cam.farClipPlane * 0.82f, 900f));
-        float viewHeight = 2f * distance * Mathf.Tan(cam.fieldOfView * 0.5f * Mathf.Deg2Rad);
-        float height = viewHeight * 1.9f;
-        float width = height * cam.aspect * 1.35f;
-        Quaternion yawOnly = Quaternion.Euler(0f, cam.transform.eulerAngles.y, 0f);
-        Vector3 forward = yawOnly * Vector3.forward;
-        float horizonBottomY = cam.transform.position.y - 1.5f;
-
-        // Keep the quad at the world horizon and rotate only around Y. Camera
-        // pitch/height changes therefore move the horizon through the frame,
-        // while yaw is represented by the mirrored UV pan below.
         skyPlane.SetParent(null, true);
-        skyPlane.position = cam.transform.position + forward * distance +
-                            Vector3.up * (horizonBottomY - cam.transform.position.y + height * 0.5f);
-        skyPlane.rotation = yawOnly;
-        skyPlane.localScale = new Vector3(width, height, 1f);
-        ApplySkyTextureTransform(cam);
+        skyPlane.position = cam.transform.position;
+        skyPlane.rotation = Quaternion.identity;
+        skyPlane.localScale = Vector3.one * distance * 2f;
         skyPlane.gameObject.SetActive(true);
     }
 
@@ -484,6 +472,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetFloat("_AuroraStrength", effect == 3 ? .18f + aurora * .82f : 0f);
         layeredSkyMaterial.SetFloat("_StormStrength", effect == 4 ? 1f : 0f);
         layeredSkyMaterial.SetFloat("_NightBlackness", PlayerPrefs.GetFloat("k1lo_layeredNightBlackness", .72f));
+        SkyWeatherVolume.SetEffect(effect, rain);
     }
 
     private void UpdateCelestialParameters()
@@ -505,11 +494,15 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         float sunY = .08f + Mathf.Clamp(altitude, -8f, 90f) / 90f * .78f;
         float sunVisible = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-4f, 2f, altitude));
         layeredSkyMaterial.SetVector("_SunUV", new Vector4(sunX, sunY, 0, 0));
+        Vector3 celestialSun = Quaternion.Euler(-altitude, sunAz, 0f) * Vector3.forward;
+        layeredSkyMaterial.SetVector("_SunDirection", new Vector4(celestialSun.x, celestialSun.y, celestialSun.z, 0));
         layeredSkyMaterial.SetFloat("_SunVisibility", sunVisible);
 
         float moonAz = Mathf.Repeat(sunAz + 180f, 360f);
         float moonX = .5f + Mathf.DeltaAngle(cam.transform.eulerAngles.y, moonAz) / Mathf.Max(1f, horizontalFov);
         layeredSkyMaterial.SetVector("_MoonUV", new Vector4(moonX, .38f, 0, 0));
+        Vector3 celestialMoon = -celestialSun;
+        layeredSkyMaterial.SetVector("_MoonDirection", new Vector4(celestialMoon.x, celestialMoon.y, celestialMoon.z, 0));
         float night = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-2f, -10f, altitude));
         if (bypass && Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_layeredSkyEffect", 0f)) == 3)
             night = 1f;

@@ -22,36 +22,44 @@ Shader "K1L0/Experimental Layered Sky"
         _AuroraStrength ("Aurora", Range(0,1)) = 0
         _StormStrength ("Storm", Range(0,1)) = 0
         _NightBlackness ("Night Blackness", Range(0,1)) = .72
+        _SunDirection ("Sun Direction", Vector) = (0,1,0,0)
+        _MoonDirection ("Moon Direction", Vector) = (0,-1,0,0)
     }
     SubShader
     {
         Tags { "Queue"="Background" "RenderType"="Opaque" "RenderPipeline"="UniversalPipeline" }
         Pass
         {
-            ZWrite Off Cull Off
+            ZWrite Off Cull Front
             HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             struct Attributes { float4 positionOS : POSITION; float2 uv : TEXCOORD0; };
-            struct Varyings { float4 positionHCS : SV_POSITION; float2 uv : TEXCOORD0; };
+            struct Varyings { float4 positionHCS : SV_POSITION; float2 uv : TEXCOORD0; float3 worldDir : TEXCOORD1; };
             CBUFFER_START(UnityPerMaterial)
             half4 _TopColor, _MidColor, _HorizonColor, _CloudColor;
             float _CloudOpacity, _CloudSpeed, _CloudScale, _CloudContrast;
             float4 _SunUV, _MoonUV;
             float _SunVisibility, _MoonVisibility, _StarsVisibility;
             float _NightAmount, _RainStrength, _SnowStrength, _AuroraStrength, _StormStrength, _NightBlackness;
+            float4 _SunDirection, _MoonDirection;
             CBUFFER_END
             TEXTURE2D(_CloudTex); SAMPLER(sampler_CloudTex);
-            Varyings vert(Attributes i) { Varyings o; o.positionHCS = TransformObjectToHClip(i.positionOS.xyz); o.uv=i.uv; return o; }
+            Varyings vert(Attributes i) { Varyings o; float3 w=TransformObjectToWorld(i.positionOS.xyz); o.positionHCS=TransformWorldToHClip(w); o.worldDir=normalize(w-_WorldSpaceCameraPos); float3 d=o.worldDir; o.uv=float2(atan2(d.x,d.z)/6.2831853+.5,asin(clamp(d.y,-1,1))/3.14159265+.5); return o; }
             float hash21(float2 p) { p=frac(p*float2(123.34,456.21)); p+=dot(p,p+45.32); return frac(p.x*p.y); }
             float noise(float2 p) { float2 i=floor(p), f=frac(p); f=f*f*(3-2*f); return lerp(lerp(hash21(i),hash21(i+float2(1,0)),f.x),lerp(hash21(i+float2(0,1)),hash21(i+1),f.x),f.y); }
             float fbm(float2 p) { float v=0; v+=noise(p)*.52; p=p*2.03+17.1; v+=noise(p)*.27; p=p*2.01+9.7; v+=noise(p)*.14; p=p*2.04; v+=noise(p)*.07; return v; }
             half4 frag(Varyings i) : SV_Target
             {
                 float y=saturate(i.uv.y);
+                float3 viewDir=normalize(i.worldDir);
                 half3 lowerSky=lerp(_HorizonColor.rgb,_MidColor.rgb,smoothstep(0.02,0.46,y));
                 half3 sky=lerp(lowerSky,_TopColor.rgb,smoothstep(0.42,0.90,y));
+                float horizonAir=pow(saturate(1.0-abs(viewDir.y)),3.0);
+                float sunMu=saturate(dot(viewDir,normalize(_SunDirection.xyz))*.5+.5);
+                sky += half3(.22,.34,.62)*half(horizonAir*(1.0-_NightAmount)*.28);
+                sky += half3(1.0,.48,.18)*half(pow(sunMu,18.0)*horizonAir*_SunVisibility*.16);
                 // Portrait correction: repeat the square cloud domain along Y
                 // rather than stretching one texture over the tall sky plane.
                 float2 p=float2(i.uv.x*2.2,i.uv.y*2.2)*_CloudScale;
@@ -69,6 +77,8 @@ Shader "K1L0/Experimental Layered Sky"
                 float nearDensity=lerp(plateA,plateB,.38+.18*fbm(p*.27+43.0));
                 nearDensity=saturate((nearDensity-.20)*(_CloudContrast*1.15));
                 float density=saturate(farDensity*.42+nearDensity*.82);
+                float highCloud=saturate((fbm(p*.31+float2(-slowTime*.35,13.7))-.49)*(_CloudContrast*.7));
+                density=saturate(density+highCloud*.32);
                 // Bring cloud bodies down to the horizon; the previous .30
                 // lower fade made them visible mainly when the camera looked up.
                 density*=smoothstep(.0,.075,y)*smoothstep(1.05,.78,y);
@@ -82,24 +92,16 @@ Shader "K1L0/Experimental Layered Sky"
                 float starHash=hash21(starCell);
                 float star=step(.9965,starHash)*(0.45+0.55*hash21(starCell+17.3))*_StarsVisibility;
                 sky += half3(.72,.82,1.0)*half(star);
-                float sunD=length((i.uv-_SunUV.xy)*float2(1.0,1.45));
-                float sunDisc=1.0-smoothstep(.018,.024,sunD);
-                float sunGlow=1.0-smoothstep(.025,.14,sunD);
+                float sunD=acos(clamp(dot(viewDir,normalize(_SunDirection.xyz)),-1,1));
+                float sunDisc=1.0-smoothstep(.008,.011,sunD);
+                float sunGlow=1.0-smoothstep(.012,.11,sunD);
                 sky += half3(1.0,.72,.38)*half((sunDisc*1.4+sunGlow*.28)*_SunVisibility);
-                float moonD=length((i.uv-_MoonUV.xy)*float2(1.0,1.45));
-                float moonDisc=1.0-smoothstep(.017,.023,moonD);
-                float moonGlow=1.0-smoothstep(.023,.10,moonD);
+                float moonD=acos(clamp(dot(viewDir,normalize(_MoonDirection.xyz)),-1,1));
+                float moonDisc=1.0-smoothstep(.008,.012,moonD);
+                float moonGlow=1.0-smoothstep(.013,.07,moonD);
                 sky += half3(.68,.78,1.0)*half((moonDisc*.95+moonGlow*.18)*_MoonVisibility);
                 half3 litCloud=lerp(_CloudColor.rgb*.45,_CloudColor.rgb,saturate(y*.75+density*.4));
                 half3 result=lerp(sky,litCloud,density*_CloudOpacity);
-                float2 rainUV=float2(i.uv.x+i.uv.y*.09,i.uv.y+_Time.y*.82);
-                float rainCell=hash21(floor(rainUV*float2(460,92)));
-                float rainLine=step(.978,rainCell)*smoothstep(.34,.06,abs(frac(rainUV.y*92)-.5));
-                result += half3(.48,.62,.78)*half(rainLine*_RainStrength*(.35+.65*_NightAmount));
-                float2 snowGrid=(i.uv+float2(sin(i.uv.y*19+_Time.y)*.004,_Time.y*.042))*float2(150,220);
-                float2 snowCell=floor(snowGrid);
-                float snow=step(.982,hash21(snowCell))*smoothstep(.16,.035,length(frac(snowGrid)-.5));
-                result += half3(.82,.9,1.0)*half(snow*_SnowStrength);
                 float lightning=pow(saturate(sin(_Time.y*1.7+hash21(floor(_Time.y*.22))*19.0)),38.0)*_StormStrength;
                 result += half3(.58,.68,1.0)*half(lightning*.75);
                 result=lerp(result,result*half3(.62,.69,.78),max(_RainStrength*.22,_StormStrength*.38));
