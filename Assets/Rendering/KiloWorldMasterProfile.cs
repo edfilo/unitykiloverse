@@ -106,13 +106,8 @@ namespace KiloWorld.Rendering
             [Range(0.01f, 2f)] public float ssaoRadius = 0.3f;
             [Range(0, 1)] public float ssaoDirectLightingStrength = 0.05f;
             public SampleCount ssaoSamples = SampleCount.High;
-
-            [Header("Screen Space Reflections (SSR)")]
-            public bool ssrEnabled = true;
-            public Resolution ssrResolution = Resolution.Full;
-            public int ssrMaxRaySteps = 48;
-            public float ssrThickness = 0.4f;
-            public bool ssrAccumulation = true;
+            // Screen Space Reflections (SSR) fields removed — see
+            // Assets/_junk/RemovedReflectionsAndShadows/.
         }
 
         [System.Serializable]
@@ -123,13 +118,8 @@ namespace KiloWorld.Rendering
             public Color moonlightColor = new Color(0.7f, 0.8f, 1.0f, 1.0f); // Cool blue moonlight
             [Range(0, 8)] public float moonlightIntensity = 0.5f;
             public Vector3 moonlightRotation = new Vector3(90, 0, 0); // Straight down (Zenith)
-
-            [Header("Shadows")]
-            public bool enableShadows = true;
-            [Range(0, 1)] public float shadowStrength = 1.0f;
-            public float shadowDistance = 150f; // How far shadows render
-            public UnityEngine.Rendering.Universal.ShadowResolution shadowResolution = UnityEngine.Rendering.Universal.ShadowResolution._2048;
-            [Range(1, 4)] public int shadowCascades = 2; // More cascades = better quality at distance
+            // Shadows + Environment Reflections + Subtractive Shadows fields
+            // removed — see Assets/_junk/RemovedReflectionsAndShadows/.
 
             [Header("Ambient Lighting")]
             public bool ambientEnabled = true;
@@ -146,16 +136,6 @@ namespace KiloWorld.Rendering
             [ColorUsage(false, true)] public Color ambientEquatorColor = new Color(0.1f, 0.1f, 0.1f);
             [Tooltip("Used when Ambient Mode is Trilight")]
             [ColorUsage(false, true)] public Color ambientGroundColor = new Color(0.05f, 0.05f, 0.05f);
-
-            [Header("Environment Reflections")]
-            public bool reflectionsEnabled = true;
-            public UnityEngine.Rendering.DefaultReflectionMode reflectionMode = UnityEngine.Rendering.DefaultReflectionMode.Skybox;
-            public Cubemap customReflectionCubemap;
-            [Range(0, 2)] public float reflectionIntensity = 1.0f;
-            public int reflectionBounces = 1;
-
-            [Header("Subtractive Shadows")]
-            [ColorUsage(false, true)] public Color subtractiveShadowColor = new Color(0.1f, 0.1f, 0.25f);
 
             [Header("Player Spotlight")]
             [ColorUsage(false, true)]

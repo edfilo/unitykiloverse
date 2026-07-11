@@ -141,13 +141,8 @@ namespace KiloWorld.Rendering.Systems
             LoadPref("moonlightYaw", ref lighting.moonlightRotation.y);
             LoadPref("moonlightRoll", ref lighting.moonlightRotation.z);
             LoadPref("ambientIntensity", ref lighting.ambientIntensity);
-            LoadPrefBool("enableShadows", ref lighting.enableShadows);
-            LoadPref("shadowStrength", ref lighting.shadowStrength);
-            LoadPref("shadowDistance", ref lighting.shadowDistance);
             LoadPrefBool("spotlightEnabled", ref lighting.spotlightEnabled);
             LoadPref("spotlightIntensity", ref lighting.spotlightIntensity);
-            LoadPrefBool("reflectionsEnabled", ref lighting.reflectionsEnabled);
-            LoadPref("reflectionIntensity", ref lighting.reflectionIntensity);
 
             var fog = profile.volumetricFog;
             ClearBadFogDefaultsOnce();
@@ -291,37 +286,11 @@ namespace KiloWorld.Rendering.Systems
             }
 
             BootDiagnostics.Mark("RenderManager.Start");
-            // Verify URP has Opaque Texture enabled (required for screen-space reflections)
-            CheckOpaqueTextureEnabled();
+            // (SSR opaque-texture check removed with the reflection system.)
 
             // Apply on Start to ensure all components (like SimpleGroundPlane) are initialized
             Apply();
             BootDiagnostics.Mark("RenderManager.Start complete");
-        }
-
-        private void CheckOpaqueTextureEnabled()
-        {
-            var urpAsset = UniversalRenderPipeline.asset;
-            if (urpAsset != null)
-            {
-                // Use reflection to check if Opaque Texture is enabled
-                var property = typeof(UniversalRenderPipelineAsset).GetProperty("supportsCameraOpaqueTexture",
-                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-
-                if (property != null)
-                {
-                    bool opaqueTextureEnabled = (bool)property.GetValue(urpAsset);
-                    if (!opaqueTextureEnabled)
-                    {
-                        Debug.LogError("[RenderManager] ❌ OPAQUE TEXTURE IS DISABLED! Screen-space reflections will NOT work!\n" +
-                                     "To fix: Select URP Asset → Enable 'Opaque Texture' in Rendering settings");
-                    }
-                    else
-                    {
-                        Debug.Log("[RenderManager] ✅ Opaque Texture is enabled - screen-space reflections ready");
-                    }
-                }
-            }
         }
 
         private void OnValidate()
@@ -417,25 +386,7 @@ namespace KiloWorld.Rendering.Systems
 #endif
 
             // TEMP: Disable expensive FindObjectsOfType every frame in editor (causes freeze)
-#if !UNITY_EDITOR
-            // Debug: Check for rogue reflection probes causing streaks
-            LogReflectionProbes();
-#endif
-        }
-
-        private void LogReflectionProbes()
-        {
-            var probes = FindObjectsOfType<ReflectionProbe>();
-            if (probes.Length > 0)
-            {
-                foreach (var p in probes)
-                {
-                    if (p.enabled)
-                    {
-                        Debug.Log($"[RenderManager] Found Active Reflection Probe: '{p.name}' | Type: {p.mode} | BoxProjection: {p.boxProjection} | Size: {p.size}");
-                    }
-                }
-            }
+            // (Reflection-probe debug logging removed with the reflection system.)
         }
 
         private void ApplyRendererFeatures()
@@ -473,7 +424,6 @@ namespace KiloWorld.Rendering.Systems
             }
 
             bool foundSSAO = false;
-            bool foundSSR = false;
 
             foreach (var feature in features)
             {
@@ -508,29 +458,12 @@ namespace KiloWorld.Rendering.Systems
                     }
                 }
 
-                // --- SSR ---
-                else if (featureName.Contains("ScreenSpaceReflection") || featureName.Contains("SSR"))
-                {
-                    foundSSR = true;
-                    feature.SetActive(profile.rendererFeatures.ssrEnabled);
-                    if (profile.rendererFeatures.ssrEnabled)
-                    {
-                        SetFeatureField(feature, "Resolution", (int)profile.rendererFeatures.ssrResolution);
-                        SetFeatureField(feature, "MaxRaySteps", profile.rendererFeatures.ssrMaxRaySteps);
-                        SetFeatureField(feature, "Thickness", profile.rendererFeatures.ssrThickness);
-                        SetFeatureField(feature, "Accumulation", profile.rendererFeatures.ssrAccumulation);
-                    }
-                }
+                // (SSR renderer-feature branch removed with the reflection system.)
             }
 
             if (!foundSSAO && profile.rendererFeatures.ssaoEnabled)
             {
                 Debug.LogWarning("[RenderManager] SSAO is enabled in profile but no SSAO feature found in renderer! Add 'Screen Space Ambient Occlusion' feature to your Renderer Data asset.");
-            }
-
-            if (!foundSSR && profile.rendererFeatures.ssrEnabled)
-            {
-                Debug.LogWarning("[RenderManager] SSR is enabled in profile but no SSR feature found in renderer!");
             }
         }
 
@@ -648,24 +581,11 @@ namespace KiloWorld.Rendering.Systems
                             directionalLight.transform.rotation = targetRot;
                     }
 
-                    var shadowType = profile.lighting.enableShadows ? LightShadows.Soft : LightShadows.None;
-                    if (directionalLight.shadows != shadowType)
-                        directionalLight.shadows = shadowType;
-
-                    if (directionalLight.shadowStrength != profile.lighting.shadowStrength)
-                        directionalLight.shadowStrength = profile.lighting.shadowStrength;
+                    // Shadows removed — force the directional (sun/moon) light
+                    // to cast no shadows every frame.
+                    if (directionalLight.shadows != LightShadows.None)
+                        directionalLight.shadows = LightShadows.None;
                 }
-            }
-
-            // Sync Global URP Shadow Settings
-            var urpAsset = UniversalRenderPipeline.asset;
-            if (urpAsset != null)
-            {
-                if (urpAsset.shadowDistance != profile.lighting.shadowDistance)
-                    urpAsset.shadowDistance = profile.lighting.shadowDistance;
-                
-                if (urpAsset.shadowCascadeCount != profile.lighting.shadowCascades)
-                    urpAsset.shadowCascadeCount = profile.lighting.shadowCascades;
             }
 
             RenderSettings.sun = directionalEnabled ? directionalLight : null;
@@ -694,28 +614,12 @@ namespace KiloWorld.Rendering.Systems
                 RenderSettings.ambientGroundColor = profile.lighting.ambientGroundColor * intensity;
             }
 
-            // Apply Reflection Settings
-            // Reflections are turned off in the day time (_sunAlt >= -4f)
-            bool isDayTime = _sunAlt >= -4f;
-            bool reflectionsActuallyEnabled = profile.lighting.reflectionsEnabled && !isDayTime;
-
-            RenderSettings.defaultReflectionMode = reflectionsActuallyEnabled
-                ? profile.lighting.reflectionMode
-                : DefaultReflectionMode.Skybox;
-            if (profile.lighting.reflectionMode == DefaultReflectionMode.Custom)
-            {
-                RenderSettings.customReflection = profile.lighting.customReflectionCubemap;
-            }
-
-            float effectiveReflectionIntensity = reflectionsActuallyEnabled ? profile.lighting.reflectionIntensity : 0f;
-            if (RenderSettings.reflectionIntensity != effectiveReflectionIntensity)
-                RenderSettings.reflectionIntensity = effectiveReflectionIntensity;
-                
-            if (RenderSettings.reflectionBounces != profile.lighting.reflectionBounces)
-                RenderSettings.reflectionBounces = profile.lighting.reflectionBounces;
-
-            // Subtractive Shadows
-            RenderSettings.subtractiveShadowColor = profile.lighting.subtractiveShadowColor;
+            // Reflections removed — force fully off every frame so nothing visual
+            // remains from serialized RenderSettings defaults.
+            if (RenderSettings.reflectionIntensity != 0f)
+                RenderSettings.reflectionIntensity = 0f;
+            if (RenderSettings.defaultReflectionMode != DefaultReflectionMode.Skybox)
+                RenderSettings.defaultReflectionMode = DefaultReflectionMode.Skybox;
         }
 
         private void EnsureDirectionalSun()

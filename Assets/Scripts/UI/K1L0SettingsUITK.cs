@@ -276,13 +276,9 @@ public class K1L0SettingsUITK : MonoBehaviour
             Sliders(lightingSec, "MOONLIGHT", "moonlightIntensity", 0f, 8f, lighting.moonlightIntensity, v => { lighting.moonlightIntensity = Mathf.Clamp(v, 0f, 8f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
             Toggle(lightingSec, "AMBIENT", "ambientEnabled", lighting.ambientEnabled, v => { lighting.ambientEnabled = v; KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
             Sliders(lightingSec, "AMBIENT", "ambientIntensity", 0f, 8f, lighting.ambientIntensity, v => { lighting.ambientIntensity = Mathf.Clamp(v, 0f, 8f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
-            Toggle(lightingSec, "SHADOWS", "enableShadows", lighting.enableShadows, v => { lighting.enableShadows = v; KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
-            Sliders(lightingSec, "SHADOW STR", "shadowStrength", 0f, 1f, lighting.shadowStrength, v => { lighting.shadowStrength = Mathf.Clamp01(v); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
-            Sliders(lightingSec, "SHADOW DIST", "shadowDistance", 0f, 500f, lighting.shadowDistance, v => { lighting.shadowDistance = Mathf.Clamp(v, 0f, 500f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
+            // SHADOWS + REFLECTIONS rows removed (systems ripped out).
             Toggle(lightingSec, "SPOTLIGHT", "spotlightEnabled", lighting.spotlightEnabled, v => { lighting.spotlightEnabled = v; KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
             Sliders(lightingSec, "SPOTLIGHT", "spotlightIntensity", 0f, 12f, lighting.spotlightIntensity, v => { lighting.spotlightIntensity = Mathf.Clamp(v, 0f, 12f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
-            Toggle(lightingSec, "REFLECTIONS", "reflectionsEnabled", lighting.reflectionsEnabled, v => { lighting.reflectionsEnabled = v; KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
-            Sliders(lightingSec, "REFLECTION", "reflectionIntensity", 0f, 2f, lighting.reflectionIntensity, v => { lighting.reflectionIntensity = Mathf.Clamp(v, 0f, 2f); KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply(); });
         }
 
         // ── 4. BUILDINGS ──

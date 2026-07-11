@@ -1571,18 +1571,7 @@ public class K1L0HUD : MonoBehaviour
                     profile.lighting.ambientIntensity = Mathf.Clamp(floatValue, 0f, 8f);
                     SaveFloat("ambientIntensity", profile.lighting.ambientIntensity);
                     break;
-                case "enableShadows":
-                    profile.lighting.enableShadows = boolValue;
-                    SaveBool("enableShadows", boolValue);
-                    break;
-                case "shadowStrength":
-                    profile.lighting.shadowStrength = Mathf.Clamp01(floatValue);
-                    SaveFloat("shadowStrength", profile.lighting.shadowStrength);
-                    break;
-                case "shadowDistance":
-                    profile.lighting.shadowDistance = Mathf.Clamp(floatValue, 0f, 500f);
-                    SaveFloat("shadowDistance", profile.lighting.shadowDistance);
-                    break;
+                // (enableShadows / shadowStrength / shadowDistance handlers removed.)
                 case "spotlightEnabled":
                     profile.lighting.spotlightEnabled = boolValue;
                     if (boolValue && profile.lighting.spotlightIntensity <= 0.01f)
@@ -1594,14 +1583,7 @@ public class K1L0HUD : MonoBehaviour
                     profile.lighting.spotlightIntensity = Mathf.Clamp(floatValue, 0f, 12f);
                     SaveFloat("spotlightIntensity", profile.lighting.spotlightIntensity);
                     break;
-                case "reflectionsEnabled":
-                    profile.lighting.reflectionsEnabled = boolValue;
-                    SaveBool("reflectionsEnabled", boolValue);
-                    break;
-                case "reflectionIntensity":
-                    profile.lighting.reflectionIntensity = Mathf.Clamp(floatValue, 0f, 2f);
-                    SaveFloat("reflectionIntensity", profile.lighting.reflectionIntensity);
-                    break;
+                // (reflectionsEnabled / reflectionIntensity handlers removed.)
                 case "fogConstantDensity":
                     profile.volumetricFog.constantDensity = boolValue;
                     SaveBool("fogConstantDensity", boolValue);

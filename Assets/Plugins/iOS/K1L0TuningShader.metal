@@ -10,6 +10,58 @@
 #include <SwiftUI/SwiftUI_Metal.h>
 using namespace metal;
 
+static inline float hash12(float2 p);
+
+struct K1L0VideoOut { float4 position [[position]]; float2 uv; };
+struct K1L0VideoUniforms { float2 viewport; float2 texture; float time; float intensity; };
+
+vertex K1L0VideoOut k1l0VideoVertex(uint id [[vertex_id]]) {
+    const float2 positions[4] = { {-1,-1}, {1,-1}, {-1,1}, {1,1} };
+    const float2 uvs[4] = { {0,1}, {1,1}, {0,0}, {1,0} };
+    return { float4(positions[id], 0, 1), uvs[id] };
+}
+
+fragment half4 k1l0VideoFragment(K1L0VideoOut in [[stage_in]],
+                                  texture2d<half> frame [[texture(0)]],
+                                  constant K1L0VideoUniforms& u [[buffer(0)]]) {
+    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    float2 uv = in.uv;
+    float viewAspect = u.viewport.x / max(u.viewport.y, 1.0);
+    float texAspect = u.texture.x / max(u.texture.y, 1.0);
+    if (texAspect > viewAspect) uv.x = (uv.x - 0.5) * (viewAspect / texAspect) + 0.5;
+    else uv.y = (uv.y - 0.5) * (texAspect / viewAspect) + 0.5;
+
+    float amount = clamp(u.intensity, 0.0, 1.0);
+    float row = floor(uv.y * u.texture.y * 0.22);
+    float jitter = (hash12(float2(row, floor(u.time * 18.0))) - 0.5) * 0.012 * amount;
+    float band = smoothstep(0.08, 0.0, abs(fract(uv.y - u.time * 0.16) - 0.5));
+    uv.x += jitter + band * 0.018 * amount;
+    float chroma = (0.0015 + 0.005 * hash12(float2(floor(u.time * 3.0), row))) * amount;
+    half4 base = frame.sample(s, uv);
+    half3 rgb = half3(frame.sample(s, uv + float2(chroma, 0)).r,
+                      base.g,
+                      frame.sample(s, uv - float2(chroma, 0)).b);
+    float grain = hash12(floor(in.uv * u.viewport) + floor(u.time * 24.0) * 19.7) - 0.5;
+    rgb += half3(grain * 0.10 * amount);
+    rgb *= half(1.0 - (0.035 + 0.07 * amount) * (0.5 + 0.5 * sin(in.uv.y * u.viewport.y * 3.14159)));
+    float vignette = smoothstep(0.8, 0.25, length(in.uv - 0.5));
+    rgb *= half(mix(1.0, vignette, 0.22 * amount));
+    float flash = step(0.985, hash12(float2(floor(u.time * 2.0), 41.0))) * exp(-fract(u.time * 2.0) * 15.0);
+    rgb = mix(rgb, half3(1.0), half(flash * 0.45 * amount));
+
+    float edge = min(min(in.uv.x, 1.0 - in.uv.x), min(in.uv.y, 1.0 - in.uv.y));
+    float rag = 0.005 + 0.008 * hash12(floor(in.uv * u.viewport * 0.18) + floor(u.time * 8.0));
+    // Hard alpha cut: preserve the animated tattered silhouette without the
+    // semitransparent gray fringe that a feathered edge creates over black.
+    float alpha = edge >= rag ? 1.0 : 0.0;
+    // The first opaque source pixels can themselves be pale and read as a
+    // one-pixel outline. Fade only the *inside* of the torn cut to black so
+    // every source frame meets the black player background invisibly.
+    float interiorFade = smoothstep(rag, rag + 0.014, edge);
+    rgb *= half(interiorFade);
+    return half4(rgb, half(base.a * alpha));
+}
+
 // ── Hash / noise helpers ────────────────────────────────────────────────
 
 static inline float hash12(float2 p) {

@@ -214,12 +214,9 @@ public class K1L0ProfileMode : MonoBehaviour
             y = AddSlider(scrollContent, y, "MOONLIGHT", "moonlightIntensity", 0f, 8f, lighting.moonlightIntensity, v => lighting.moonlightIntensity = Mathf.Clamp(v, 0f, 8f));
             y = AddToggle(scrollContent, y, "AMBIENT", "ambientEnabled", lighting.ambientEnabled, v => lighting.ambientEnabled = v);
             y = AddSlider(scrollContent, y, "AMBIENT", "ambientIntensity", 0f, 8f, lighting.ambientIntensity, v => lighting.ambientIntensity = Mathf.Clamp(v, 0f, 8f));
-            y = AddToggle(scrollContent, y, "SHADOWS", "enableShadows", lighting.enableShadows, v => lighting.enableShadows = v);
-            y = AddSlider(scrollContent, y, "SHADOW STR", "shadowStrength", 0f, 1f, lighting.shadowStrength, v => lighting.shadowStrength = Mathf.Clamp01(v));
+            // SHADOWS + REFLECTIONS rows removed (systems ripped out).
             y = AddToggle(scrollContent, y, "SPOTLIGHT", "spotlightEnabled", lighting.spotlightEnabled, v => lighting.spotlightEnabled = v);
             y = AddSlider(scrollContent, y, "SPOTLIGHT", "spotlightIntensity", 0f, 12f, lighting.spotlightIntensity, v => lighting.spotlightIntensity = Mathf.Clamp(v, 0f, 12f));
-            y = AddToggle(scrollContent, y, "REFLECTIONS", "reflectionsEnabled", lighting.reflectionsEnabled, v => lighting.reflectionsEnabled = v);
-            y = AddSlider(scrollContent, y, "REFLECTION", "reflectionIntensity", 0f, 2f, lighting.reflectionIntensity, v => lighting.reflectionIntensity = Mathf.Clamp(v, 0f, 2f));
         }
 
         var sky = KiloWorld.Rendering.Systems.RenderManager.Instance?.profile?.sky;

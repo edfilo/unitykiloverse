@@ -5,6 +5,7 @@ import CoreLocation
 import Darwin
 import Foundation
 import Metal
+import MetalKit
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -18,6 +19,24 @@ private func K1L0UnityPause(_ pause: Int32)
 #endif
 
 private let K1L0DefaultHelmetIconURL = "https://cdn.kilo.gallery/k1l0/ref/generic_closed_helmet_v2.png"
+
+private enum K1L0MediaCache {
+    private static var configured = false
+
+    static func configure() {
+        guard !configured else { return }
+        configured = true
+        // Avatar PNGs can exceed 1 MB and transmission thumbnails are reused
+        // across Home, Profile, tuning, and chain views. CDN URLs are immutable
+        // and revisioned, so a generous shared disk cache is safe and avoids
+        // downloading the same art every time a SwiftUI view is recreated.
+        URLCache.shared = URLCache(
+            memoryCapacity: 128 * 1024 * 1024,
+            diskCapacity: 768 * 1024 * 1024,
+            diskPath: "k1l0-media-cache"
+        )
+    }
+}
 
 private enum K1L0NativeSettingsDefaults {
     static let values: [String: Any] = [
@@ -65,13 +84,8 @@ private enum K1L0NativeSettingsDefaults {
         // Dusty skylight so terrain reads as grey wasteland instead of void.
         // 1.15 keeps grass/roads readable at night without washing out the grade.
         "k1lo_native_ambientIntensity": 1.55,
-        "k1lo_native_enableShadows": false,
-        "k1lo_native_shadowStrength": 0.0,
-        "k1lo_native_shadowDistance": 227.0,
         "k1lo_native_spotlightEnabled": true,
         "k1lo_native_spotlightIntensity": 3.0,
-        "k1lo_native_reflectionsEnabled": true,
-        "k1lo_native_reflectionIntensity": 1.34,
         "k1lo_native_zossEmissiveIntensity": 1.9,
         "k1lo_native_zossEmissiveSmoothness": 0.34,
         "k1lo_native_zossEmissiveMetallic": 0.0,
@@ -1988,13 +2002,8 @@ private enum NativeUnityLightingSync {
         let moonlightRoll = defaults.object(forKey: "k1lo_native_moonlightRoll") as? Double ?? 0.0
         let ambientEnabled = defaults.object(forKey: "k1lo_native_ambientEnabled") as? Bool ?? true
         let ambientIntensity = defaults.object(forKey: "k1lo_native_ambientIntensity") as? Double ?? 1.55
-        let shadowsEnabled = defaults.object(forKey: "k1lo_native_enableShadows") as? Bool ?? false
-        let shadowStrength = defaults.object(forKey: "k1lo_native_shadowStrength") as? Double ?? 0.0
-        let shadowDistance = defaults.object(forKey: "k1lo_native_shadowDistance") as? Double ?? 227.0
         var spotlightEnabled = defaults.object(forKey: "k1lo_native_spotlightEnabled") as? Bool ?? true
         var spotlightIntensity = defaults.object(forKey: "k1lo_native_spotlightIntensity") as? Double ?? 3.0
-        let reflectionsEnabled = defaults.object(forKey: "k1lo_native_reflectionsEnabled") as? Bool ?? true
-        let reflectionIntensity = defaults.object(forKey: "k1lo_native_reflectionIntensity") as? Double ?? 1.34
 
         if spotlightEnabled && spotlightIntensity <= 0.01 {
             spotlightIntensity = 1.0
@@ -2015,13 +2024,8 @@ private enum NativeUnityLightingSync {
         K1L0WeatherOverlayInstaller.setUnitySetting("moonlightRoll", String(format: "%.3f", moonlightRoll))
         K1L0WeatherOverlayInstaller.setUnitySetting("ambientEnabled", ambientEnabled ? "1" : "0")
         K1L0WeatherOverlayInstaller.setUnitySetting("ambientIntensity", String(format: "%.3f", ambientIntensity))
-        K1L0WeatherOverlayInstaller.setUnitySetting("enableShadows", shadowsEnabled ? "1" : "0")
-        K1L0WeatherOverlayInstaller.setUnitySetting("shadowStrength", String(format: "%.3f", shadowStrength))
-        K1L0WeatherOverlayInstaller.setUnitySetting("shadowDistance", String(format: "%.3f", shadowDistance))
         K1L0WeatherOverlayInstaller.setUnitySetting("spotlightEnabled", spotlightEnabled ? "1" : "0")
         K1L0WeatherOverlayInstaller.setUnitySetting("spotlightIntensity", String(format: "%.3f", spotlightIntensity))
-        K1L0WeatherOverlayInstaller.setUnitySetting("reflectionsEnabled", reflectionsEnabled ? "1" : "0")
-        K1L0WeatherOverlayInstaller.setUnitySetting("reflectionIntensity", String(format: "%.3f", reflectionIntensity))
 
         // Window glow is time-aware: saved sliders tune the daytime pink, while
         // nighttime gets a fixed warm gold so windows read like traditional light.
@@ -2708,8 +2712,16 @@ private struct K1L0WeatherOverlayRoot: View {
                                                 .foregroundStyle(.white.opacity(0.55))
                                         }
 
-                                        StepLeaderboardSection(title: "PAST 24 HOURS", leaders: data.stepLeaders24h, useWeeklyTotal: false)
-                                        StepLeaderboardSection(title: "PAST 7 DAYS", leaders: data.stepLeaders7d, useWeeklyTotal: true)
+                                        StepLeaderboardSection(title: "PAST 24 HOURS", leaders: data.stepLeaders24h, useWeeklyTotal: false) { user in
+                                            withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                                                selectedNearbyUser = user
+                                            }
+                                        }
+                                        StepLeaderboardSection(title: "PAST 7 DAYS", leaders: data.stepLeaders7d, useWeeklyTotal: true) { user in
+                                            withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                                                selectedNearbyUser = user
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2917,7 +2929,6 @@ private struct K1L0WeatherOverlayRoot: View {
                                         in: Capsule()
                                     )
                                     .overlay(Capsule().stroke(Color.white.opacity(0.24), lineWidth: 1))
-                                    .shadow(color: .black.opacity(0.28), radius: 16, y: 8)
                                 }
                                 .buttonStyle(.plain)
                                 Spacer()
@@ -3282,11 +3293,6 @@ private struct TransmissionResultPanel: View {
                             .transmissionFizzyMask(enabled: transmissionFizzyEdges, size: CGSize(width: videoWidth, height: videoHeight))
                         }
 
-                        if transmissionFizzyEdges {
-                            FizzyTatteredEdgeOverlay()
-                                .frame(width: videoWidth, height: videoHeight)
-                        }
-
                         if playableClips.count > 1 {
                             TransmissionChainTapZones(
                                 clipCount: playableClips.count,
@@ -3525,7 +3531,6 @@ private struct TransmissionResultPanel: View {
                     .background(Color.black.opacity(0.88))
                     .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.24), lineWidth: 1))
                     .cornerRadius(14)
-                    .shadow(radius: 10)
                     .position(x: geometry.size.width - 130, y: buttonRowY + 120)
                     .transition(.asymmetric(insertion: .scale.combined(with: .opacity), removal: .opacity))
                     .zIndex(40)
@@ -4273,7 +4278,6 @@ private struct K1L0TabbedBottomMenu: View {
         .padding(.vertical, 8)
         .background(Color.black.opacity(0.58), in: Capsule())
         .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
-        .shadow(color: .black.opacity(0.26), radius: 18, y: 8)
     }
 
     private var userTabButton: some View {
@@ -4399,13 +4403,8 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_moonlightRoll") private var moonlightRoll = 0.0
     @AppStorage("k1lo_native_ambientEnabled") private var ambientEnabled = true
     @AppStorage("k1lo_native_ambientIntensity") private var ambientIntensity = 0.0
-    @AppStorage("k1lo_native_enableShadows") private var shadowsEnabled = false
-    @AppStorage("k1lo_native_shadowStrength") private var shadowStrength = 0.0
-    @AppStorage("k1lo_native_shadowDistance") private var shadowDistance = 227.0
     @AppStorage("k1lo_native_spotlightEnabled") private var spotlightEnabled = true
     @AppStorage("k1lo_native_spotlightIntensity") private var spotlightIntensity = 3.0
-    @AppStorage("k1lo_native_reflectionsEnabled") private var reflectionsEnabled = true
-    @AppStorage("k1lo_native_reflectionIntensity") private var reflectionIntensity = 1.34
     @AppStorage("k1lo_native_zossEmissiveIntensity") private var zossEmissiveIntensity = 1.9
     @AppStorage("k1lo_native_zossEmissiveSmoothness") private var zossEmissiveSmoothness = 0.34
     @AppStorage("k1lo_native_zossEmissiveMetallic") private var zossEmissiveMetallic = 0.05
@@ -4636,13 +4635,8 @@ private struct NativeSettingsPanel: View {
                             moonlightRoll = 0.0
                             ambientEnabled = true
                             ambientIntensity = 1.55
-                            shadowsEnabled = false
-                            shadowStrength = 0.0
-                            shadowDistance = 227.0
                             spotlightEnabled = true
                             spotlightIntensity = 3.0
-                            reflectionsEnabled = true
-                            reflectionIntensity = 1.34
 
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightEnabled", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightManualOverride", "0")
@@ -4655,13 +4649,8 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightRoll", "0.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("ambientEnabled", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("ambientIntensity", "1.550")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("enableShadows", "0")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("shadowStrength", "0.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("shadowDistance", "227.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("spotlightEnabled", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("spotlightIntensity", "3.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("reflectionsEnabled", "1")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("reflectionIntensity", "1.340")
                             syncLightingSettings()
                         }) {
                             SettingToggleRow(title: "Moonlight", value: $moonlightEnabled, key: "moonlightEnabled")
@@ -4675,16 +4664,11 @@ private struct NativeSettingsPanel: View {
                             SettingSliderRow(title: "Moon Roll", value: $moonlightRoll, range: -180...180, step: 1, key: "moonlightRoll")
                             SettingToggleRow(title: "Ambient", value: $ambientEnabled, key: "ambientEnabled")
                             SettingSliderRow(title: "Ambient", value: $ambientIntensity, range: 0...8, step: 0.01, key: "ambientIntensity")
-                            SettingToggleRow(title: "Shadows", value: $shadowsEnabled, key: "enableShadows")
-                            SettingSliderRow(title: "Shadow Strength", value: $shadowStrength, range: 0...1, step: 0.01, key: "shadowStrength")
-                            SettingSliderRow(title: "Shadow Distance", value: $shadowDistance, range: 0...500, step: 1, key: "shadowDistance")
                             SettingToggleRow(title: "Spotlight", value: $spotlightEnabled, key: "spotlightEnabled")
                                 .onChange(of: spotlightEnabled) { _ in
                                     syncLightingSettings()
                                 }
                             SettingSliderRow(title: "Spotlight", value: $spotlightIntensity, range: 0...12, step: 0.01, key: "spotlightIntensity")
-                            SettingToggleRow(title: "Reflections", value: $reflectionsEnabled, key: "reflectionsEnabled")
-                            SettingSliderRow(title: "Reflections", value: $reflectionIntensity, range: 0...2, step: 0.01, key: "reflectionIntensity")
                         }
                     }
 
@@ -5978,7 +5962,6 @@ private struct NativeUserEditorPanel: View {
                     fullScreenEditor ? Color.black : (tabsMode ? Color.clear : Color.black.opacity(0.18)),
                     in: RoundedRectangle(cornerRadius: fullScreenEditor ? 0 : 28, style: .continuous)
                 )
-                .shadow(color: .black.opacity(tabsMode || fullScreenEditor ? 0 : 0.22), radius: tabsMode || fullScreenEditor ? 0 : 18, x: 0, y: -6)
                 .padding(.top, fullScreenEditor ? geometry.safeAreaInsets.top : panelTop)
             }
             .ignoresSafeArea(edges: .bottom)
@@ -7046,7 +7029,6 @@ private struct NativeMessagesPanel: View {
                 .frame(width: geometry.size.width)
                 .frame(maxHeight: max(520, geometry.size.height - panelTop))
                 .background(tabsMode ? Color.clear : Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-                .shadow(color: .black.opacity(tabsMode ? 0 : 0.22), radius: tabsMode ? 0 : 18, x: 0, y: -6)
                 .padding(.top, panelTop)
             }
             .ignoresSafeArea(edges: .bottom)
@@ -7388,9 +7370,23 @@ private struct NativeTransmissionPanel: View {
             let panelTop = geometry.safeAreaInsets.top
             let panelBottom = max(88, geometry.safeAreaInsets.bottom + 84)
             let panelHeight = max(520, geometry.size.height - panelTop - panelBottom)
+            let showingFullscreenTransmission = activeTransmission.snapshot.active
+                && !activeTransmission.snapshot.videoUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ZStack(alignment: .top) {
                 Color.clear.ignoresSafeArea()
 
+                if showingFullscreenTransmission {
+                    Color.black.ignoresSafeArea()
+                    ActiveTransmissionTerminal(
+                        snapshot: activeTransmission.snapshot,
+                        availableHeight: geometry.size.height,
+                        onStop: { activeTransmission.stop() },
+                        onFailureReset: { restoreFailedDraft(activeTransmission.snapshot) }
+                    )
+                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
+                    .background(Color.black)
+                    .ignoresSafeArea()
+                } else {
                 ZStack(alignment: .top) {
                     // ScrollView so SwiftUI's automatic keyboard-avoidance can
                     // inset content (push the message field above the keyboard
@@ -7509,7 +7505,6 @@ private struct NativeTransmissionPanel: View {
                     RoundedRectangle(cornerRadius: 28, style: .continuous)
                         .stroke(Color.white.opacity(tabsMode ? 0 : (activeTransmission.snapshot.active ? 0.06 : 0.14)), lineWidth: 1)
                 )
-                .shadow(color: .black.opacity(tabsMode ? 0 : (activeTransmission.snapshot.active ? 0.05 : 0.18)), radius: tabsMode ? 0 : (activeTransmission.snapshot.active ? 6 : 14), x: 0, y: -6)
                 .padding(.top, panelTop)
                 .padding(.bottom, panelBottom)
                 .gesture(
@@ -7521,6 +7516,7 @@ private struct NativeTransmissionPanel: View {
                             }
                         }
                 )
+                }
             }
             // ignoresSafeArea(edges: .bottom) was here — it disables the
             // keyboard inset and hides the message field behind the keyboard.
@@ -7761,7 +7757,6 @@ private struct TransmissionBuildingArtwork: View {
                 .padding(.vertical, 16)
                 .background(Color.black.opacity(0.46), in: RoundedRectangle(cornerRadius: 5))
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.28), lineWidth: 1))
-                .shadow(color: Color.cyan.opacity(0.55), radius: 20)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
@@ -7874,9 +7869,11 @@ private struct ActiveTransmissionTerminal: View {
         ZStack(alignment: .topTrailing) {
             VStack(spacing: 8) {
                 GeometryReader { proxy in
-                    let toolHeight = CGFloat(48)
-                    let height = min(max(240, availableHeight - toolHeight), proxy.size.width * 16 / 9)
-                    let width = snapshot.videoUrl.isEmpty ? proxy.size.width : height * 9 / 16
+                    // Match the fullscreen chain player exactly: a full-width
+                    // 9:16 transmission frame. Do not compress it to fit the
+                    // tab panel; the surrounding ScrollView can accommodate it.
+                    let height = proxy.size.width * 16 / 9
+                    let width = proxy.size.width
                     HStack {
                         Spacer(minLength: 0)
                         ZStack {
@@ -7886,9 +7883,6 @@ private struct ActiveTransmissionTerminal: View {
                                 InlineTransmissionVideoPlayer(urlString: snapshot.videoUrl, audioUrlString: snapshot.audioUrl.isEmpty ? nil : snapshot.audioUrl)
                                     .allowsHitTesting(false)
                                     .mask(TatteredEdgeMaskCanvas())
-                                WarblyStaticView()
-                                    .opacity(0.14)
-                                    .allowsHitTesting(false)
                             }
                             if !snapshot.responsePlot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 DraggableTransmissionTextOverlay(
@@ -7902,9 +7896,6 @@ private struct ActiveTransmissionTerminal: View {
                                 )
                             }
 
-                            if transmissionFizzyEdges {
-                                FizzyTatteredEdgeOverlay()
-                            }
                         }
                         .frame(width: width, height: height)
                         .background(Color.black.opacity(0.86))
@@ -7912,7 +7903,7 @@ private struct ActiveTransmissionTerminal: View {
                         Spacer(minLength: 0)
                     }
                 }
-                .frame(height: max(240, availableHeight - 48))
+                .frame(height: k1l0DeviceScreenSize().width * 16 / 9)
 
                 HStack(spacing: 10) {
                     transmitterToolButton(label: nil, systemImage: "slider.horizontal.3") {
@@ -8456,7 +8447,6 @@ private struct TransmissionPlotRibbon: View {
                     .lineLimit(5)
                     .minimumScaleFactor(0.62)
                     .multilineTextAlignment(.center)
-                    .shadow(color: .black.opacity(0.70), radius: 8, x: 0, y: 2)
                     .frame(maxWidth: .infinity, maxHeight: 96, alignment: .bottom)
             }
         }
@@ -8813,15 +8803,15 @@ private struct TatteredEdgeMaskCanvas: View {
 // Tattered, fizzy edge decay drawn over the transmission frame. Irregular
 // opaque dark "bite" marks reach inward from all four edges so the visible
 // boundary reads torn/frayed rather than a clean rectangle, with a faint
-// signal-green fizz glowing along the frontier and scattered fizzy specks.
+// neutral fizz along the frontier and scattered fizzy specks.
 // Animated via TimelineView so the edges fizzle and creep over time.
 private struct FizzyTatteredEdgeOverlay: View {
     var maxDepth: CGFloat = 4
     var step: CGFloat = 2
-    private let fizz = Color(red: 0.42, green: 0.95, blue: 0.6)
+    private let fizz = Color.white
 
     var body: some View {
-        // Green frontier fizz is baked into the video frame by the Core Image
+        // Frontier fizz is baked into the video frame by the Core Image
         // tattered kernel; this Canvas overlay is only the disabled-mode fallback.
         Group {
             if K1L0TransmissionFX.tatteredShaderActive {
@@ -9014,8 +9004,8 @@ private enum K1L0TransmissionFX {
     }
 
     // Tattered edge as a Core Image kernel (GPU, in-pipeline) instead of the
-    // CPU SwiftUI Canvas mask/overlay. Bakes the torn silhouette + green frontier
-    // fizz directly into the composited video frame as the last composition step.
+    // CPU SwiftUI Canvas mask/overlay. Bakes the torn silhouette directly into
+    // the composited video frame as the last composition step.
     // Toggle off (`k1lo_native_tatteredCIKernel`=0) to force the Canvas fallback.
     static var tatteredKernelEnabled: Bool {
         (UserDefaults.standard.object(forKey: "k1lo_native_tatteredCIKernel") as? Bool) ?? true
@@ -9062,7 +9052,9 @@ private enum K1L0TransmissionFX {
             float sparkle = step(0.985, sp) * (1.0 - smoothstep(0.0, maxDepth, edgeDist));
 
             float glowAmt = clamp(glow * pulse + sparkle * 0.8, 0.0, 1.0);
-            vec3 outRgb = mix(c.rgb, fizzColor, glowAmt);
+            // Preserve the animated ragged edge and sparkle, but do not tint the
+            // perimeter. The old signal-green mix read as a decorative border.
+            vec3 outRgb = mix(c.rgb, vec3(1.0), glowAmt * 0.22);
             return vec4(outRgb, c.a * (1.0 - torn));
         }
         """
@@ -9082,7 +9074,7 @@ private enum K1L0TransmissionFX {
             CIVector(x: 32, y: 32),
             NSNumber(value: Float(1.0)),
             NSNumber(value: Float(2.0)),
-            CIColor(red: 0.42, green: 0.95, blue: 0.6),
+            CIColor(red: 1.0, green: 1.0, blue: 1.0),
         ]) else { return false }
         let ctx = CIContext(options: [.useSoftwareRenderer: false])
         return ctx.createCGImage(out, from: testExtent) != nil
@@ -9094,6 +9086,11 @@ private enum K1L0TransmissionFX {
     }
 
     static func apply(to item: AVPlayerItem, loopState: K1L0TransmissionFXLoopState) {
+#if os(iOS)
+        // Live iOS playback is rendered by K1L0MetalVideoPlayer. Keep this
+        // composition implementation for offline/export and non-iOS fallback.
+        return
+#else
         guard enabled else { return }
         let asset = item.asset
         asset.loadValuesAsynchronously(forKeys: ["duration", "tracks"]) {
@@ -9107,6 +9104,7 @@ private enum K1L0TransmissionFX {
             let composition = makeComposition(asset: asset, schedule: schedule, loopState: loopState)
             DispatchQueue.main.async { item.videoComposition = composition }
         }
+#endif
     }
 
     private static func rollSchedule(duration: Double, bpm: Double = 72) -> [Cut] {
@@ -9358,7 +9356,7 @@ private enum K1L0TransmissionFX {
                 image = flash.applyingFilter("CISourceOverCompositing", parameters: [kCIInputBackgroundImageKey: image])
             }
 
-            // Tattered edge: bake the torn silhouette + green frontier fizz into
+            // Tattered edge: bake the torn silhouette + neutral frontier fizz into
             // the frame on the GPU. Torn pixels get alpha 0 so Unity sky shows
             // through (AVPlayerLayer has a clear background). Skipped unless the
             // kernel both compiles and renders (tatteredShaderActive); otherwise
@@ -9371,7 +9369,7 @@ private enum K1L0TransmissionFX {
                     CIVector(x: extent.width, y: extent.height),
                     NSNumber(value: Float(t)),
                     NSNumber(value: Float(maxDepth)),
-                    CIColor(red: 0.42, green: 0.95, blue: 0.6),
+                    CIColor(red: 1.0, green: 1.0, blue: 1.0),
                 ]) {
                     image = processed
                 }
@@ -9625,7 +9623,7 @@ private struct K1L0BareVideoPlayer: View {
 
     var body: some View {
 #if canImport(UIKit)
-        K1L0BareVideoPlayerView(player: player)
+        K1L0MetalVideoPlayerView(player: player)
 #elseif canImport(AppKit)
         K1L0BareVideoPlayerNSView(player: player)
 #else
@@ -9635,6 +9633,110 @@ private struct K1L0BareVideoPlayer: View {
 }
 
 #if canImport(UIKit)
+private struct K1L0MetalVideoPlayerView: UIViewRepresentable {
+    let player: AVPlayer
+
+    func makeUIView(context: Context) -> K1L0MetalVideoView {
+        let view = K1L0MetalVideoView()
+        view.player = player
+        return view
+    }
+
+    func updateUIView(_ view: K1L0MetalVideoView, context: Context) {
+        view.player = player
+    }
+}
+
+private final class K1L0MetalVideoView: MTKView, MTKViewDelegate {
+    struct Uniforms {
+        var viewport = SIMD2<Float>(1, 1)
+        var texture = SIMD2<Float>(1, 1)
+        var time: Float = 0
+        var intensity: Float = 0.5
+    }
+
+    var player: AVPlayer? { didSet { attachOutputIfNeeded() } }
+    private var attachedItem: AVPlayerItem?
+    private var videoOutput: AVPlayerItemVideoOutput?
+    private var commandQueue: MTLCommandQueue?
+    private var pipeline: MTLRenderPipelineState?
+    private var textureCache: CVMetalTextureCache?
+    private let startedAt = CACurrentMediaTime()
+
+    required init(coder: NSCoder) { super.init(coder: coder); configure() }
+    override init(frame: CGRect, device: MTLDevice?) {
+        super.init(frame: frame, device: device ?? MTLCreateSystemDefaultDevice())
+        configure()
+    }
+
+    private func configure() {
+        guard let device else { return }
+        framebufferOnly = false
+        isOpaque = false
+        backgroundColor = .clear
+        colorPixelFormat = .bgra8Unorm
+        preferredFramesPerSecond = 30
+        enableSetNeedsDisplay = false
+        isPaused = false
+        delegate = self
+        commandQueue = device.makeCommandQueue()
+        CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
+        let bundle = Bundle(for: K1L0TuningStaticPlayer.self)
+        guard let library = try? device.makeDefaultLibrary(bundle: bundle),
+              let vertex = library.makeFunction(name: "k1l0VideoVertex"),
+              let fragment = library.makeFunction(name: "k1l0VideoFragment") else { return }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = fragment
+        descriptor.colorAttachments[0].pixelFormat = colorPixelFormat
+        descriptor.colorAttachments[0].isBlendingEnabled = true
+        descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        pipeline = try? device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
+    private func attachOutputIfNeeded() {
+        guard let item = player?.currentItem, item !== attachedItem else { return }
+        if let old = attachedItem, let output = videoOutput { old.remove(output) }
+        let attrs: [String: Any] = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+        let output = AVPlayerItemVideoOutput(pixelBufferAttributes: attrs)
+        item.add(output)
+        attachedItem = item
+        videoOutput = output
+    }
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    func draw(in view: MTKView) {
+        attachOutputIfNeeded()
+        guard let output = videoOutput, let player, let drawable = currentDrawable,
+              let pass = currentRenderPassDescriptor, let pipeline, let commandQueue,
+              let cache = textureCache else { return }
+        let itemTime = output.itemTime(forHostTime: CACurrentMediaTime())
+        guard output.hasNewPixelBuffer(forItemTime: itemTime),
+              let pixel = output.copyPixelBuffer(forItemTime: itemTime, itemTimeForDisplay: nil) else { return }
+        let width = CVPixelBufferGetWidth(pixel), height = CVPixelBufferGetHeight(pixel)
+        var cvTexture: CVMetalTexture?
+        guard CVMetalTextureCacheCreateTextureFromImage(nil, cache, pixel, nil, .bgra8Unorm, width, height, 0, &cvTexture) == kCVReturnSuccess,
+              let cvTexture, let texture = CVMetalTextureGetTexture(cvTexture),
+              let buffer = commandQueue.makeCommandBuffer(), let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        var uniforms = Uniforms(
+            viewport: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
+            texture: SIMD2(Float(width), Float(height)),
+            time: Float(CACurrentMediaTime() - startedAt),
+            intensity: K1L0TransmissionFX.enabled ? Float(K1L0TransmissionFX.intensity) : 0
+        )
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(texture, index: 0)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+        buffer.present(drawable)
+        buffer.commit()
+        _ = player
+    }
+}
+
 private struct K1L0BareVideoPlayerView: UIViewRepresentable {
     let player: AVPlayer
 
@@ -9894,12 +9996,10 @@ private struct LiquidGlassCircle: ViewModifier {
         if #available(iOS 26.0, macOS 26.0, *) {
             content
                 .glassEffect(.regular.interactive(), in: Circle())
-                .shadow(color: .black.opacity(0.28), radius: 16, y: 8)
         } else {
             content
                 .background(.ultraThinMaterial, in: Circle())
                 .overlay(Circle().stroke(.white.opacity(0.24), lineWidth: 1))
-                .shadow(color: .black.opacity(0.28), radius: 16, y: 8)
         }
     }
 }
@@ -11098,13 +11198,18 @@ private struct StepLeaderboardSection: View {
     let title: String
     let leaders: [OverlayStepLeader]
     let useWeeklyTotal: Bool
+    let onSelectUser: (OverlayUser) -> Void
+
+    @State private var isExpanded: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title)
                 .font(.system(size: 11, weight: .black, design: .rounded))
                 .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
-            ForEach(Array(leaders.prefix(10).enumerated()), id: \.element.id) { index, leader in
+            
+            let displayCount = isExpanded ? 10 : 5
+            ForEach(Array(leaders.prefix(displayCount).enumerated()), id: \.element.id) { index, leader in
                 HStack(spacing: 9) {
                     Text("\(index + 1)")
                         .font(.system(size: 12, weight: .black, design: .monospaced))
@@ -11118,6 +11223,39 @@ private struct StepLeaderboardSection: View {
                     Text((useWeeklyTotal ? leader.steps7d : leader.steps24h).formatted())
                         .font(.system(size: 13, weight: .black, design: .monospaced))
                 }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    let user = OverlayUser(
+                        userId: leader.userId,
+                        name: leader.name,
+                        callsign: nil,
+                        avatarUrl: nil,
+                        helmetUrl: leader.helmetUrl,
+                        faceUrl: nil,
+                        city: nil,
+                        lat: nil,
+                        lng: nil,
+                        lastActive: nil
+                    )
+                    onSelectUser(user)
+                }
+            }
+
+            if leaders.count > 5 {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Text(isExpanded ? "SHOW LESS" : "SHOW MORE")
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    }
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
+                    .frame(maxWidth: .infinity, minHeight: 28)
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -11461,7 +11599,6 @@ private struct MysteryObjectCollectPrompt: View {
                             RoundedRectangle(cornerRadius: 18, style: .continuous)
                                 .stroke(Color.white.opacity(0.22), lineWidth: 1)
                         )
-                        .shadow(color: Color(red: 0.70, green: 1.0, blue: 0.50).opacity(0.42), radius: 26)
 
                     if let imageUrlString = beam.imageUrl,
                        !imageUrlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -11523,7 +11660,6 @@ private struct MysteryObjectCollectPrompt: View {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.32), radius: 22, y: 12)
             .padding(.horizontal, 18)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
@@ -11572,7 +11708,6 @@ private struct LocationItemCollectPrompt: View {
                             RoundedRectangle(cornerRadius: 18, style: .continuous)
                                 .stroke(Color.white.opacity(0.22), lineWidth: 1)
                         )
-                        .shadow(color: Color(red: 0.70, green: 1.0, blue: 0.50).opacity(0.42), radius: 26)
 
                     Image(systemName: place.collectIconName)
                         .font(.system(size: 46, weight: .black))
@@ -11618,7 +11753,6 @@ private struct LocationItemCollectPrompt: View {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.32), radius: 22, y: 12)
             .padding(.horizontal, 18)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
@@ -11634,6 +11768,16 @@ private struct NearbyProfileDTO: Decodable {
     let faceUrl: String?
     let bio: String?
     let url: String?
+}
+
+private struct RoundedCorners: Shape {
+    let corners: UIRectCorner
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let path = UIBezierPath(roundedRect: rect, byRoundingCorners: corners, cornerRadii: CGSize(width: radius, height: radius))
+        return Path(path.cgPath)
+    }
 }
 
 private struct NearbyUserInfoCard: View {
@@ -11776,17 +11920,20 @@ private struct NearbyUserInfoCard: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(18)
+                .padding(.horizontal, 18)
+                .padding(.top, 18)
+                .padding(.bottom, 38)
             }
-            .background(Color.black.opacity(0.74), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .background(Color.black)
+            .clipShape(RoundedCorners(corners: [.topLeft, .topRight], radius: 26))
             .overlay(
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                RoundedCorners(corners: [.topLeft, .topRight], radius: 26)
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.4), radius: 26, y: 14)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 96)
+            .padding(.horizontal, 0)
+            .padding(.bottom, 0)
         }
+        .ignoresSafeArea(edges: .bottom)
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .onAppear { loadProfile() }
     }
@@ -11975,7 +12122,6 @@ private struct InventoryItemDetailCard: View {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
             )
-            .shadow(color: .black.opacity(0.32), radius: 22, y: 12)
             .padding(.horizontal, 18)
             .padding(.bottom, 96)
         }
@@ -12151,6 +12297,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
     }
 
     override init() {
+        K1L0MediaCache.configure()
         super.init()
         Self.activeModel = self
     }
