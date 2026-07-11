@@ -466,8 +466,10 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     {
         if (layeredSkyMaterial == null) return;
         float topHue = PlayerPrefs.GetFloat("k1lo_layeredSkyTopHue", 0.62f);
+        float midHue = PlayerPrefs.GetFloat("k1lo_layeredSkyMidHue", 0.76f);
         float horizonHue = PlayerPrefs.GetFloat("k1lo_layeredSkyHorizonHue", 0.94f);
         layeredSkyMaterial.SetColor("_TopColor", Color.HSVToRGB(Mathf.Repeat(topHue, 1f), .82f, .78f));
+        layeredSkyMaterial.SetColor("_MidColor", Color.HSVToRGB(Mathf.Repeat(midHue, 1f), .72f, .82f));
         layeredSkyMaterial.SetColor("_HorizonColor", Color.HSVToRGB(Mathf.Repeat(horizonHue, 1f), .62f, .92f));
         layeredSkyMaterial.SetColor("_CloudColor", new Color(.96f,.93f,.90f,1f));
         layeredSkyMaterial.SetFloat("_CloudOpacity", PlayerPrefs.GetFloat("k1lo_layeredCloudOpacity", .72f));
@@ -479,8 +481,9 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         float aurora = PlayerPrefs.GetFloat("k1lo_layeredAurora", 0f);
         layeredSkyMaterial.SetFloat("_RainStrength", effect == 1 ? Mathf.Max(.7f, rain) : effect == 4 ? Mathf.Max(.9f, rain) : 0f);
         layeredSkyMaterial.SetFloat("_SnowStrength", effect == 2 ? .85f : 0f);
-        layeredSkyMaterial.SetFloat("_AuroraStrength", effect == 3 ? Mathf.Max(.75f, aurora) : 0f);
+        layeredSkyMaterial.SetFloat("_AuroraStrength", effect == 3 ? .18f + aurora * .82f : 0f);
         layeredSkyMaterial.SetFloat("_StormStrength", effect == 4 ? 1f : 0f);
+        layeredSkyMaterial.SetFloat("_NightBlackness", PlayerPrefs.GetFloat("k1lo_layeredNightBlackness", .72f));
     }
 
     private void UpdateCelestialParameters()

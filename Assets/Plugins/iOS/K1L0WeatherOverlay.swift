@@ -147,6 +147,8 @@ private enum K1L0NativeSettingsDefaults {
         "k1lo_native_layeredRain": 0.0,
         "k1lo_native_layeredAurora": 0.0,
         "k1lo_native_layeredSkyTopHue": 0.62,
+        "k1lo_native_layeredSkyMidHue": 0.76,
+        "k1lo_native_layeredNightBlackness": 0.72,
         "k1lo_native_layeredSkyHorizonHue": 0.94,
         "k1lo_native_layeredCloudOpacity": 0.72,
         "k1lo_native_layeredCloudSpeed": 0.08,
@@ -4461,6 +4463,8 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_layeredRain") private var layeredRain = 0.0
     @AppStorage("k1lo_native_layeredAurora") private var layeredAurora = 0.0
     @AppStorage("k1lo_native_layeredSkyTopHue") private var layeredSkyTopHue = 0.62
+    @AppStorage("k1lo_native_layeredSkyMidHue") private var layeredSkyMidHue = 0.76
+    @AppStorage("k1lo_native_layeredNightBlackness") private var layeredNightBlackness = 0.72
     @AppStorage("k1lo_native_layeredSkyHorizonHue") private var layeredSkyHorizonHue = 0.94
     @AppStorage("k1lo_native_layeredCloudOpacity") private var layeredCloudOpacity = 0.72
     @AppStorage("k1lo_native_layeredCloudSpeed") private var layeredCloudSpeed = 0.08
@@ -5099,6 +5103,8 @@ private struct NativeSettingsPanel: View {
                             layeredRain = 0
                             layeredAurora = 0
                             layeredSkyTopHue = 0.62
+                            layeredSkyMidHue = 0.76
+                            layeredNightBlackness = 0.72
                             layeredSkyHorizonHue = 0.94
                             layeredCloudOpacity = 0.72
                             layeredCloudSpeed = 0.08
@@ -5110,6 +5116,8 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredRain", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredAurora", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyTopHue", "0.620")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyMidHue", "0.760")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredNightBlackness", "0.720")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyHorizonHue", "0.940")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudOpacity", "0.720")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudSpeed", "0.080")
@@ -5131,7 +5139,9 @@ private struct NativeSettingsPanel: View {
                                 }
                             }
                             SettingSliderRow(title: "Zenith Hue", value: $layeredSkyTopHue, range: 0...1, step: 0.01, key: "layeredSkyTopHue")
+                            SettingSliderRow(title: "Mid-Sky Hue", value: $layeredSkyMidHue, range: 0...1, step: 0.01, key: "layeredSkyMidHue")
                             SettingSliderRow(title: "Horizon Hue", value: $layeredSkyHorizonHue, range: 0...1, step: 0.01, key: "layeredSkyHorizonHue")
+                            SettingSliderRow(title: "Night Blackness", value: $layeredNightBlackness, range: 0...1, step: 0.02, key: "layeredNightBlackness")
                             SettingSliderRow(title: "Cloud Opacity", value: $layeredCloudOpacity, range: 0...1, step: 0.02, key: "layeredCloudOpacity")
                             SettingSliderRow(title: "Cloud Speed", value: $layeredCloudSpeed, range: -0.5...0.5, step: 0.01, key: "layeredCloudSpeed")
                             SettingSliderRow(title: "Cloud Scale", value: $layeredCloudScale, range: 0.5...6, step: 0.1, key: "layeredCloudScale")
@@ -5163,6 +5173,8 @@ private struct NativeSettingsPanel: View {
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredRain", String(format: "%.3f", layeredRain))
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredAurora", String(format: "%.3f", layeredAurora))
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyTopHue", String(format: "%.3f", layeredSkyTopHue))
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyMidHue", String(format: "%.3f", layeredSkyMidHue))
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredNightBlackness", String(format: "%.3f", layeredNightBlackness))
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyHorizonHue", String(format: "%.3f", layeredSkyHorizonHue))
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudOpacity", String(format: "%.3f", layeredCloudOpacity))
         K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudSpeed", String(format: "%.3f", layeredCloudSpeed))

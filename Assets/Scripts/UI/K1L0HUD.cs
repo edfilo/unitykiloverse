@@ -1783,6 +1783,7 @@ public class K1L0HUD : MonoBehaviour
                 DynamicSkyVideoController.SetExperimentalLayeredSky(boolValue);
                 break;
             case "layeredSkyTopHue":
+            case "layeredSkyMidHue":
             case "layeredSkyHorizonHue":
             case "layeredCloudOpacity":
             case "layeredCloudSpeed":
@@ -1792,6 +1793,7 @@ public class K1L0HUD : MonoBehaviour
             case "layeredRain":
             case "layeredAurora":
             case "layeredSkyEffect":
+            case "layeredNightBlackness":
                 DynamicSkyVideoController.SetExperimentalSkyFloat(key, floatValue);
                 break;
             case "testSkyOverride":
