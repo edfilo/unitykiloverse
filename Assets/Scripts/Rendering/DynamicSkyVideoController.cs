@@ -489,6 +489,17 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             altitude = Mathf.Sin((hour - 6f) / 24f * Mathf.PI * 2f) * 62f;
             sunAz = Mathf.Repeat(hour / 24f * 360f + 90f, 360f);
         }
+        else if (PlayerPrefs.HasKey("k1lo_nativeSunAltitude") && PlayerPrefs.HasKey("k1lo_nativeSunAzimuth"))
+        {
+            altitude = PlayerPrefs.GetFloat("k1lo_nativeSunAltitude");
+            sunAz = PlayerPrefs.GetFloat("k1lo_nativeSunAzimuth");
+        }
+        else if (sun.sqrMagnitude < .5f)
+        {
+            // Safe startup state until either astronomy or live isDay arrives.
+            altitude = 12f;
+            sunAz = 180f;
+        }
         float horizontalFov = 2f * Mathf.Atan(Mathf.Tan(cam.fieldOfView * .5f * Mathf.Deg2Rad) * cam.aspect) * Mathf.Rad2Deg;
         float sunX = .5f + Mathf.DeltaAngle(cam.transform.eulerAngles.y, sunAz) / Mathf.Max(1f, horizontalFov);
         float sunY = .08f + Mathf.Clamp(altitude, -8f, 90f) / 90f * .78f;

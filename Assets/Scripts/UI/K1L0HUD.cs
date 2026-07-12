@@ -1796,6 +1796,10 @@ public class K1L0HUD : MonoBehaviour
             case "layeredNightBlackness":
                 DynamicSkyVideoController.SetExperimentalSkyFloat(key, floatValue);
                 break;
+            case "nativeSunAltitude":
+            case "nativeSunAzimuth":
+                PlayerPrefs.SetFloat("k1lo_" + key, floatValue);
+                break;
             case "testSkyOverride":
                 KiloWorld.Rendering.Systems.RenderManager.TestSkyOverrideEnabled = boolValue;
                 PlayerPrefs.SetInt("k1lo_testSkyOverride", boolValue ? 1 : 0);

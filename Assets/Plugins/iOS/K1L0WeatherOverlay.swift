@@ -2112,6 +2112,37 @@ private enum NativeUnityLightingSync {
     }
 }
 
+private enum NativeUnitySolarSync {
+    private static var timer: Timer?
+
+    static func start() {
+        sync()
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in sync() }
+    }
+
+    static func sync() {
+        guard let coordinate = K1L0OverlayDataModel.activeModel?.solarCoordinate else { return }
+        let now = Date().timeIntervalSince1970 / 86400.0 + 2440587.5
+        let n = now - 2451545.0
+        let meanLongitude = (280.460 + 0.9856474 * n).truncatingRemainder(dividingBy: 360)
+        let anomaly = (357.528 + 0.9856003 * n) * .pi / 180
+        let eclipticLongitude = (meanLongitude + 1.915 * sin(anomaly) + 0.020 * sin(2 * anomaly)) * .pi / 180
+        let obliquity = (23.439 - 0.0000004 * n) * .pi / 180
+        let rightAscension = atan2(cos(obliquity) * sin(eclipticLongitude), cos(eclipticLongitude))
+        let declination = asin(sin(obliquity) * sin(eclipticLongitude))
+        let gmst = (280.46061837 + 360.98564736629 * (now - 2451545.0)).truncatingRemainder(dividingBy: 360)
+        let hourAngle = (gmst + coordinate.longitude) * .pi / 180 - rightAscension
+        let latitude = coordinate.latitude * .pi / 180
+        let altitude = asin(sin(latitude) * sin(declination) + cos(latitude) * cos(declination) * cos(hourAngle))
+        let azimuth = atan2(-sin(hourAngle), tan(declination) * cos(latitude) - sin(latitude) * cos(hourAngle))
+        let altitudeDegrees = altitude * 180 / .pi
+        let azimuthDegrees = (azimuth * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+        K1L0WeatherOverlayInstaller.setUnitySetting("nativeSunAltitude", String(format: "%.4f", altitudeDegrees))
+        K1L0WeatherOverlayInstaller.setUnitySetting("nativeSunAzimuth", String(format: "%.4f", azimuthDegrees))
+    }
+}
+
 private struct K1L0LoginPermissionGate: View {
     @ObservedObject var auth: K1L0AuthGateStore
     @ObservedObject var data: K1L0OverlayDataModel
@@ -2980,6 +3011,7 @@ private struct K1L0WeatherOverlayRoot: View {
                 K1L0RadioPlayer.shared.setSuppressed(radioSuppressed)
             }
             NativeUnityLightingSync.sync()
+            NativeUnitySolarSync.start()
             // Sync sky mode with whichever modal is up at launch (news HUD is
             // visible by default). The .onChange(skyModePanelOpen) below won't
             // fire for the initial value, so we have to drive it explicitly here.
@@ -3015,6 +3047,7 @@ private struct K1L0WeatherOverlayRoot: View {
                     K1L0RadioPlayer.shared.resumeAfterForeground(apiBase: data.activeAPIBase)
                 }
                 NativeUnityLightingSync.sync()
+                NativeUnitySolarSync.sync()
             }
         }
         .onChange(of: musicRadioEnabled) { enabled in
@@ -12382,6 +12415,7 @@ private struct DropFilterBar: View {
 
 private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocationManagerDelegate {
     fileprivate static weak var activeModel: K1L0OverlayDataModel?
+    fileprivate var solarCoordinate: CLLocationCoordinate2D? { currentLocation?.coordinate ?? fixedLocationForCurrentMode()?.coordinate }
 
     @Published var liveSteps = 0 {
         didSet {
@@ -13070,6 +13104,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         if isUsingFixedTestLocation { return }
         guard let location = locations.last else { return }
         currentLocation = location
+        NativeUnitySolarSync.sync()
         updateBeamApproachState()
         checkForBeamCollection()
         
