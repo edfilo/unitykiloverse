@@ -10,6 +10,12 @@ public sealed class SkyModeWorldVisibility : MonoBehaviour
     private static SkyModeWorldVisibility instance;
     private readonly Dictionary<Renderer, bool> rendererStates = new();
     private readonly Dictionary<ParticleSystem, bool> particlePlayingStates = new();
+    private readonly Dictionary<Behaviour, bool> behaviourStates = new();
+    private static readonly HashSet<string> SuspendedTypes = new()
+    {
+        "K1L0LocationBeams", "POILabelBridge", "BeamTapDetector",
+        "TransmitterScanner", "UserPresenceManager", "UnicornPugManager"
+    };
     private bool skyMode;
     private float nextRefresh;
 
@@ -60,10 +66,18 @@ public sealed class SkyModeWorldVisibility : MonoBehaviour
 
         foreach (var particles in FindObjectsByType<ParticleSystem>(FindObjectsInactive.Include, FindObjectsSortMode.None))
         {
+            if (particles.GetComponentInParent<SkyWeatherVolume>() != null) continue;
             if (!particlePlayingStates.ContainsKey(particles))
                 particlePlayingStates.Add(particles, particles.isPlaying);
             particles.Pause(true);
             SuppressRenderer(particles.GetComponent<ParticleSystemRenderer>());
+        }
+
+        foreach (var behaviour in FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+        {
+            if (behaviour == null || !SuspendedTypes.Contains(behaviour.GetType().Name)) continue;
+            if (!behaviourStates.ContainsKey(behaviour)) behaviourStates.Add(behaviour, behaviour.enabled);
+            behaviour.enabled = false;
         }
     }
 
@@ -83,7 +97,11 @@ public sealed class SkyModeWorldVisibility : MonoBehaviour
         foreach (var entry in particlePlayingStates)
             if (entry.Key != null && entry.Value) entry.Key.Play(true);
 
+        foreach (var entry in behaviourStates)
+            if (entry.Key != null) entry.Key.enabled = entry.Value;
+
         rendererStates.Clear();
         particlePlayingStates.Clear();
+        behaviourStates.Clear();
     }
 }

@@ -1,12 +1,40 @@
 using System;
-using System.IO;
 using KiloWorld.Rendering.Systems;
 using UnityEngine;
 using UnityEngine.Rendering;
-using UnityEngine.Video;
 
 public sealed class DynamicSkyVideoController : MonoBehaviour
 {
+    [Serializable]
+    public sealed class EnvironmentSnapshot
+    {
+        public float solarAltitude, solarAzimuth, cloudOpacity, cloudSpeed,
+            cloudScale, cloudContrast, topHue, midHue, horizonHue,
+            nightBlackness, rain, aurora;
+        public int effect;
+        public bool bypassWeather;
+    }
+
+    public static void ApplyEnvironmentJson(string json)
+    {
+        var state = JsonUtility.FromJson<EnvironmentSnapshot>(json);
+        if (state == null) return;
+        PlayerPrefs.SetFloat("k1lo_nativeSunAltitude", state.solarAltitude);
+        PlayerPrefs.SetFloat("k1lo_nativeSunAzimuth", state.solarAzimuth);
+        PlayerPrefs.SetFloat("k1lo_layeredBypassWeather", state.bypassWeather ? 1 : 0);
+        PlayerPrefs.SetFloat("k1lo_layeredSkyEffect", state.effect);
+        PlayerPrefs.SetFloat("k1lo_layeredCloudOpacity", state.cloudOpacity);
+        PlayerPrefs.SetFloat("k1lo_layeredCloudSpeed", state.cloudSpeed);
+        PlayerPrefs.SetFloat("k1lo_layeredCloudScale", state.cloudScale);
+        PlayerPrefs.SetFloat("k1lo_layeredCloudContrast", state.cloudContrast);
+        PlayerPrefs.SetFloat("k1lo_layeredSkyTopHue", state.topHue);
+        PlayerPrefs.SetFloat("k1lo_layeredSkyMidHue", state.midHue);
+        PlayerPrefs.SetFloat("k1lo_layeredSkyHorizonHue", state.horizonHue);
+        PlayerPrefs.SetFloat("k1lo_layeredNightBlackness", state.nightBlackness);
+        PlayerPrefs.SetFloat("k1lo_layeredRain", state.rain);
+        PlayerPrefs.SetFloat("k1lo_layeredAurora", state.aurora);
+        Instance?.ApplyExperimentalParameters();
+    }
     private const int TextureWidth = 1080;
     private const int TextureHeight = 1920;
     // The old flat sky swept the video rapidly as the map/compass turned and
@@ -26,7 +54,6 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     public static void SetNativePanelOpen(bool open)
     {
         nativePanelOpen = open;
-        Instance?.ApplyEffectivePlaybackSpeed();
     }
 
     public static void SetSkyFps(float fps)
@@ -34,7 +61,6 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         SkyTargetFps = Mathf.Clamp(fps, 1f, 60f);
         PlayerPrefs.SetFloat("k1lo_skyTargetFps", SkyTargetFps);
         PlayerPrefs.Save();
-        Instance?.ApplyEffectivePlaybackSpeed();
     }
 
     public static void SetExperimentalLayeredSky(bool enabled)
@@ -54,28 +80,9 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         Instance?.ApplyExperimentalParameters();
     }
 
-    // Swift sends us a full file:// URL via setUnitySetting("skyVideoUrl", …).
-    // When set, this overrides ChooseClipName() so Unity never needs a rebuild
-    // to change which file plays for a given weather condition.
-    private static string pendingOverrideUrl;
-    private string activeOverrideUrl;
-
-    public static void SetVideoUrl(string url)
-    {
-        pendingOverrideUrl = url ?? string.Empty;
-        Instance?.SelectAndPlay(force: true);
-    }
-
-    private VideoPlayer videoPlayer;
-    private RenderTexture renderTexture;
-    private Material videoMaterial;
     private Material layeredSkyMaterial;
     private Transform skyPlane;
     private MeshRenderer skyPlaneRenderer;
-    private string activeClipName;
-    private float nextSelectionTime;
-    private bool playingBackward;
-    private int observedManualSkyRevision = -1;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Bootstrap()
@@ -158,19 +165,6 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
     private void Update()
     {
-        if (!ExperimentalLayeredSky && Time.unscaledTime >= nextSelectionTime)
-        {
-            nextSelectionTime = Time.unscaledTime + 8f;
-            SelectAndPlay(force: false);
-        }
-
-        if (observedManualSkyRevision != RenderManager.ManualSkyRevision)
-        {
-            observedManualSkyRevision = RenderManager.ManualSkyRevision;
-            SelectAndPlay(force: false);
-        }
-
-        if (!ExperimentalLayeredSky) UpdatePingPongPlayback();
     }
 
     private void LateUpdate()
@@ -182,14 +176,11 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     private void OnDestroy()
     {
         if (Instance == this) Instance = null;
-        if (videoPlayer != null) videoPlayer.loopPointReached -= HandleLoopPointReached;
-        if (videoPlayer != null) videoPlayer.Stop();
-        if (renderTexture != null) renderTexture.Release();
         if (skyPlane != null) Destroy(skyPlane.gameObject);
-        if (videoMaterial != null) Destroy(videoMaterial);
         if (layeredSkyMaterial != null) Destroy(layeredSkyMaterial);
     }
 
+#if K1L0_LEGACY_VIDEO_SKY
     private void SelectAndPlay(bool force)
     {
         if (ExperimentalLayeredSky) return;
@@ -351,6 +342,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         int localHour = DateTime.Now.ToLocalTime().Hour;
         return localHour < 6 || localHour >= 19;
     }
+#endif
 
     private void ApplyVideoSurface(bool forceGi)
     {
@@ -410,7 +402,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             if (collider != null) Destroy(collider);
             skyPlane = plane.transform;
             skyPlaneRenderer = plane.GetComponent<MeshRenderer>();
-            skyPlaneRenderer.sharedMaterial = ExperimentalLayeredSky && layeredSkyMaterial != null ? layeredSkyMaterial : videoMaterial;
+            skyPlaneRenderer.sharedMaterial = layeredSkyMaterial;
             skyPlaneRenderer.shadowCastingMode = ShadowCastingMode.Off;
             skyPlaneRenderer.receiveShadows = false;
             Debug.Log("[DynamicSkyVideo] Created horizon-anchored layered sky plane.");
@@ -428,26 +420,9 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     {
         EnsureSkyPlane();
         if (skyPlaneRenderer == null) return;
-        bool layered = ExperimentalLayeredSky && layeredSkyMaterial != null;
-        skyPlaneRenderer.sharedMaterial = layered ? layeredSkyMaterial : videoMaterial;
-        if (videoPlayer != null)
-        {
-            if (layered)
-            {
-                videoPlayer.Stop();
-                videoPlayer.enabled = false;
-                if (renderTexture != null && renderTexture.IsCreated()) renderTexture.Release();
-            }
-            else
-            {
-                videoPlayer.enabled = true;
-                if (renderTexture != null && !renderTexture.IsCreated()) renderTexture.Create();
-                videoPlayer.targetTexture = renderTexture;
-                SelectAndPlay(force: true);
-            }
-        }
+        skyPlaneRenderer.sharedMaterial = layeredSkyMaterial;
         ApplyExperimentalParameters();
-        Debug.Log($"[DynamicSkyVideo] renderer={(layered ? "layered-metal" : "video")}");
+        Debug.Log("[K1L0Atmosphere] procedural dome active");
     }
 
     private void ApplyExperimentalParameters()
@@ -522,6 +497,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetFloat("_NightAmount", night);
     }
 
+#if K1L0_LEGACY_VIDEO_SKY
     private void ApplySkyTextureTransform(Camera cam)
     {
         if (videoMaterial == null || cam == null) return;
@@ -554,4 +530,5 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             material.SetTextureOffset("_MainTex", offset);
         }
     }
+#endif
 }

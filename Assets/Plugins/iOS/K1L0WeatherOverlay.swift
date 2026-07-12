@@ -317,6 +317,7 @@ private enum K1L0NativeSettingsDefaults {
     }
 }
 
+/* Legacy weather-video resolver removed: the production sky is procedural.
 private enum K1L0SkyVideoURLResolver {
     private static let manualGlyphs = ["clear", "partly", "cloud", "overcast", "rain", "snow", "fog", "storm"]
     private static let lastLiveSkyVideoUrlKey = "k1lo_native_lastLiveSkyVideoUrl"
@@ -408,7 +409,7 @@ private enum K1L0SkyVideoURLResolver {
     private static func fileUrlIfExists(_ url: URL) -> URL? {
         FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
-}
+} */
 
 private enum K1L0WindowGlowResolver {
     private static let lastWeatherIsDayKey = "k1lo_native_lastWeatherIsDay"
@@ -610,7 +611,6 @@ private func UnitySendMessage(_ objectName: UnsafePointer<CChar>, _ methodName: 
 public func K1L0InstallWeatherOverlay() {
     DispatchQueue.main.async {
         K1L0NativeSettingsDefaults.register()
-        K1L0SkyVideoURLResolver.fetchConfig()
         K1L0WeatherOverlayInstaller.install()
     }
 }
@@ -1551,6 +1551,14 @@ private final class K1L0RadioPlayer: ObservableObject {
     }
 }
 
+func K1L0CurrentSolarCoordinate() -> CLLocationCoordinate2D? {
+    K1L0OverlayDataModel.activeModel?.solarCoordinate
+}
+
+func K1L0ApplyEnvironmentSnapshot(_ payload: [String: Any]) {
+    K1L0WeatherOverlayInstaller.applyEnvironmentSnapshot(payload)
+}
+
 private final class K1L0WeatherOverlayInstaller {
     private static var unityPlaybackPaused = false
 
@@ -1949,6 +1957,16 @@ private final class K1L0WeatherOverlayInstaller {
         }
     }
 
+    static func applyEnvironmentSnapshot(_ payload: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+        "K1L0HUD".withCString { objectName in
+            "ApplyNativeEnvironment".withCString { methodName in
+                json.withCString { UnitySendMessage(objectName, methodName, $0) }
+            }
+        }
+    }
+
     static func playBeamCollectSound() {
         "K1L0HUD".withCString { objectName in
             "PlayNativeBeamCollectSound".withCString { methodName in
@@ -2107,11 +2125,13 @@ private enum NativeUnityLightingSync {
 
         let manualWeather = defaults.object(forKey: "k1lo_native_manualWeather") as? Int ?? 0
         let manualHour = defaults.object(forKey: "k1lo_native_manualHour") as? Double ?? 13.25
-        K1L0WeatherOverlayInstaller.setUnitySetting("testSkyOverride", K1L0SkyVideoURLResolver.testOverrideEnabled ? "1" : "0")
-        K1L0SkyVideoURLResolver.applyManualSkyVideoIfTesting(manualWeatherIndex: manualWeather, manualHour: manualHour)
+        let testOverride = defaults.object(forKey: "k1lo_native_testSkyOverride") as? Bool ?? false
+        K1L0WeatherOverlayInstaller.setUnitySetting("testSkyOverride", testOverride ? "1" : "0")
     }
 }
 
+/* Moved to K1L0SolarEnvironmentSync.swift to keep astronomy/sky iteration
+   out of this large UI compilation unit.
 private enum NativeUnitySolarSync {
     private static var timer: Timer?
 
@@ -2138,10 +2158,25 @@ private enum NativeUnitySolarSync {
         let azimuth = atan2(-sin(hourAngle), tan(declination) * cos(latitude) - sin(latitude) * cos(hourAngle))
         let altitudeDegrees = altitude * 180 / .pi
         let azimuthDegrees = (azimuth * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
-        K1L0WeatherOverlayInstaller.setUnitySetting("nativeSunAltitude", String(format: "%.4f", altitudeDegrees))
-        K1L0WeatherOverlayInstaller.setUnitySetting("nativeSunAzimuth", String(format: "%.4f", azimuthDegrees))
+        let defaults = UserDefaults.standard
+        K1L0WeatherOverlayInstaller.applyEnvironmentSnapshot([
+            "solarAltitude": altitudeDegrees,
+            "solarAzimuth": azimuthDegrees,
+            "bypassWeather": defaults.bool(forKey: "k1lo_native_layeredBypassWeather"),
+            "effect": defaults.integer(forKey: "k1lo_native_layeredSkyEffect"),
+            "cloudOpacity": defaults.object(forKey: "k1lo_native_layeredCloudOpacity") as? Double ?? 0.72,
+            "cloudSpeed": defaults.object(forKey: "k1lo_native_layeredCloudSpeed") as? Double ?? 0.08,
+            "cloudScale": defaults.object(forKey: "k1lo_native_layeredCloudScale") as? Double ?? 2.2,
+            "cloudContrast": defaults.object(forKey: "k1lo_native_layeredCloudContrast") as? Double ?? 1.5,
+            "topHue": defaults.object(forKey: "k1lo_native_layeredSkyTopHue") as? Double ?? 0.62,
+            "midHue": defaults.object(forKey: "k1lo_native_layeredSkyMidHue") as? Double ?? 0.76,
+            "horizonHue": defaults.object(forKey: "k1lo_native_layeredSkyHorizonHue") as? Double ?? 0.94,
+            "nightBlackness": defaults.object(forKey: "k1lo_native_layeredNightBlackness") as? Double ?? 0.72,
+            "rain": defaults.object(forKey: "k1lo_native_layeredRain") as? Double ?? 0,
+            "aurora": defaults.object(forKey: "k1lo_native_layeredAurora") as? Double ?? 0
+        ])
     }
-}
+} */
 
 private struct K1L0LoginPermissionGate: View {
     @ObservedObject var auth: K1L0AuthGateStore
@@ -5098,7 +5133,6 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("manualHour", "13.250")
                             K1L0WeatherOverlayInstaller.setUnitySetting("manualWeather", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("skyTargetFps", "30.000")
-                            K1L0SkyVideoURLResolver.restoreLastLiveSkyVideoIfAvailable()
                             K1L0WindowGlowResolver.applyManualHour(13.25)
                         }) {
                             SettingToggleRow(title: "Open-Meteo Source", value: $weatherOpenMeteo, key: "weatherOpenMeteo")
@@ -5505,7 +5539,6 @@ private struct SettingSliderRow: View {
 	    private func syncDependentSkyVideoUrl(newValue: Double) {
 	        guard key == "manualHour" else { return }
 	        let manualWeather = UserDefaults.standard.integer(forKey: "k1lo_native_manualWeather")
-	        K1L0SkyVideoURLResolver.applyManualSkyVideoIfTesting(manualWeatherIndex: manualWeather, manualHour: newValue)
         K1L0WindowGlowResolver.applyManualHour(newValue)
 	    }
 
@@ -5523,15 +5556,6 @@ private struct SettingToggleRow: View {
         Button {
             value.toggle()
             K1L0WeatherOverlayInstaller.setUnitySetting(key, value ? "1" : "0")
-            if key == "testSkyOverride" {
-                if value {
-                    let manualWeather = UserDefaults.standard.integer(forKey: "k1lo_native_manualWeather")
-                    let manualHour = UserDefaults.standard.double(forKey: "k1lo_native_manualHour")
-                    K1L0SkyVideoURLResolver.applyManualSkyVideoIfTesting(manualWeatherIndex: manualWeather, manualHour: manualHour)
-                } else {
-                    K1L0SkyVideoURLResolver.restoreLastLiveSkyVideoIfAvailable()
-                }
-            }
         } label: {
             HStack {
                 Text(title)
@@ -5604,7 +5628,6 @@ private struct SettingWeatherSegmentRow: View {
 	            .onChange(of: selection) { newValue in
 	                K1L0WeatherOverlayInstaller.setUnitySetting("manualWeather", "\(newValue)")
 	                let manualHour = UserDefaults.standard.double(forKey: "k1lo_native_manualHour")
-	                K1L0SkyVideoURLResolver.applyManualSkyVideoIfTesting(manualWeatherIndex: newValue, manualHour: manualHour)
                 K1L0WindowGlowResolver.applyManualHour(manualHour)
 	            }
 	        }
@@ -14542,13 +14565,6 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         }
         weatherText = snapshot.displayText
         weatherGlyph = snapshot.glyph
-        let skyVideoUrl = K1L0SkyVideoURLResolver.url(glyph: snapshot.glyph, isDay: snapshot.isDay)
-        if !skyVideoUrl.isEmpty {
-            K1L0SkyVideoURLResolver.rememberLiveSkyVideoUrl(skyVideoUrl)
-        }
-        if !skyVideoUrl.isEmpty && !K1L0SkyVideoURLResolver.testOverrideEnabled {
-            K1L0WeatherOverlayInstaller.setUnitySetting("skyVideoUrl", skyVideoUrl)
-        }
         K1L0WindowGlowResolver.rememberWeatherIsDay(snapshot.isDay)
     }
 

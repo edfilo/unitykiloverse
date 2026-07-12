@@ -888,6 +888,11 @@ public class K1L0HUD : MonoBehaviour
             ApplyMapHudSuppression(open);
     }
 
+    public void ApplyNativeEnvironment(string json)
+    {
+        DynamicSkyVideoController.ApplyEnvironmentJson(json);
+    }
+
     public void PlayNativeBeamCollectSound(string _)
     {
         var director = SignalDirectorV2.Instance;
@@ -1776,9 +1781,6 @@ public class K1L0HUD : MonoBehaviour
                 PlayerPrefs.SetInt("k1lo_manualWeatherOverrideEnabled", 1);
                 KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
                 break;
-            case "skyVideoUrl":
-                DynamicSkyVideoController.SetVideoUrl(value);
-                break;
             case "experimentalLayeredSky":
                 DynamicSkyVideoController.SetExperimentalLayeredSky(boolValue);
                 break;
@@ -1949,33 +1951,47 @@ public class K1L0HUD : MonoBehaviour
         nearbyPanel = CreateOnePanel("NearbyPanel", centeredPos, new Vector2(0f, 500f), new Vector4(18f, 24f, 18f, 96f));
         nearbyPanel.draggable = false;
         nearbyPanel.OnCloseClicked = () => TogglePanel(0, false);
-        GameObject nearbyGO = new GameObject("NearbyMode");
-        nearbyMode = nearbyGO.AddComponent<K1L0NearbyMode>();
-        nearbyMode.Initialize(nearbyPanel.contentArea, monoFont);
+        if (!NativeOverlayOwnsHud)
+        {
+            GameObject nearbyGO = new GameObject("NearbyMode");
+            nearbyMode = nearbyGO.AddComponent<K1L0NearbyMode>();
+            nearbyMode.Initialize(nearbyPanel.contentArea, monoFont);
+        }
         nearbyPanel.gameObject.SetActive(false);
 
         codexPanel = CreateOnePanel("StatusPanel", centeredPos, new Vector2(0f, 520f), new Vector4(18f, 24f, 18f, 96f));
         codexPanel.draggable = false;
         codexPanel.OnCloseClicked = () => TogglePanel(1, false);
-        GameObject statusGO = new GameObject("StatusMode");
-        statusMode = statusGO.AddComponent<K1L0StatusMode>();
-        statusMode.Initialize(codexPanel.contentArea, monoFont);
+        if (!NativeOverlayOwnsHud)
+        {
+            GameObject statusGO = new GameObject("StatusMode");
+            statusMode = statusGO.AddComponent<K1L0StatusMode>();
+            statusMode.Initialize(codexPanel.contentArea, monoFont);
+        }
         codexPanel.gameObject.SetActive(false);
 
         profilePanel = CreateOnePanel("ProfilePanel", centeredPos, new Vector2(0f, 620f), new Vector4(18f, 24f, 18f, 96f));
         profilePanel.draggable = false;
         profilePanel.OnCloseClicked = () => TogglePanel(2, false);
-        GameObject profileGO = new GameObject("ProfileMode");
-        profileMode = profileGO.AddComponent<K1L0ProfileMode>();
-        profileMode.Initialize(profilePanel.contentArea, monoFont);
+        // Swift owns profile/settings on iOS. Do not instantiate the legacy
+        // uGUI + UITK settings trees (hundreds of controls) behind native UI.
+        if (!NativeOverlayOwnsHud)
+        {
+            GameObject profileGO = new GameObject("ProfileMode");
+            profileMode = profileGO.AddComponent<K1L0ProfileMode>();
+            profileMode.Initialize(profilePanel.contentArea, monoFont);
+        }
         profilePanel.gameObject.SetActive(false);
 
         transmitterPanel = CreateOnePanel("TransmitterPanel", centeredPos, new Vector2(0f, 620f), new Vector4(18f, 24f, 18f, 96f));
         transmitterPanel.draggable = false;
         transmitterPanel.OnCloseClicked = () => TogglePanel(3, false);
-        GameObject transmitterGO = new GameObject("TransmitterMode");
-        transmitterMode = transmitterGO.AddComponent<TransmitterEnterModal>();
-        transmitterMode.InitializeEmbedded(transmitterPanel.contentArea);
+        if (!NativeOverlayOwnsHud)
+        {
+            GameObject transmitterGO = new GameObject("TransmitterMode");
+            transmitterMode = transmitterGO.AddComponent<TransmitterEnterModal>();
+            transmitterMode.InitializeEmbedded(transmitterPanel.contentArea);
+        }
         transmitterPanel.gameObject.SetActive(false);
 
         panels = new K1L0GlassPanel[] { nearbyPanel, codexPanel, profilePanel, transmitterPanel };
