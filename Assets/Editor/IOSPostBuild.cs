@@ -37,23 +37,9 @@ public class IOSPostBuild
 
         string targetGuid = proj.GetUnityMainTargetGuid(); // Main app target
 
-        // Unity has no PluginImporter for .metal, so the tuning shader never
-        // reaches the generated project on its own. Copy it in and compile it
-        // with UnityFramework — the same target that compiles the plugin Swift,
-        // so ShaderLibrary.bundle(Bundle(for:)) finds it in that metallib.
-        string metalSrc = Path.Combine(UnityEngine.Application.dataPath, "Plugins/iOS/K1L0TuningShader.metal");
-        const string metalRel = "Libraries/Plugins/iOS/K1L0TuningShader.metal";
-        if (File.Exists(metalSrc))
-        {
-            string metalDst = Path.Combine(path, metalRel);
-            Directory.CreateDirectory(Path.GetDirectoryName(metalDst));
-            File.Copy(metalSrc, metalDst, true);
-            string metalGuid = proj.ContainsFileByProjectPath(metalRel)
-                ? proj.FindFileGuidByProjectPath(metalRel)
-                : proj.AddFile(metalRel, metalRel, PBXSourceTree.Source);
-            proj.AddFileToBuild(proj.GetUnityFrameworkTargetGuid(), metalGuid);
-            proj.WriteToFile(projPath);
-        }
+        // MetalPluginPostBuild owns native Metal target membership. Keep this
+        // postprocessor focused on plist/capability configuration.
+        proj.WriteToFile(projPath);
 
         string entitlementsPath = "Unity-iPhone.entitlements";
         

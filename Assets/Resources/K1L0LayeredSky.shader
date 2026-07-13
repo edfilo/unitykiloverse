@@ -71,34 +71,41 @@ Shader "K1L0/Experimental Layered Sky"
                 float sunMu=saturate(dot(viewDir,normalize(_SunDirection.xyz))*.5+.5);
                 sky += half3(.22,.34,.62)*half(horizonAir*(1.0-_NightAmount)*.28);
                 sky += half3(1.0,.48,.18)*half(pow(sunMu,18.0)*horizonAir*_SunVisibility*.16);
-                float slowTime=_Time.y*_CloudSpeed*.025;
+                // Visible atmospheric drift without the time-lapse look.
+                float slowTime=_Time.y*_CloudSpeed*.12;
                 float3 weights=pow(abs(viewDir),4.0); weights/=max(.001,weights.x+weights.y+weights.z);
                 float farDensity=fbm(viewDir.yz*_CloudScale*.9+slowTime)*weights.x+
                     fbm(viewDir.xz*_CloudScale*.9+float2(7.3,slowTime*.7))*weights.y+
                     fbm(viewDir.xy*_CloudScale*.9+float2(slowTime*.4,13.1))*weights.z;
-                farDensity=saturate((farDensity-.43)*(_CloudContrast*.8));
+                farDensity=saturate((farDensity-.46)*(_CloudContrast*.9));
                 float nearDensity=cloudTriplanar(viewDir,_CloudScale*1.16,slowTime*1.7);
-                nearDensity=saturate((nearDensity-.20)*(_CloudContrast*1.15));
-                float density=saturate(farDensity*.42+nearDensity*.82);
+                nearDensity=saturate((nearDensity-.34)*(_CloudContrast*1.05));
+                float density=saturate(farDensity*.48+nearDensity*.68);
                 float highCloud=saturate((cloudTriplanar(viewDir,_CloudScale*.47,-slowTime*.35)-.49)*(_CloudContrast*.7));
-                density=saturate(density+highCloud*.32);
+                density=smoothstep(.025,.62,saturate(density+highCloud*.18));
                 // Bring cloud bodies down to the horizon; the previous .30
                 // lower fade made them visible mainly when the camera looked up.
                 density*=smoothstep(.055,.19,y)*smoothstep(1.05,.82,y);
                 // Celestial layer sits behind cloud density.
                 half3 nightSky=sky*lerp(half3(.18,.22,.38),half3(.008,.012,.025),_NightBlackness);
                 sky=lerp(sky,nightSky,_NightAmount*.94);
-                float curtainCenter=.61+sin(i.uv.x*19.0+_Time.y*.11)*.035+sin(i.uv.x*43.0-_Time.y*.07)*.014;
+                // Keep the aurora visible from the normal map camera, not only
+                // when looking toward the dome's zenith in Sky Mode.
+                // Integer azimuth harmonics join exactly at the spherical wrap;
+                // the former raw UV frequencies produced a sharp vertical seam.
+                float az=atan2(viewDir.x,viewDir.z);
+                float curtainCenter=.39+sin(az*3.0+_Time.y*.11)*.035+sin(az*7.0-_Time.y*.07)*.014;
                 float ribbonA=exp(-pow((y-curtainCenter)/.028,2.0));
                 float ribbonB=exp(-pow((y-curtainCenter+.075)/.045,2.0))*.48;
-                float folds=.28+.72*pow(saturate(sin(i.uv.x*71.0+fbm(float2(i.uv.x*8.0,_Time.y*.025))*5.0)*.5+.5),2.0);
+                float azNoise=noise(float2(cos(az)*3.0+_Time.y*.018,sin(az)*3.0));
+                float folds=.28+.72*pow(saturate(sin(az*12.0+azNoise*5.0)*.5+.5),2.0);
                 float aurora=(ribbonA+ribbonB)*folds*_AuroraStrength*_NightAmount;
-                sky += lerp(half3(.04,1.0,.38),half3(.48,.12,1.0),saturate(sin(i.uv.x*9.0)*.5+.5))*half(aurora*.82);
+                sky += lerp(half3(.04,1.0,.38),half3(.48,.12,1.0),saturate(sin(az*2.0)*.5+.5))*half(aurora*.82);
                 float2 starGrid=i.uv*float2(1250,625);
                 float2 starCell=floor(starGrid);
                 float starHash=hash21(starCell);
-                float starDot=1.0-smoothstep(.035,.16,length(frac(starGrid)-.5));
-                float star=step(.9972,starHash)*starDot*(0.45+0.55*hash21(starCell+17.3))*_StarsVisibility;
+                float starDot=1.0-smoothstep(.10,.34,length(frac(starGrid)-.5));
+                float star=step(.9983,starHash)*starDot*(0.55+0.45*hash21(starCell+17.3))*_StarsVisibility;
                 sky += half3(.72,.82,1.0)*half(star);
                 float sunD=acos(clamp(dot(viewDir,normalize(_SunDirection.xyz)),-1,1));
                 float sunDisc=1.0-smoothstep(.008,.011,sunD);

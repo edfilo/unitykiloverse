@@ -100,6 +100,14 @@ public sealed class SkyModeWorldVisibility : MonoBehaviour
         foreach (var entry in behaviourStates)
             if (entry.Key != null) entry.Key.enabled = entry.Value;
 
+        // Mapbox can stream renderers while a native panel is open. Those may
+        // first be observed disabled and therefore cannot rely solely on the
+        // captured state when the player returns to Map.
+        var buildings = GameObject.Find("building layer objects");
+        if (buildings != null)
+            foreach (var renderer in buildings.GetComponentsInChildren<Renderer>(true))
+                renderer.enabled = true;
+
         rendererStates.Clear();
         particlePlayingStates.Clear();
         behaviourStates.Clear();

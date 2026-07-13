@@ -436,15 +436,17 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetColor("_HorizonColor", Color.HSVToRGB(Mathf.Repeat(horizonHue, 1f), .62f, .92f));
         layeredSkyMaterial.SetColor("_CloudColor", new Color(.96f,.93f,.90f,1f));
         layeredSkyMaterial.SetFloat("_CloudOpacity", PlayerPrefs.GetFloat("k1lo_layeredCloudOpacity", .72f));
-        layeredSkyMaterial.SetFloat("_CloudSpeed", PlayerPrefs.GetFloat("k1lo_layeredCloudSpeed", .08f));
-        layeredSkyMaterial.SetFloat("_CloudScale", PlayerPrefs.GetFloat("k1lo_layeredCloudScale", 2.2f));
-        layeredSkyMaterial.SetFloat("_CloudContrast", PlayerPrefs.GetFloat("k1lo_layeredCloudContrast", 1.5f));
+        layeredSkyMaterial.SetFloat("_CloudSpeed", PlayerPrefs.GetFloat("k1lo_layeredCloudSpeed", .07f));
+        layeredSkyMaterial.SetFloat("_CloudScale", PlayerPrefs.GetFloat("k1lo_layeredCloudScale", 1.35f));
+        layeredSkyMaterial.SetFloat("_CloudContrast", PlayerPrefs.GetFloat("k1lo_layeredCloudContrast", 1.1f));
         int effect = Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_layeredSkyEffect", 0f));
         float rain = PlayerPrefs.GetFloat("k1lo_layeredRain", 0f);
         float aurora = PlayerPrefs.GetFloat("k1lo_layeredAurora", 0f);
         layeredSkyMaterial.SetFloat("_RainStrength", effect == 1 ? Mathf.Max(.7f, rain) : effect == 4 ? Mathf.Max(.9f, rain) : 0f);
         layeredSkyMaterial.SetFloat("_SnowStrength", effect == 2 ? .85f : 0f);
-        layeredSkyMaterial.SetFloat("_AuroraStrength", effect == 3 ? .18f + aurora * .82f : 0f);
+        // Aurora is part of every astronomical night. Sky Lab's aurora mode
+        // still provides the stronger manual preview/intensity override.
+        layeredSkyMaterial.SetFloat("_AuroraStrength", effect == 3 ? .28f + aurora * .72f : .22f);
         layeredSkyMaterial.SetFloat("_StormStrength", effect == 4 ? 1f : 0f);
         layeredSkyMaterial.SetFloat("_NightBlackness", PlayerPrefs.GetFloat("k1lo_layeredNightBlackness", .72f));
         SkyWeatherVolume.SetEffect(effect, rain);
@@ -475,6 +477,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             altitude = 12f;
             sunAz = 180f;
         }
+        if (!bypass) ApplyLiveSolarPalette(altitude);
         float horizontalFov = 2f * Mathf.Atan(Mathf.Tan(cam.fieldOfView * .5f * Mathf.Deg2Rad) * cam.aspect) * Mathf.Rad2Deg;
         float sunX = .5f + Mathf.DeltaAngle(cam.transform.eulerAngles.y, sunAz) / Mathf.Max(1f, horizontalFov);
         float sunY = .08f + Mathf.Clamp(altitude, -8f, 90f) / 90f * .78f;
@@ -495,6 +498,49 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetFloat("_MoonVisibility", night);
         layeredSkyMaterial.SetFloat("_StarsVisibility", night);
         layeredSkyMaterial.SetFloat("_NightAmount", night);
+    }
+
+    private void ApplyLiveSolarPalette(float altitude)
+    {
+        Color top;
+        Color mid;
+        Color horizon;
+        if (altitude >= 10f)
+        {
+            top = new Color(.055f, .25f, .66f);
+            mid = new Color(.18f, .48f, .84f);
+            horizon = new Color(.62f, .76f, .86f);
+        }
+        else if (altitude >= 0f)
+        {
+            float t = altitude / 10f;
+            top = Color.Lerp(new Color(.055f, .12f, .38f), new Color(.055f, .25f, .66f), t);
+            mid = Color.Lerp(new Color(.30f, .29f, .48f), new Color(.18f, .48f, .84f), t);
+            horizon = Color.Lerp(new Color(.98f, .43f, .18f), new Color(.62f, .76f, .86f), t);
+        }
+        else if (altitude >= -6f)
+        {
+            float t = (altitude + 6f) / 6f;
+            top = Color.Lerp(new Color(.018f, .035f, .14f), new Color(.055f, .12f, .38f), t);
+            mid = Color.Lerp(new Color(.07f, .07f, .22f), new Color(.30f, .29f, .48f), t);
+            horizon = Color.Lerp(new Color(.20f, .13f, .25f), new Color(.98f, .43f, .18f), t);
+        }
+        else if (altitude >= -12f)
+        {
+            float t = (altitude + 12f) / 6f;
+            top = Color.Lerp(new Color(.004f, .008f, .028f), new Color(.018f, .035f, .14f), t);
+            mid = Color.Lerp(new Color(.012f, .022f, .065f), new Color(.07f, .07f, .22f), t);
+            horizon = Color.Lerp(new Color(.035f, .05f, .11f), new Color(.20f, .13f, .25f), t);
+        }
+        else
+        {
+            top = new Color(.002f, .004f, .014f);
+            mid = new Color(.006f, .012f, .035f);
+            horizon = new Color(.018f, .028f, .065f);
+        }
+        layeredSkyMaterial.SetColor("_TopColor", top);
+        layeredSkyMaterial.SetColor("_MidColor", mid);
+        layeredSkyMaterial.SetColor("_HorizonColor", horizon);
     }
 
 #if K1L0_LEGACY_VIDEO_SKY

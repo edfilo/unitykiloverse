@@ -7,8 +7,8 @@ using System.IO;
 /// <summary>
 /// Unity's PluginImporter doesn't treat .metal files under Assets/Plugins/iOS
 /// as iOS plugins (they get a DefaultImporter and are skipped at export).
-/// Copy them into the exported project and add them to the UnityFramework
-/// Sources phase so SwiftUI ShaderLibrary can find them at runtime.
+/// Copy them into the exported project and add them to the main app target.
+/// Native item holograms then own/load their metallib independently of UnityFramework.
 /// </summary>
 public class MetalPluginPostBuild
 {
@@ -24,8 +24,8 @@ public class MetalPluginPostBuild
         PBXProject proj = new PBXProject();
         proj.ReadFromFile(projPath);
 
-        // Same target that compiles the Swift plugins.
-        string frameworkGuid = proj.GetUnityFrameworkTargetGuid();
+        string appGuid = proj.GetUnityMainTargetGuid();
+        string appSourcesGuid = proj.GetSourcesBuildPhaseByTarget(appGuid);
 
         foreach (string src in metalFiles)
         {
@@ -36,8 +36,8 @@ public class MetalPluginPostBuild
             File.Copy(src, destAbs, true);
 
             string fileGuid = proj.AddFile(destRel, destRel, PBXSourceTree.Source);
-            proj.AddFileToBuild(frameworkGuid, fileGuid);
-            UnityEngine.Debug.Log($"[MetalPluginPostBuild] Added {fileName} to UnityFramework sources.");
+            proj.AddFileToBuildSection(appGuid, appSourcesGuid, fileGuid);
+            UnityEngine.Debug.Log($"[MetalPluginPostBuild] Added {fileName} to main app Metal sources.");
         }
 
         proj.WriteToFile(projPath);

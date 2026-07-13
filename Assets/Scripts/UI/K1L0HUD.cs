@@ -876,6 +876,11 @@ public class K1L0HUD : MonoBehaviour
     {
         bool visible = enabled == "1" || string.Equals(enabled, "true", System.StringComparison.OrdinalIgnoreCase);
         SetMapVisible(visible);
+        if (visible)
+        {
+            SkyModeWorldVisibility.SetSkyMode(false);
+            EnsureNativeMapRuntimeActive();
+        }
     }
 
     public void SetNativePanelOpen(string enabled)
@@ -884,8 +889,29 @@ public class K1L0HUD : MonoBehaviour
         DynamicSkyVideoController.SetNativePanelOpen(open);
         SkyModeWorldVisibility.SetSkyMode(open);
         KiloFirstPersonController.SetNativePanelOpen(open);
+        if (!open)
+        {
+            SetMapVisible(true);
+            EnsureNativeMapRuntimeActive();
+        }
         if (!NativeOverlayOwnsHud)
             ApplyMapHudSuppression(open);
+    }
+
+    private static void EnsureNativeMapRuntimeActive()
+    {
+        foreach (var behaviour in FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+        {
+            if (behaviour == null || behaviour.GetType().Name != "AbstractMap") continue;
+            if (!behaviour.gameObject.activeSelf) behaviour.gameObject.SetActive(true);
+            behaviour.enabled = true;
+            Debug.Log($"[K1L0HUD] Reactivated Mapbox runtime: {behaviour.gameObject.name}");
+        }
+
+        var buildings = GameObject.Find("building layer objects");
+        if (buildings != null)
+            foreach (var renderer in buildings.GetComponentsInChildren<Renderer>(true))
+                renderer.enabled = true;
     }
 
     public void ApplyNativeEnvironment(string json)
@@ -1797,6 +1823,10 @@ public class K1L0HUD : MonoBehaviour
             case "layeredSkyEffect":
             case "layeredNightBlackness":
                 DynamicSkyVideoController.SetExperimentalSkyFloat(key, floatValue);
+                break;
+            case "solarWorldOverride":
+                PlayerPrefs.SetInt("k1lo_solarWorldOverride", boolValue ? 1 : 0);
+                PlayerPrefs.Save();
                 break;
             case "nativeSunAltitude":
             case "nativeSunAzimuth":

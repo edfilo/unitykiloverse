@@ -25,6 +25,7 @@ namespace KiloWorld.Rendering.Systems
         private VolumetricFog _cachedVolumetricFog;
         private VolumetricFogManager _cachedVolumetricFogManager;
         private MeshRenderer[] _cachedRoadRenderers;
+        private MeshRenderer[] _cachedLandRenderers;
         private float _lastRoadCacheTime;
 
         // Cached Overrides for PostFX
@@ -1020,7 +1021,10 @@ namespace KiloWorld.Rendering.Systems
             float skyAmbientMultiplier = profile.lighting != null && profile.lighting.ambientEnabled
                 ? profile.lighting.ambientIntensity
                 : 0f;
-            RenderSettings.ambientIntensity = Mathf.Lerp(0.25f, 1f, dayness) * skyAmbientMultiplier;
+            // Daylight must remain readable even if a stale authored profile
+            // carried a near-zero ambient multiplier.
+            float liveAmbientMultiplier = Mathf.Lerp(skyAmbientMultiplier, Mathf.Max(1.85f, skyAmbientMultiplier), dayness);
+            RenderSettings.ambientIntensity = Mathf.Lerp(0.25f, 1f, dayness) * liveAmbientMultiplier;
             if (Mathf.Abs(alt - _lastGiSunAlt) > 0.75f || Time.time - _lastGiTime > 12f)
             {
                 _lastGiSunAlt = alt;
@@ -1169,7 +1173,12 @@ namespace KiloWorld.Rendering.Systems
             // profile's Bloom, which makes the scene look like bloom increased.
             _bloom.active = true;
             _bloom.intensity.overrideState = true;
-            _bloom.intensity.value = bloomEnabled ? Mathf.Max(0f, profile.postFX.bloomIntensity) : 0f;
+            float solarDayness = Mathf.Clamp01((_sunAlt + 4f) / 14f);
+            bool solarWorldOverride = PlayerPrefs.GetInt("k1lo_solarWorldOverride", 0) == 1;
+            float liveBloomIntensity = Mathf.Lerp(profile.postFX.bloomIntensity, 0.65f, solarDayness);
+            _bloom.intensity.value = bloomEnabled
+                ? Mathf.Max(0f, solarWorldOverride ? profile.postFX.bloomIntensity : liveBloomIntensity)
+                : 0f;
             _bloom.threshold.overrideState = true;
             _bloom.threshold.value = bloomEnabled ? Mathf.Max(0f, profile.postFX.bloomThreshold) : 999f;
             _bloom.scatter.overrideState = true;
@@ -1460,6 +1469,7 @@ namespace KiloWorld.Rendering.Systems
 
         private void ApplyMaterials()
         {
+            ApplyRuntimeLandDaylight();
             // Road Material - Apply to BOTH the shared material AND all runtime instances
             if (profile.roads.roadMaterial != null)
             {
@@ -1518,7 +1528,10 @@ namespace KiloWorld.Rendering.Systems
                     }
                 }
 
-                profile.buildings.zossWallMaterial.SetColor("_BaseColor", profile.buildings.zossWallColor);
+                float wallDayness = Mathf.Clamp01((_sunAlt + 4f) / 14f);
+                Color daylightWall = new Color(.18f, .22f, .17f, 1f);
+                profile.buildings.zossWallMaterial.SetColor("_BaseColor",
+                    Color.Lerp(profile.buildings.zossWallColor, daylightWall, wallDayness * .72f));
                 profile.buildings.zossWallMaterial.SetFloat("_Metallic", profile.buildings.zossWallMetallic);
                 profile.buildings.zossWallMaterial.SetFloat("_Smoothness", profile.buildings.zossWallSmoothness);
 
@@ -1632,7 +1645,11 @@ namespace KiloWorld.Rendering.Systems
                 profile.buildings.zossEmissiveMaterial.SetTexture("_BaseMap", profile.buildings.zossEmissiveAlbedo);
 
                 // Emission (HDR)
-                Color hdrEmission = profile.buildings.zossEmissiveEmission * profile.buildings.zossEmissiveIntensity;
+                float windowDayness = Mathf.Clamp01((_sunAlt + 6f) / 14f);
+                bool solarWorldOverride = PlayerPrefs.GetInt("k1lo_solarWorldOverride", 0) == 1;
+                float liveWindowIntensity = Mathf.Lerp(profile.buildings.zossEmissiveIntensity, 0.12f, windowDayness);
+                Color hdrEmission = profile.buildings.zossEmissiveEmission *
+                    (solarWorldOverride ? profile.buildings.zossEmissiveIntensity : liveWindowIntensity);
                 profile.buildings.zossEmissiveMaterial.SetColor("_EmissionColor", hdrEmission);
                 profile.buildings.zossEmissiveMaterial.SetTexture("_EmissionMap", profile.buildings.zossEmissiveEmissionMap);
 
@@ -1668,6 +1685,50 @@ namespace KiloWorld.Rendering.Systems
                     profile.buildings.zossEmissiveMaterial.SetFloat("_SpecularHighlights", 0.0f);
                 }
             }
+        }
+
+        private void ApplyRuntimeLandDaylight()
+        {
+            if (_cachedLandRenderers == null || _cachedLandRenderers.Length == 0)
+            {
+                var root = GameObject.Find("land layer objects");
+                if (root == null)
+                {
+                    var runtimeRoot = GameObject.Find("RuntimeObjectsRoot");
+                    root = runtimeRoot != null ? FindChildByName(runtimeRoot.transform, "land layer objects")?.gameObject : null;
+                }
+                if (root != null) _cachedLandRenderers = root.GetComponentsInChildren<MeshRenderer>(true);
+            }
+            if (_cachedLandRenderers == null) return;
+            float dayness = Mathf.Clamp01((_sunAlt + 4f) / 14f);
+            if (dayness <= .001f) return;
+            Color daylightLand = new Color(.24f, .30f, .20f, 1f);
+            foreach (var renderer in _cachedLandRenderers)
+            {
+                if (renderer == null) continue;
+                foreach (var mat in renderer.materials)
+                {
+                    if (mat == null) continue;
+                    if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", daylightLand);
+                    if (mat.HasProperty("_Color")) mat.SetColor("_Color", daylightLand);
+                    if (mat.HasProperty("_EmissionColor"))
+                    {
+                        mat.EnableKeyword("_EMISSION");
+                        mat.SetColor("_EmissionColor", daylightLand * (.18f * dayness));
+                    }
+                }
+            }
+        }
+
+        private static Transform FindChildByName(Transform root, string childName)
+        {
+            foreach (Transform child in root)
+            {
+                if (child.name == childName) return child;
+                var nested = FindChildByName(child, childName);
+                if (nested != null) return nested;
+            }
+            return null;
         }
 
         [ContextMenu("Debug: Print Puddle Settings")]
@@ -1719,7 +1780,9 @@ namespace KiloWorld.Rendering.Systems
         {
             if (mat == null) return;
 
-            mat.SetColor("_BaseColor", profile.roads.roadColor);
+            float roadDayness = Mathf.Clamp01((_sunAlt + 4f) / 14f);
+            Color daylightRoad = new Color(.20f, .23f, .18f, 1f);
+            mat.SetColor("_BaseColor", Color.Lerp(profile.roads.roadColor, daylightRoad, roadDayness * .78f));
             mat.SetFloat("_Metallic", profile.roads.roadMetallic);
             mat.SetFloat("_Smoothness", profile.roads.roadSmoothness);
 
@@ -1874,13 +1937,14 @@ namespace KiloWorld.Rendering.Systems
                 if (gv < 0.05f) gv = 0.5f;
                 float gh = Mathf.Lerp(nightGroundHue, dayGroundHue, groundDayness);
                 float gs = Mathf.Lerp(nightGroundSaturation, dayGroundSaturation, groundDayness);
-                Color activeBaseColor = Color.HSVToRGB(gh, gs, gv);
+                float daylightValue = Mathf.Max(gv, 0.38f);
+                Color activeBaseColor = Color.HSVToRGB(gh, gs, Mathf.Lerp(gv, daylightValue, groundDayness));
 
                 Color dayAsh = new Color(0.52f, 0.52f, 0.45f);
                 float daylightHaze = Mathf.Lerp(0.24f, 0.10f, Mathf.Clamp01(gs));
                 Color groundColor = Color.Lerp(activeBaseColor, dayAsh, groundDayness * daylightHaze);
                 float groundBrightness = Mathf.Lerp(profile.ground.groundBrightness,
-                    Mathf.Max(profile.ground.groundBrightness, 1f), groundDayness);
+                    Mathf.Max(profile.ground.groundBrightness, 1.18f), groundDayness);
 
                 _cachedGroundPlane.UpdateMaterial(
                     color: groundColor,
@@ -1890,9 +1954,9 @@ namespace KiloWorld.Rendering.Systems
                     albedo: profile.ground.groundTexture,
                     normal: profile.ground.groundNormal,
                     normalStrength: profile.ground.groundNormalStrength,
-                    emission: profile.ground.groundEmission,
+                    emission: Color.Lerp(profile.ground.groundEmission, new Color(.16f, .22f, .13f), groundDayness),
                     emissionMap: profile.ground.groundEmissionMap,
-                    emissionIntensity: profile.ground.groundEmissionIntensity,
+                    emissionIntensity: Mathf.Lerp(profile.ground.groundEmissionIntensity, .42f, groundDayness),
                     tiling: profile.ground.groundTiling
                 );
 

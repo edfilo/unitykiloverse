@@ -26,12 +26,17 @@ enum NativeUnitySolarSync {
         let altitude = asin(sin(latitude) * sin(declination) + cos(latitude) * cos(declination) * cos(hourAngle))
         let azimuth = atan2(-sin(hourAngle), tan(declination) * cos(latitude) - sin(latitude) * cos(hourAngle))
         let defaults = UserDefaults.standard
+        let bypass = defaults.bool(forKey: "k1lo_native_layeredBypassWeather")
+        let liveCloudCover = defaults.object(forKey: "k1lo_native_liveCloudCover") as? Double ?? 35
+        let liveCloudOpacity = min(0.88, max(0.08, liveCloudCover / 100.0))
+        defaults.set(altitude * 180 / .pi, forKey: "k1lo_native_liveSolarAltitude")
+        defaults.set((azimuth * 180 / .pi + 360).truncatingRemainder(dividingBy: 360), forKey: "k1lo_native_liveSolarAzimuth")
         K1L0ApplyEnvironmentSnapshot([
             "solarAltitude": altitude * 180 / .pi,
             "solarAzimuth": (azimuth * 180 / .pi + 360).truncatingRemainder(dividingBy: 360),
-            "bypassWeather": defaults.bool(forKey: "k1lo_native_layeredBypassWeather"),
+            "bypassWeather": bypass,
             "effect": defaults.integer(forKey: "k1lo_native_layeredSkyEffect"),
-            "cloudOpacity": defaults.object(forKey: "k1lo_native_layeredCloudOpacity") as? Double ?? 0.72,
+            "cloudOpacity": bypass ? (defaults.object(forKey: "k1lo_native_layeredCloudOpacity") as? Double ?? 0.35) : liveCloudOpacity,
             "cloudSpeed": defaults.object(forKey: "k1lo_native_layeredCloudSpeed") as? Double ?? 0.08,
             "cloudScale": defaults.object(forKey: "k1lo_native_layeredCloudScale") as? Double ?? 2.2,
             "cloudContrast": defaults.object(forKey: "k1lo_native_layeredCloudContrast") as? Double ?? 1.5,

@@ -150,10 +150,14 @@ private enum K1L0NativeSettingsDefaults {
         "k1lo_native_layeredSkyMidHue": 0.76,
         "k1lo_native_layeredNightBlackness": 0.72,
         "k1lo_native_layeredSkyHorizonHue": 0.94,
-        "k1lo_native_layeredCloudOpacity": 0.72,
-        "k1lo_native_layeredCloudSpeed": 0.08,
-        "k1lo_native_layeredCloudScale": 2.2,
-        "k1lo_native_layeredCloudContrast": 1.5,
+        "k1lo_native_layeredCloudOpacity": 0.35,
+        "k1lo_native_layeredCloudSpeed": 0.07,
+        "k1lo_native_liveCloudCover": 35.0,
+        "k1lo_native_layeredCloudScale": 1.35,
+        "k1lo_native_layeredCloudContrast": 1.1,
+        "k1lo_native_solarWorldOverride": false,
+        "k1lo_native_liveSolarAltitude": 12.0,
+        "k1lo_native_liveSolarAzimuth": 180.0,
         "k1lo_native_fogDensity_night": 0.37,
         "k1lo_native_fogNoiseStrength_night": 1.67,
         "k1lo_native_fogNoiseScale_night": 17.4,
@@ -177,6 +181,38 @@ private enum K1L0NativeSettingsDefaults {
         applyGrassVisibilityLightOnce()
         applyHudCameraDefaultsOnce()
         disableThermalHeavyTransmissionEdgesOnce()
+        resetLiveAstronomySkyOnce()
+    }
+
+    private static func resetLiveAstronomySkyOnce() {
+        let defaults = UserDefaults.standard
+        let flag = "k1lo_native_liveAstronomySky_v5"
+        guard !defaults.bool(forKey: flag) else { return }
+        let cleanSky: [String: Any] = [
+            "k1lo_native_experimentalLayeredSky": true,
+            "k1lo_native_layeredBypassWeather": false,
+            "k1lo_native_layeredSkyEffect": 0,
+            "k1lo_native_layeredRain": 0.0,
+            "k1lo_native_layeredAurora": 0.0,
+            "k1lo_native_layeredCloudOpacity": 0.35,
+            "k1lo_native_layeredCloudSpeed": 0.07,
+            "k1lo_native_layeredCloudScale": 1.35,
+            "k1lo_native_layeredCloudContrast": 1.1,
+            "k1lo_native_layeredNightBlackness": 0.82,
+            "k1lo_native_testSkyOverride": false,
+            "k1lo_native_manualWeather": 0,
+            "k1lo_native_manualHour": 13.25,
+            "k1lo_native_solarWorldOverride": false,
+            "k1lo_native_moonlightManualOverride": false,
+            "k1lo_native_ambientEnabled": true,
+            "k1lo_native_ambientIntensity": 1.85,
+            "k1lo_native_groundHue": 0.28,
+            "k1lo_native_groundSaturation": 0.28,
+            "k1lo_native_fogBrightness": 0.55,
+            "k1lo_native_fogScatteringIntensity": 1.25
+        ]
+        for (key, value) in cleanSky { defaults.set(value, forKey: key) }
+        defaults.set(true, forKey: flag)
     }
 
     private static func disableThermalHeavyTransmissionEdgesOnce() {
@@ -2165,9 +2201,9 @@ private enum NativeUnitySolarSync {
             "bypassWeather": defaults.bool(forKey: "k1lo_native_layeredBypassWeather"),
             "effect": defaults.integer(forKey: "k1lo_native_layeredSkyEffect"),
             "cloudOpacity": defaults.object(forKey: "k1lo_native_layeredCloudOpacity") as? Double ?? 0.72,
-            "cloudSpeed": defaults.object(forKey: "k1lo_native_layeredCloudSpeed") as? Double ?? 0.08,
-            "cloudScale": defaults.object(forKey: "k1lo_native_layeredCloudScale") as? Double ?? 2.2,
-            "cloudContrast": defaults.object(forKey: "k1lo_native_layeredCloudContrast") as? Double ?? 1.5,
+            "cloudSpeed": defaults.object(forKey: "k1lo_native_layeredCloudSpeed") as? Double ?? 0.07,
+            "cloudScale": defaults.object(forKey: "k1lo_native_layeredCloudScale") as? Double ?? 1.35,
+            "cloudContrast": defaults.object(forKey: "k1lo_native_layeredCloudContrast") as? Double ?? 1.1,
             "topHue": defaults.object(forKey: "k1lo_native_layeredSkyTopHue") as? Double ?? 0.62,
             "midHue": defaults.object(forKey: "k1lo_native_layeredSkyMidHue") as? Double ?? 0.76,
             "horizonHue": defaults.object(forKey: "k1lo_native_layeredSkyHorizonHue") as? Double ?? 0.94,
@@ -2518,6 +2554,16 @@ private struct K1L0WeatherOverlayRoot: View {
 
     private func showMapOnly() {
         closeAllHuds()
+        // Unity and Mapbox can finish their first streamed frame after the
+        // native tab transition. Reassert the map state after both the Swift
+        // animation and the first tile-render window so a stale sky-panel
+        // message cannot leave the world culled/hidden.
+        for delay in [0.15, 0.8] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                K1L0WeatherOverlayInstaller.setNativePanelOpen(false)
+                K1L0WeatherOverlayInstaller.setNativeMapVisible(true)
+            }
+        }
     }
 
     private func toggleHomeMap() {
@@ -3479,11 +3525,11 @@ private struct TransmissionResultPanel: View {
 
                 if canRespond {
                     VStack(spacing: 8) {
-                        Text("please respond.")
+                        Text(isSendingResponse ? "Response sent…" : "please respond.")
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.78))
                             .frame(maxWidth: .infinity)
-                        if !responseChoices.isEmpty {
+                        if !isSendingResponse && !responseChoices.isEmpty {
                             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
                                 ForEach(responseChoices, id: \.self) { option in
                                     Button {
@@ -3508,6 +3554,7 @@ private struct TransmissionResultPanel: View {
                             }
                         }
 
+                        if !isSendingResponse {
                         HStack(spacing: 8) {
                             TextField(isSendingResponse ? "sending..." : "RESPOND", text: $responseDraft)
                                 .textInputAutocapitalization(.never)
@@ -3538,6 +3585,7 @@ private struct TransmissionResultPanel: View {
                             .buttonStyle(.plain)
                             .disabled(isSendingResponse)
                             .opacity(isSendingResponse || responseDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1.0)
+                        }
                         }
                     }
                     .padding(.horizontal, 12)
@@ -4534,10 +4582,14 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_layeredSkyMidHue") private var layeredSkyMidHue = 0.76
     @AppStorage("k1lo_native_layeredNightBlackness") private var layeredNightBlackness = 0.72
     @AppStorage("k1lo_native_layeredSkyHorizonHue") private var layeredSkyHorizonHue = 0.94
-    @AppStorage("k1lo_native_layeredCloudOpacity") private var layeredCloudOpacity = 0.72
-    @AppStorage("k1lo_native_layeredCloudSpeed") private var layeredCloudSpeed = 0.08
-    @AppStorage("k1lo_native_layeredCloudScale") private var layeredCloudScale = 2.2
-    @AppStorage("k1lo_native_layeredCloudContrast") private var layeredCloudContrast = 1.5
+    @AppStorage("k1lo_native_layeredCloudOpacity") private var layeredCloudOpacity = 0.35
+    @AppStorage("k1lo_native_layeredCloudSpeed") private var layeredCloudSpeed = 0.07
+    @AppStorage("k1lo_native_layeredCloudScale") private var layeredCloudScale = 1.35
+    @AppStorage("k1lo_native_layeredCloudContrast") private var layeredCloudContrast = 1.1
+    @AppStorage("k1lo_native_liveCloudCover") private var liveCloudCover = 35.0
+    @AppStorage("k1lo_native_solarWorldOverride") private var solarWorldOverride = false
+    @AppStorage("k1lo_native_liveSolarAltitude") private var liveSolarAltitude = 12.0
+    @AppStorage("k1lo_native_liveSolarAzimuth") private var liveSolarAzimuth = 180.0
     @AppStorage("k1lo_native_fogDensity_night") private var fogDensityNight = 0.37
     @AppStorage("k1lo_native_fogNoiseStrength_night") private var fogNoiseStrengthNight = 1.67
     @AppStorage("k1lo_native_fogNoiseScale_night") private var fogNoiseScaleNight = 17.4
@@ -4724,6 +4776,7 @@ private struct NativeSettingsPanel: View {
                             ambientIntensity = 1.55
                             spotlightEnabled = true
                             spotlightIntensity = 3.0
+                            solarWorldOverride = false
 
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightEnabled", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightManualOverride", "0")
@@ -4738,8 +4791,10 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("ambientIntensity", "1.550")
                             K1L0WeatherOverlayInstaller.setUnitySetting("spotlightEnabled", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("spotlightIntensity", "3.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("solarWorldOverride", "0")
                             syncLightingSettings()
                         }) {
+                            solarLiveReadout("Sun/moon direction and daylight blend are astronomical")
                             SettingToggleRow(title: "Moonlight", value: $moonlightEnabled, key: "moonlightEnabled")
                             SettingToggleRow(title: "Manual Moon/Sun", value: $moonlightManualOverride, key: "moonlightManualOverride")
                             SettingSliderRow(title: "Moon Intensity", value: $moonlightIntensity, range: 0...8, step: 0.01, key: "moonlightIntensity")
@@ -4765,8 +4820,8 @@ private struct NativeSettingsPanel: View {
                             fogDensity = 0.37
                             fogNoiseStrength = 1.67
                             fogNoiseScale = 17.4
-                            fogBrightness = 0.34
-                            fogScatteringIntensity = 1.15
+                            fogBrightness = 0.55
+                            fogScatteringIntensity = 1.25
                             fogHeight = 77.0
                             fogDistantFog = true
                             fogDistantDensity = 0.0
@@ -4786,8 +4841,8 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogDensity", "0.370")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseStrength", "1.670")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseScale", "17.400")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogBrightness", "0.340")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogScatteringIntensity", "1.150")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogBrightness", "0.550")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogScatteringIntensity", "1.250")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogHeight", "77.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogDistantFog", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogDistantDensity", "0.000")
@@ -4803,6 +4858,7 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogNativeLights", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogNativeLightsMultiplier", "0.000")
                         }) {
+                            solarLiveReadout("Fog blends Day/Night values continuously")
                             SettingsSegmentedRow(
                                 items: [("Day Tuning", "Day"), ("Night Tuning", "Night")],
                                 selection: $fogTuningMode
@@ -4857,6 +4913,7 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("zossNightEmissiveSaturation", "0.820")
                             K1L0WindowGlowResolver.apply()
                         }) {
+                            solarLiveReadout(String(format: "Live window intensity %.2f", liveWindowIntensity))
                             SettingSliderRow(title: "Brightness", value: $zossEmissiveIntensity, range: 0...50, step: 0.1, key: "zossEmissiveIntensity")
                             SettingSliderRow(title: "Smoothness", value: $zossEmissiveSmoothness, range: 0...1, step: 0.01, key: "zossEmissiveSmoothness")
                             SettingSliderRow(title: "Metallic", value: $zossEmissiveMetallic, range: 0...1, step: 0.01, key: "zossEmissiveMetallic")
@@ -4869,16 +4926,17 @@ private struct NativeSettingsPanel: View {
 
                     if selectedSection == "Ground / Grass" {
                         SettingsSection(title: "Ground / Grass", resetAction: {
-                            groundHue = 0.33
-                            groundSaturation = 0.42
+                            groundHue = 0.28
+                            groundSaturation = 0.28
                             groundHueNight = 0.30
                             groundSaturationNight = 0.0
 
-                            K1L0WeatherOverlayInstaller.setUnitySetting("groundHue", "0.330")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("groundSaturation", "0.420")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("groundHue", "0.280")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("groundSaturation", "0.280")
                             K1L0WeatherOverlayInstaller.setUnitySetting("groundHue_night", "0.300")
                             K1L0WeatherOverlayInstaller.setUnitySetting("groundSaturation_night", "0.000")
                         }) {
+                            solarLiveReadout("Live ground blends Day/Night color and brightness")
                             SettingsSegmentedRow(
                                 items: [("Day Tuning", "Day"), ("Night Tuning", "Night")],
                                 selection: $groundTuningMode
@@ -4932,6 +4990,7 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("bloomThreshold", "1.200")
                             K1L0WeatherOverlayInstaller.setUnitySetting("bloomScatter", "0.430")
                         }) {
+                            solarLiveReadout(String(format: "Live bloom intensity %.2f", liveBloomIntensity))
                             SettingToggleRow(title: "Bloom", value: $bloomEnabled, key: "bloomEnabled")
                             SettingSliderRow(title: "Intensity", value: $bloomIntensity, range: 0...8, step: 0.1, key: "bloomIntensity")
                             SettingSliderRow(title: "Threshold", value: $bloomThreshold, range: 0...2, step: 0.05, key: "bloomThreshold")
@@ -5173,10 +5232,11 @@ private struct NativeSettingsPanel: View {
                             layeredSkyMidHue = 0.76
                             layeredNightBlackness = 0.72
                             layeredSkyHorizonHue = 0.94
-                            layeredCloudOpacity = 0.72
-                            layeredCloudSpeed = 0.08
-                            layeredCloudScale = 2.2
-                            layeredCloudContrast = 1.5
+                            layeredCloudOpacity = 0.35
+                            layeredCloudSpeed = 0.07
+                            layeredCloudScale = 1.35
+                            layeredCloudContrast = 1.1
+                            solarWorldOverride = false
                             K1L0WeatherOverlayInstaller.setUnitySetting("experimentalLayeredSky", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredBypassWeather", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyEffect", "0")
@@ -5186,11 +5246,13 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyMidHue", "0.760")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredNightBlackness", "0.720")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyHorizonHue", "0.940")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudOpacity", "0.720")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudSpeed", "0.080")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudScale", "2.200")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudContrast", "1.500")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudOpacity", "0.350")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudSpeed", "0.070")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudScale", "1.350")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudContrast", "1.100")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("solarWorldOverride", "0")
                         }) {
+                            solarLiveReadout("Sun, moon, palette and world lighting follow GPS + UTC")
                             Text("Layered Metal Sky · production renderer")
                                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.58))
@@ -5204,15 +5266,19 @@ private struct NativeSettingsPanel: View {
                                 if layeredSkyEffect == 3 {
                                     SettingSliderRow(title: "Aurora Intensity", value: $layeredAurora, range: 0...1, step: 0.05, key: "layeredAurora")
                                 }
+                                SettingSliderRow(title: "Zenith Hue", value: $layeredSkyTopHue, range: 0...1, step: 0.01, key: "layeredSkyTopHue")
+                                SettingSliderRow(title: "Mid-Sky Hue", value: $layeredSkyMidHue, range: 0...1, step: 0.01, key: "layeredSkyMidHue")
+                                SettingSliderRow(title: "Horizon Hue", value: $layeredSkyHorizonHue, range: 0...1, step: 0.01, key: "layeredSkyHorizonHue")
+                                SettingSliderRow(title: "Night Blackness", value: $layeredNightBlackness, range: 0...1, step: 0.02, key: "layeredNightBlackness")
+                                SettingSliderRow(title: "Cloud Opacity", value: $layeredCloudOpacity, range: 0...1, step: 0.02, key: "layeredCloudOpacity")
+                                SettingSliderRow(title: "Cloud Speed", value: $layeredCloudSpeed, range: -0.5...0.5, step: 0.01, key: "layeredCloudSpeed")
+                                SettingSliderRow(title: "Cloud Scale", value: $layeredCloudScale, range: 0.5...6, step: 0.1, key: "layeredCloudScale")
+                                SettingSliderRow(title: "Cloud Contrast", value: $layeredCloudContrast, range: 0.2...4, step: 0.1, key: "layeredCloudContrast")
+                            } else {
+                                Text(String(format: "Live cloud cover %.0f%% · opacity %.2f", liveCloudCover, min(0.88, max(0.08, liveCloudCover / 100))))
+                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
                             }
-                            SettingSliderRow(title: "Zenith Hue", value: $layeredSkyTopHue, range: 0...1, step: 0.01, key: "layeredSkyTopHue")
-                            SettingSliderRow(title: "Mid-Sky Hue", value: $layeredSkyMidHue, range: 0...1, step: 0.01, key: "layeredSkyMidHue")
-                            SettingSliderRow(title: "Horizon Hue", value: $layeredSkyHorizonHue, range: 0...1, step: 0.01, key: "layeredSkyHorizonHue")
-                            SettingSliderRow(title: "Night Blackness", value: $layeredNightBlackness, range: 0...1, step: 0.02, key: "layeredNightBlackness")
-                            SettingSliderRow(title: "Cloud Opacity", value: $layeredCloudOpacity, range: 0...1, step: 0.02, key: "layeredCloudOpacity")
-                            SettingSliderRow(title: "Cloud Speed", value: $layeredCloudSpeed, range: -0.5...0.5, step: 0.01, key: "layeredCloudSpeed")
-                            SettingSliderRow(title: "Cloud Scale", value: $layeredCloudScale, range: 0.5...6, step: 0.1, key: "layeredCloudScale")
-                            SettingSliderRow(title: "Cloud Contrast", value: $layeredCloudContrast, range: 0.2...4, step: 0.1, key: "layeredCloudContrast")
                         }
                     }
                     }
@@ -5231,6 +5297,32 @@ private struct NativeSettingsPanel: View {
             syncLightingSettings()
             syncLayeredSkySettings()
         }
+    }
+
+    private var solarDayness: Double {
+        min(1, max(0, (liveSolarAltitude + 4) / 14))
+    }
+
+    private var liveWindowIntensity: Double {
+        solarWorldOverride ? zossEmissiveIntensity : zossEmissiveIntensity * (1 - solarDayness) + 0.12 * solarDayness
+    }
+
+    private var liveBloomIntensity: Double {
+        solarWorldOverride ? bloomIntensity : bloomIntensity * (1 - solarDayness) + 0.65 * solarDayness
+    }
+
+    @ViewBuilder
+    private func solarLiveReadout(_ detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(String(format: "LIVE SUN  alt %.1f°  az %.1f°  day %.0f%%", liveSolarAltitude, liveSolarAzimuth, solarDayness * 100))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
+            Text(detail)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.58))
+            SettingToggleRow(title: "Override Solar World", value: $solarWorldOverride, key: "solarWorldOverride")
+        }
+        .padding(.bottom, 8)
     }
 
     private func syncLayeredSkySettings() {
@@ -9968,9 +10060,16 @@ private final class K1L0MetalVideoView: MTKView, MTKViewDelegate {
         descriptor.fragmentFunction = fragment
         descriptor.colorAttachments[0].pixelFormat = colorPixelFormat
         descriptor.colorAttachments[0].isBlendingEnabled = true
-        descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        // The point fragment already carries its shaped alpha. With additive blending,
+        // multiplying RGB by alpha again made the hologram nearly invisible on-device.
+        descriptor.colorAttachments[0].sourceRGBBlendFactor = .one
         descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        pipeline = try? device.makeRenderPipelineState(descriptor: descriptor)
+        do {
+            pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+            NSLog("[K1L0PointCloud] pipeline ready")
+        } catch {
+            NSLog("[K1L0PointCloud] pipeline failed: \(error)")
+        }
     }
 
     private func attachOutputIfNeeded() {
@@ -12301,6 +12400,10 @@ private struct NearbyUserInfoCard: View {
 private struct InventoryItemDetailCard: View {
     let item: OverlayInventoryItem
     let onDismiss: () -> Void
+    @State private var particleSize = 1.0
+    @State private var particleSpacing = 1.0
+    @State private var zSpread = 0.10
+    @State private var brightness = 1.0
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -12329,7 +12432,7 @@ private struct InventoryItemDetailCard: View {
                             AsyncImage(url: url) { phase in
                                 switch phase {
                                 case .success(let image):
-                                    image.resizable().scaledToFill()
+                                    image.resizable().scaledToFit().padding(5)
                                 default:
                                     Text(item.symbol)
                                         .font(.system(size: 22, weight: .black))
@@ -12337,6 +12440,7 @@ private struct InventoryItemDetailCard: View {
                                 }
                             }
                             .frame(width: 56, height: 56)
+                            .background(Color.black)
                             .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
                         } else {
                             Text(item.symbol)
@@ -12373,6 +12477,35 @@ private struct InventoryItemDetailCard: View {
                     .buttonStyle(.plain)
                 }
 
+#if os(iOS)
+                if !item.isElement, let imageURL = URL(string: item.resolvedAvatarUrl) {
+                    ZStack {
+                        AsyncImage(url: imageURL) { image in
+                            image.resizable().scaledToFit().opacity(0.055)
+                        } placeholder: { Color.black }
+                        K1L0ItemPointCloudView(
+                            imageURL: imageURL,
+                            depthURL: URL(string: item.resolvedDepthMapUrl),
+                            particleSize: particleSize,
+                            spacing: particleSpacing,
+                            zSpread: zSpread,
+                            brightness: brightness
+                        )
+                    }
+                    .frame(width: 300, height: 300)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.black)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                    VStack(spacing: 7) {
+                        hologramSlider("Particle size", value: $particleSize, range: 0.5...20.0)
+                        hologramSlider("Spacing", value: $particleSpacing, range: 0.25...10.0)
+                        hologramSlider("Z spread", value: $zSpread, range: 0.0...0.2)
+                        hologramSlider("Brightness", value: $brightness, range: 0.1...4.0)
+                    }
+                }
+#endif
+
                 Divider().background(Color.white.opacity(0.14))
 
                 VStack(alignment: .leading, spacing: 10) {
@@ -12394,18 +12527,306 @@ private struct InventoryItemDetailCard: View {
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(20)
-            .background(Color.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 28)
+            .background(Color.black, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
             )
-            .padding(.horizontal, 18)
-            .padding(.bottom, 96)
         }
-        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .ignoresSafeArea(edges: .bottom)
+    }
+
+    private func hologramSlider(
+        _ title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white.opacity(0.62))
+                .frame(width: 82, alignment: .leading)
+            Slider(value: value, in: range)
+                .tint(Color(red: 0.30, green: 0.78, blue: 1.0))
+            Text(value.wrappedValue.formatted(.number.precision(.fractionLength(2))))
+                .font(.system(size: 10, weight: .bold).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.72))
+                .frame(width: 34, alignment: .trailing)
+        }
     }
 }
+
+#if os(iOS)
+private struct K1L0ItemPointCloudView: UIViewRepresentable {
+    let imageURL: URL
+    let depthURL: URL?
+    let particleSize: Double
+    let spacing: Double
+    let zSpread: Double
+    let brightness: Double
+
+    func makeUIView(context: Context) -> K1L0ItemPointCloudMetalView {
+        // Pass the device explicitly: a bare (frame:) call can resolve to
+        // UIView's inherited init and silently skip the whole Metal setup.
+        NSLog("[K1L0PointCloud] makeUIView image=\(imageURL) depth=\(depthURL?.absoluteString ?? "none")")
+        let view = K1L0ItemPointCloudMetalView(frame: .zero, device: MTLCreateSystemDefaultDevice())
+        view.configure(particleSize: particleSize, spacing: spacing, zSpread: zSpread, brightness: brightness)
+        view.load(imageURL: imageURL, depthURL: depthURL)
+        return view
+    }
+
+    func updateUIView(_ view: K1L0ItemPointCloudMetalView, context: Context) {
+        view.configure(particleSize: particleSize, spacing: spacing, zSpread: zSpread, brightness: brightness)
+        view.load(imageURL: imageURL, depthURL: depthURL)
+    }
+}
+
+private final class K1L0ItemParticleCanvasView: UIView {
+    private struct Point { let x: CGFloat; let y: CGFloat; let z: CGFloat; let seed: CGFloat }
+    private var points: [Point] = []
+    private var displayLink: CADisplayLink?
+    private var started = CACurrentMediaTime()
+    private var loadedKey = ""
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        isOpaque = true
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 20, maximum: 30, preferred: 30)
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    deinit { displayLink?.invalidate() }
+
+    func load(imageURL: URL, depthURL: URL?) {
+        let url = depthURL ?? imageURL
+        let key = url.absoluteString
+        guard key != loadedKey else { return }
+        loadedKey = key
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data, let image = UIImage(data: data), let cg = image.cgImage else { return }
+            let width = 48, height = 48
+            var pixels = [UInt8](repeating: 0, count: width * height)
+            guard let context = CGContext(
+                data: &pixels, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else { return }
+            context.interpolationQuality = .medium
+            context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height))
+            var generated: [Point] = []
+            generated.reserveCapacity(900)
+            for row in 0..<height {
+                for column in 0..<width {
+                    let value = CGFloat(pixels[row * width + column]) / 255.0
+                    guard value > 0.055 else { continue }
+                    let seed = CGFloat((column * 73 + row * 151) % 997) / 997.0
+                    generated.append(Point(
+                        x: (CGFloat(column) / CGFloat(width - 1) - 0.5) * 1.55,
+                        y: (0.5 - CGFloat(row) / CGFloat(height - 1)) * 1.55,
+                        z: max(-0.45, min(0.45, (value - 0.20) * 0.9)),
+                        seed: seed
+                    ))
+                }
+            }
+            DispatchQueue.main.async {
+                self?.points = generated
+                self?.started = CACurrentMediaTime()
+                self?.setNeedsDisplay()
+                NSLog("[K1L0PointCloud] native canvas ready points=\(generated.count)")
+            }
+        }.resume()
+    }
+
+    @objc private func tick() { setNeedsDisplay() }
+
+    override func draw(_ rect: CGRect) {
+        guard let context = UIGraphicsGetCurrentContext(), !points.isEmpty else { return }
+        context.setFillColor(UIColor.white.cgColor)
+        let time = CGFloat(CACurrentMediaTime() - started)
+        let yaw = sin(time * 0.55) * 0.48
+        let cosine = cos(yaw), sine = sin(yaw)
+        let scale = min(bounds.width, bounds.height) * 0.48
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        for point in points {
+            let x = cosine * point.x - sine * point.z
+            let z = sine * point.x + cosine * point.z
+            let perspective = 1.0 / max(0.65, 1.65 - z)
+            let shimmer = 0.86 + 0.14 * sin(time * 2.0 + point.seed * 20.0)
+            let size: CGFloat = 8.0 + 7.0 * shimmer
+            let px = center.x + x * scale * perspective
+            let py = center.y + point.y * scale * perspective + sin(time + point.seed * 9.0) * 2.0
+            context.fillEllipse(in: CGRect(x: px - size / 2, y: py - size / 2, width: size, height: size))
+        }
+    }
+}
+
+private final class K1L0ItemPointCloudMetalView: MTKView, MTKViewDelegate {
+    private struct Uniforms {
+        var time: Float
+        var aspect: Float
+        var pointSize: Float
+        var hasTextures: Float = 0
+        var textureAspect: Float = 1
+        var particleScale: Float = 1
+        var spacing: Float = 1
+        var zSpread: Float = 0.1
+        var brightness: Float = 1
+    }
+    private static let pointGrid = 192 // must match K1L0_POINT_GRID in K1L0TuningShader.metal
+    private static let starCount = 56 // must match K1L0_STAR_COUNT in K1L0TuningShader.metal
+    private var pipeline: MTLRenderPipelineState?
+    private var commandQueue: MTLCommandQueue?
+    private var colorTexture: MTLTexture?
+    private var depthTexture: MTLTexture?
+    private var placeholderTexture: MTLTexture?
+    private var started = CACurrentMediaTime()
+    private var loadedKey = ""
+    private var particleScale: Float = 1
+    private var particleSpacing: Float = 1
+    private var depthSpread: Float = 0.1
+    private var particleBrightness: Float = 1
+
+    override init(frame: CGRect, device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
+        super.init(frame: frame, device: device)
+        framebufferOnly = true
+        colorPixelFormat = .bgra8Unorm
+        clearColor = MTLClearColorMake(0, 0, 0, 1)
+        preferredFramesPerSecond = 30
+        isPaused = false
+        enableSetNeedsDisplay = false
+        delegate = self
+        let shaderBundle = Bundle.main
+        let bundledLibrary = try? device?.makeDefaultLibrary(bundle: shaderBundle)
+        let explicitLibrary: MTLLibrary? = {
+            guard let device else { return nil }
+            // The native hologram metallib is owned by the main app target.
+            let url = URL(fileURLWithPath: shaderBundle.bundlePath)
+                .appendingPathComponent("default.metallib")
+            do {
+                let library = try device.makeLibrary(URL: url)
+                NSLog("[K1L0PointCloud] loaded app metallib \(url.path)")
+                return library
+            } catch {
+                NSLog("[K1L0PointCloud] metallib load failed \(url.path): \(error)")
+                return nil
+            }
+        }()
+        guard let device, let library = bundledLibrary ?? explicitLibrary ?? device.makeDefaultLibrary(),
+              let vertex = library.makeFunction(name: "k1l0ItemPointVertex"),
+              let fragment = library.makeFunction(name: "k1l0ItemPointFragment") else {
+            NSLog("[K1L0PointCloud] shader library/functions unavailable bundle=\(shaderBundle.bundlePath)")
+            return
+        }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = fragment
+        descriptor.colorAttachments[0].pixelFormat = colorPixelFormat
+        descriptor.colorAttachments[0].isBlendingEnabled = true
+        descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        descriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+        descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        do {
+            pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+            NSLog("[K1L0PointCloud] pipeline ready bundle=\(shaderBundle.bundlePath)")
+        } catch {
+            NSLog("[K1L0PointCloud] pipeline failed: \(error)")
+        }
+        commandQueue = device.makeCommandQueue()
+        // 1×1 white stand-in so the texture slots are always bound; the shader
+        // switches to the diagnostic grid while hasTextures == 0.
+        let placeholderDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: 1, height: 1, mipmapped: false)
+        placeholderDescriptor.usage = [.shaderRead]
+        if let texture = device.makeTexture(descriptor: placeholderDescriptor) {
+            var white: UInt32 = 0xFFFFFFFF
+            texture.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: &white, bytesPerRow: 4)
+            placeholderTexture = texture
+        }
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(particleSize: Double, spacing: Double, zSpread: Double, brightness: Double) {
+        particleScale = Float(particleSize)
+        particleSpacing = Float(spacing)
+        depthSpread = Float(zSpread)
+        particleBrightness = Float(brightness)
+    }
+
+    func load(imageURL: URL, depthURL: URL?) {
+        let key = imageURL.absoluteString + "|" + (depthURL?.absoluteString ?? "")
+        guard key != loadedKey, let device else { return }
+        loadedKey = key
+        Task.detached(priority: .utility) { [weak self] in
+            guard let imageData = try? Data(contentsOf: imageURL) else {
+                NSLog("[K1L0PointCloud] image download failed \(imageURL)")
+                return
+            }
+            let loader = MTKTextureLoader(device: device)
+            guard let color = try? await loader.newTexture(data: imageData, options: [.SRGB: false]) else {
+                NSLog("[K1L0PointCloud] color texture failed")
+                return
+            }
+            var depth = color
+            if let depthURL, let data = try? Data(contentsOf: depthURL),
+               let texture = try? await loader.newTexture(data: data, options: [.SRGB: false]) { depth = texture }
+            await MainActor.run {
+                self?.colorTexture = color
+                self?.depthTexture = depth
+                self?.started = CACurrentMediaTime()
+                NSLog("[K1L0PointCloud] textures ready color=\(color.width)x\(color.height) depth=\(depth.width)x\(depth.height)")
+            }
+        }
+    }
+
+    func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
+
+    func draw(in view: MTKView) {
+        guard let drawable = currentDrawable, let pass = currentRenderPassDescriptor,
+              let pipeline, let colorTexture, let depthTexture,
+              let queue = commandQueue, let command = queue.makeCommandBuffer(),
+              let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
+        let hasTextures = true
+        let grid = Self.pointGrid
+        var uniforms = Uniforms(
+            time: Float(CACurrentMediaTime() - started),
+            aspect: Float(max(1, drawableSize.width) / max(1, drawableSize.height)),
+            // Real cloud: points a touch wider than one grid cell so the item
+            // reads solid with additive glow. Diagnostic grid: big fat dots.
+            pointSize: hasTextures
+                ? Float(max(2.25, drawableSize.width / CGFloat(grid) * 1.38))
+                : Float(max(44, drawableSize.width / 300.0 * 56.0)),
+            hasTextures: hasTextures ? 1 : 0,
+            textureAspect: Float(colorTexture.width) / Float(max(1, colorTexture.height)),
+            particleScale: particleScale,
+            spacing: particleSpacing,
+            zSpread: depthSpread,
+            brightness: particleBrightness
+        )
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        encoder.setVertexTexture(colorTexture, index: 0)
+        encoder.setVertexTexture(depthTexture, index: 1)
+        encoder.drawPrimitives(
+            type: .point,
+            vertexStart: 0,
+            vertexCount: grid * grid * 2 + Self.starCount
+        )
+        encoder.endEncoding()
+        command.present(drawable)
+        command.commit()
+    }
+}
+#endif
 
 private struct DropFilterBar: View {
     @Binding var selected: String
@@ -12568,6 +12989,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         let tempF: Double?
         let glyph: String
         let isDay: Bool?
+        let cloudCover: Double?
 
         var displayText: String {
             guard let tempF else { return "--°" }
@@ -14566,6 +14988,10 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         weatherText = snapshot.displayText
         weatherGlyph = snapshot.glyph
         K1L0WindowGlowResolver.rememberWeatherIsDay(snapshot.isDay)
+        if let cloudCover = snapshot.cloudCover {
+            UserDefaults.standard.set(cloudCover, forKey: "k1lo_native_liveCloudCover")
+            NativeUnitySolarSync.sync()
+        }
     }
 
     private func fetchBackendWeatherAndCity(latitude: Double, longitude: Double, apiBase: String) {
@@ -14600,11 +15026,13 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
             let glyph = (weather["glyph"] as? String) ?? (weather["icon"] as? String)
             let weatherCode = weather["weatherCode"] as? Int
             let isDay = weather["isDay"] as? Bool
+            let cloudCover = (weather["cloudCover"] as? NSNumber)?.doubleValue
             let snapshot = WeatherSnapshot(
                 city: city,
                 tempF: tempF,
                 glyph: Self.weatherGlyph(forWeatherCode: weatherCode, isDay: isDay, fallbackGlyph: glyph, preferBackendGlyph: true),
-                isDay: isDay
+                isDay: isDay,
+                cloudCover: cloudCover
             )
             DispatchQueue.main.async {
                 print("[K1L0Overlay] weather city=\(city ?? "nil") tempF=\(tempF.map { String(format: "%.1f", $0) } ?? "nil") code=\(weatherCode.map(String.init) ?? "nil") isDay=\(isDay.map(String.init) ?? "nil") glyphRaw=\(glyph ?? "nil") glyphApplied=\(snapshot.glyph)")
@@ -14626,7 +15054,8 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
                 city: nil,
                 tempF: Double(temp),
                 glyph: Self.weatherGlyph(forDescription: desc, isDay: !isNight),
-                isDay: !isNight
+                isDay: !isNight,
+                cloudCover: Double(current["cloudcover"] as? String ?? "")
             )
             DispatchQueue.main.async {
                 self?.applyWeather(snapshot)
@@ -15438,6 +15867,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
                 grams: 0,
                 count: max(1, firstInt(item, keys: ["count"])),
                 avatarUrl: firstString(item, keys: ["avatarUrl", "imageUrl", "iconUrl"]),
+                depthMapUrl: firstString(item, keys: ["depthMapUrl", "depthUrl"]),
                 senderName: senderName,
                 sourceTransmissionJobId: sourceJobId,
                 collectedAt: collectedAt
@@ -15917,11 +16347,12 @@ private struct OverlayInventoryItem: Identifiable {
     let grams: Int
     let count: Int
     let avatarUrl: String
+    let depthMapUrl: String
     let senderName: String
     let sourceTransmissionJobId: String
     let collectedAt: Date?
 
-    init(id: String, kind: String, name: String, symbol: String, grams: Int, count: Int, avatarUrl: String,
+    init(id: String, kind: String, name: String, symbol: String, grams: Int, count: Int, avatarUrl: String, depthMapUrl: String = "",
          senderName: String = "", sourceTransmissionJobId: String = "", collectedAt: Date? = nil) {
         self.id = id
         self.kind = kind
@@ -15930,6 +16361,7 @@ private struct OverlayInventoryItem: Identifiable {
         self.grams = grams
         self.count = count
         self.avatarUrl = avatarUrl
+        self.depthMapUrl = depthMapUrl
         self.senderName = senderName
         self.sourceTransmissionJobId = sourceTransmissionJobId
         self.collectedAt = collectedAt
@@ -15943,12 +16375,24 @@ private struct OverlayInventoryItem: Identifiable {
         self.grams = element.grams
         self.count = element.count
         self.avatarUrl = ""
+        self.depthMapUrl = ""
         self.senderName = ""
         self.sourceTransmissionJobId = ""
         self.collectedAt = nil
     }
 
     var isElement: Bool { kind.lowercased() == "element" }
+    private var assetSlug: String {
+        name.lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+    }
+    var resolvedAvatarUrl: String {
+        avatarUrl.isEmpty ? "https://cdn.kilo.gallery/beam-avatars/beam_\(assetSlug).png" : avatarUrl
+    }
+    var resolvedDepthMapUrl: String {
+        depthMapUrl.isEmpty ? "https://cdn.kilo.gallery/beam-avatars/beam_\(assetSlug)_depth.png" : depthMapUrl
+    }
     var amountText: String { grams > 0 ? "\(grams)g" : "×\(count)" }
 
     var detailDescription: String {
@@ -15984,7 +16428,8 @@ private struct InventoryTile: View {
                         case .success(let image):
                             image
                                 .resizable()
-                                .scaledToFill()
+                                .scaledToFit()
+                                .padding(5)
                         default:
                             Text(item.symbol)
                                 .font(.system(size: 18, weight: .black))
@@ -15992,6 +16437,7 @@ private struct InventoryTile: View {
                         }
                     }
                     .frame(width: 58, height: 58)
+                    .background(Color.black)
                     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 } else {
                     Text(item.symbol)

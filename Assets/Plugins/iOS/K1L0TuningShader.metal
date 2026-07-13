@@ -12,6 +12,144 @@ using namespace metal;
 
 static inline float hash12(float2 p);
 
+struct K1L0PointUniforms {
+    float time;
+    float aspect;
+    float pointSize;
+    float hasTextures;
+    float textureAspect;
+    float particleScale;
+    float spacing;
+    float zSpread;
+    float brightness;
+};
+struct K1L0PointOut { float4 position [[position]]; float pointSize [[point_size]]; half4 color; float sparkle; };
+
+// Item hologram: two depth layers per texel of a 192×192 resampling.
+// Depth mask (grayscale, near=bright) displaces points in z; the cloud sways
+// so the parallax reads as 3D. Background texels (transparent/near-black) are
+// culled by clipping them behind the camera. hasTextures=0 falls back to the
+// original cyan diagnostic grid so a texture-load failure stays visible
+// instead of rendering pure black.
+#define K1L0_POINT_GRID 192u
+#define K1L0_STAR_COUNT 56u
+
+vertex K1L0PointOut k1l0ItemPointVertex(uint id [[vertex_id]],
+                                        constant K1L0PointUniforms& u [[buffer(0)]],
+                                        texture2d<half> colorTex [[texture(0)]],
+                                        texture2d<half> depthTex [[texture(1)]]) {
+    K1L0PointOut out;
+    if (u.hasTextures < 0.5) {
+        // Diagnostic pattern: independent of network images/depth maps.
+        // If this appears, the MTKView, metallib and render loop all work.
+        constexpr uint grid = 9;
+        float2 uv = (float2(id % grid, id / grid) + .5) / float(grid);
+        float seed = hash12(float2(id, id * 7u));
+        float2 screen = (uv - .5) * 1.55;
+        float angle = u.time * .35;
+        screen = float2(cos(angle) * screen.x - sin(angle) * screen.y,
+                        sin(angle) * screen.x + cos(angle) * screen.y);
+        screen += float2(sin(u.time * 1.7 + seed * 20.0),
+                         cos(u.time * 1.3 + seed * 17.0)) * .025;
+        out.position = float4(screen.x / max(u.aspect, .01), screen.y, 0, 1);
+        out.sparkle = 1.0;
+        out.pointSize = u.pointSize * (1.0 + .35 * sin(u.time * 2.0 + seed * 12.0));
+        out.color = half4(half3(.05, .9, 1.0), 1.0);
+        return out;
+    }
+
+    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    constexpr uint grid = K1L0_POINT_GRID;
+    constexpr uint frontPointCount = grid * grid;
+    constexpr uint itemPointCount = frontPointCount * 2u;
+
+    // A sparse, independent stellar shell surrounds the item. Keeping these
+    // vertices in the same draw call makes the whole hologram one cheap pass.
+    if (id >= itemPointCount) {
+        uint starID = id - itemPointCount;
+        float seed = hash12(float2(starID * 19u, starID * 73u));
+        float angle = seed * 6.2831853 + u.time * (.012 + hash12(float2(starID, 4u)) * .018);
+        float radius = .76 + hash12(float2(starID, 11u)) * .25;
+        float2 star = float2(cos(angle), sin(angle)) * radius;
+        star.y *= .92;
+        star += float2(hash12(float2(starID, 23u)) - .5,
+                       hash12(float2(starID, 31u)) - .5) * .10;
+        float twinkle = .58 + .42 * sin(u.time * (1.4 + seed * 3.8) + seed * 90.0);
+        float rareSpark = pow(max(0.0, sin(u.time * 2.8 + seed * 140.0)), 18.0);
+        out.position = float4(star.x / max(u.aspect, .01), star.y, .2, 1);
+        out.pointSize = u.pointSize * (.55 + seed * .65 + rareSpark * .45);
+        out.sparkle = twinkle;
+        out.color = half4(mix(half3(.18, .62, 1.0), half3(1.0), half(twinkle)) * half(u.brightness),
+                          half(.5 + .5 * twinkle));
+        return out;
+    }
+
+    bool backLayer = id >= frontPointCount;
+    uint sampleID = id % frontPointCount;
+    float2 uv = (float2(sampleID % grid, sampleID / grid) + .5) / float(grid);
+    half4 c = colorTex.sample(s, uv, level(0));
+    float luma = dot(float3(c.rgb), float3(.299, .587, .114));
+    if (c.a < .15h || luma < .045) {
+        // Background texel: clip the point away entirely.
+        out.position = float4(0, 0, -2, 1);
+        out.pointSize = 0;
+        out.color = half4(0);
+        out.sparkle = 0;
+        return out;
+    }
+
+    float depthValue = float(depthTex.sample(s, uv, level(0)).r);
+    float seed = hash12(float2(sampleID % grid, sampleID / grid));
+    float3 p;
+    // Normalized UVs otherwise distort non-square source images. Convert the
+    // source's pixel aspect back into display space before perspective.
+    p.x = (uv.x - .5) * 1.5 * u.textureAspect * u.spacing;
+    p.y = (.5 - uv.y) * 1.5 * u.spacing;
+    // The generated mask describes the visible/front surface. Reflect it into
+    // a dimmer rear shell so a complete turn reads as a volume, not a card.
+    // The generated grayscale maps encode the nearer surface darker. Flip the
+    // earlier interpretation so dark pixels project toward the viewer.
+    float frontZ = (.38 - depthValue) * .72;
+    p.z = (backLayer ? -frontZ - .12 : frontZ) * u.zSpread;
+
+    // Centered sixty-degree sway in either direction: enough parallax to read
+    // the depth while keeping the recognizable front silhouette in view.
+    float angle = sin(u.time * .42) * 1.0471976;
+    float ca = cos(angle), sa = sin(angle);
+    float x = ca * p.x - sa * p.z;
+    float z = sa * p.x + ca * p.z;
+    // Tiny per-point drift keeps the cloud alive.
+    x += sin(u.time * 1.4 + seed * 21.0) * .012;
+    float y = p.y + cos(u.time * 1.1 + seed * 15.0) * .012;
+
+    // Pull the virtual camera closer to make the cloud occupy more of its
+    // viewport and make depth changes easier to read.
+    float persp = 1.0 / max(.52, 1.34 - z);
+    out.position = float4(x * persp / max(u.aspect, .01), y * persp, 0, 1);
+    float shimmer = .88 + .12 * sin(u.time * (1.6 + seed * 2.8) + seed * 20.0);
+    float sizeVariation = .72 + seed * .48;
+    float glint = pow(max(0.0, sin(u.time * 3.1 + seed * 180.0)), 24.0);
+    // Glints affect luminance only. Letting them affect diameter caused rare,
+    // distracting giant particle flashes.
+    out.pointSize = u.pointSize * u.particleScale * persp * sizeVariation * shimmer;
+    out.sparkle = shimmer;
+    half3 hologramColor = mix(c.rgb, half3(.56, .86, 1.0), half(.10 + glint * .18));
+    half layerBrightness = backLayer ? half(.38) : half(.82);
+    out.color = half4(hologramColor * layerBrightness * half(.82 + .18 * shimmer) * half(u.brightness),
+                      (backLayer ? half(.30) : half(.78)) * half(.90 + .10 * shimmer));
+    return out;
+}
+
+fragment half4 k1l0ItemPointFragment(K1L0PointOut in [[stage_in]], float2 pc [[point_coord]]) {
+    float radius = length(pc - .5);
+    if (radius > .5) discard_fragment();
+    // A clear solid core keeps the denser cloud from reading as fine dust.
+    float glow = radius < .28 ? 1.0 : smoothstep(.5, .28, radius);
+    return half4(in.color.rgb * half(glow), in.color.a * half(glow));
+}
+
+static inline float hash12(float2 p);
+
 struct K1L0VideoOut { float4 position [[position]]; float2 uv; };
 struct K1L0VideoUniforms { float2 viewport; float2 texture; float time; float intensity; };
 

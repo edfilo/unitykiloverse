@@ -99,6 +99,7 @@ if [ -n "$DEVICE_ID" ]; then
     PROVISIONING_PROFILE="" \
     DEVELOPMENT_TEAM=$TEAM_ID \
     CODE_SIGN_IDENTITY="Apple Development" \
+    CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
     build > "$XCODE_LOG" 2>&1 || true
 
   if grep -q "BUILD SUCCEEDED" "$XCODE_LOG"; then
@@ -142,6 +143,7 @@ xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" \
   PROVISIONING_PROFILE="" \
   DEVELOPMENT_TEAM=$TEAM_ID \
   CODE_SIGN_IDENTITY="Apple Development" \
+  CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
   archive > "$XCODE_ARCHIVE_LOG" 2>&1 || true
 
 if [ -d "$ARCHIVE" ]; then
