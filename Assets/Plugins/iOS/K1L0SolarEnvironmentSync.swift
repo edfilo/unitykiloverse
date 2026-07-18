@@ -29,14 +29,17 @@ enum NativeUnitySolarSync {
         let bypass = defaults.bool(forKey: "k1lo_native_layeredBypassWeather")
         let testOverride = defaults.bool(forKey: "k1lo_native_testSkyOverride")
         let lookMode = defaults.string(forKey: "k1lo_native_weatherLookMode") ?? "pink_haze"
-        // Fixed lab presets opt into a manual preview explicitly. Day, Night,
-        // and Auto all retain the real sun position and live cloud cover.
+        // Workshop presets carry explicit celestial coordinates. Do not derive
+        // their lighting from a clock hour: the old sine approximation made
+        // authored sunsets cross below the horizon and turn the sky black.
         let manualPreview = bypass || testOverride
-        let manualHour = defaults.object(forKey: "k1lo_native_manualHour") as? Double ?? 13.25
-        let manualAltitude = sin((manualHour - 6.0) / 24.0 * .pi * 2.0) * 62.0
-        let manualAzimuth = (manualHour / 24.0 * 360.0 + 90.0).truncatingRemainder(dividingBy: 360.0)
-        let effectiveAltitude = manualPreview ? manualAltitude : altitude * 180 / .pi
-        let effectiveAzimuth = manualPreview ? manualAzimuth : (azimuth * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+        let fallbackHour = defaults.object(forKey: "k1lo_native_manualHour") as? Double ?? 13.25
+        let fallbackAltitude = sin((fallbackHour - 6.0) / 12.0 * .pi) * 62.0
+        let fallbackAzimuth = (fallbackHour / 24.0 * 360.0 + 90.0).truncatingRemainder(dividingBy: 360.0)
+        let workshopAltitude = defaults.object(forKey: "k1lo_native_workshopSolarAltitude") as? Double ?? fallbackAltitude
+        let workshopAzimuth = defaults.object(forKey: "k1lo_native_workshopSolarAzimuth") as? Double ?? fallbackAzimuth
+        let effectiveAltitude = manualPreview ? workshopAltitude : altitude * 180 / .pi
+        let effectiveAzimuth = manualPreview ? workshopAzimuth : (azimuth * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
         // Auto blends the canonical Night and Day presets continuously. Night
         // keeps its visual lock but still receives live celestial positioning.
         if lookMode == "auto" {

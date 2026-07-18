@@ -413,11 +413,23 @@ enum K1L0WeatherModeController {
     /// locks the simulation before its authored renderer values are applied.
     private static func workshopContext(for mode: String) -> [Setting] {
         guard mode != "auto" else { return [] }
+        let sun: (altitude: String, azimuth: String)
+        switch mode {
+        case "midnight": sun = ("-35", "30")
+        case "coral_haze": sun = ("5", "252")
+        case "deep_orange": sun = ("3", "258")
+        case "fire_fog_lab": sun = ("-1", "264")
+        case "haze_lab": sun = ("14", "238")
+        case "boring": sun = ("45", "190")
+        default: sun = ("35", "210")
+        }
         return [
             ("testSkyOverride", "1"),
             ("layeredBypassWeather", "1"),
             ("solarWorldOverride", "1"),
-            ("manualWeatherOverrideEnabled", "1")
+            ("manualWeatherOverrideEnabled", "1"),
+            ("workshopSolarAltitude", sun.altitude),
+            ("workshopSolarAzimuth", sun.azimuth)
         ]
     }
 
