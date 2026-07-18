@@ -359,18 +359,19 @@ enum K1L0WeatherModeController {
 
     private static let endpoint = URL(string: "https://api-tunnel.kilo.gallery/api/k1l0/weather-presets")!
     private static let cacheKey = "k1l0_weather_preset_catalog_v1"
-    private static let preferredOrder = ["radioactive", "midnight", "auto", "pink_haze", "haze_lab", "coral_haze", "deep_orange", "boring"]
+    private static let preferredOrder = ["auto", "radioactive", "midnight", "pink_haze", "haze_lab", "coral_haze", "deep_orange", "fire_fog_lab", "boring"]
 
     static var bundledDescriptors: [K1L0WeatherPresetDescriptor] {
         [
-            .init(id: "radioactive", label: "Day", revision: 0),
-            .init(id: "midnight", label: "Night", revision: 0),
-            .init(id: "auto", label: "Auto", revision: 0),
-            .init(id: "pink_haze", label: "Pink Haze", revision: 0),
-            .init(id: "haze_lab", label: "Haze Lab", revision: 0),
-            .init(id: "coral_haze", label: "Coral Haze", revision: 0),
-            .init(id: "deep_orange", label: "Fiery Orange Haze", revision: 0),
-            .init(id: "boring", label: "Boring", revision: 0)
+            .init(id: "auto", label: "Live · Weather + Astronomy", revision: 0),
+            .init(id: "radioactive", label: "Apocalyptic Day · 2:15 PM · Overcast", revision: 0),
+            .init(id: "midnight", label: "Foggy Blue Night · 11:30 PM · Cloudy", revision: 0),
+            .init(id: "pink_haze", label: "Pink Haze · 1:15 PM · Broken Clouds", revision: 0),
+            .init(id: "haze_lab", label: "Rust Haze · 4:20 PM · Dust", revision: 0),
+            .init(id: "coral_haze", label: "Coral Dusk · 6:35 PM · Haze", revision: 0),
+            .init(id: "deep_orange", label: "Fire Sunset · 6:50 PM · Smoke", revision: 0),
+            .init(id: "fire_fog_lab", label: "Fire Fog · 7:05 PM · Dense Smoke", revision: 0),
+            .init(id: "boring", label: "Neutral Reference · 1:00 PM · Clear", revision: 0)
         ]
     }
 
@@ -407,8 +408,21 @@ enum K1L0WeatherModeController {
         }
     }
 
+    /// Workshop looks are deterministic lighting laboratories. Only Auto may
+    /// consume the wall clock, GPS weather, or live astronomy. Every other mode
+    /// locks the simulation before its authored renderer values are applied.
+    private static func workshopContext(for mode: String) -> [Setting] {
+        guard mode != "auto" else { return [] }
+        return [
+            ("testSkyOverride", "1"),
+            ("layeredBypassWeather", "1"),
+            ("solarWorldOverride", "1"),
+            ("manualWeatherOverrideEnabled", "1")
+        ]
+    }
+
     private static func applySettings(_ settings: [Setting], mode: String, syncEnvironment: Bool = true) {
-        for (key, value) in resetBaseline + common + settings {
+        for (key, value) in resetBaseline + common + settings + workshopContext(for: mode) {
             if let number = Double(value) {
                 UserDefaults.standard.set(number, forKey: "k1lo_native_\(key)")
             } else {
