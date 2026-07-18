@@ -442,7 +442,10 @@ enum K1L0WeatherModeController {
             }
             K1L0WeatherOverlayInstaller.setUnitySetting(key, value)
         }
-        if syncEnvironment && (mode == "auto" || mode == "midnight" || mode == "radioactive") {
+        // Every mode must immediately push its celestial/weather snapshot.
+        // Previously only Auto, Night, and Day synchronized here, so workshop
+        // sunsets retained the prior mode's black sky despite storing a new sun.
+        if syncEnvironment {
             NativeUnityLightingSync.sync()
             NativeUnitySolarSync.sync()
         }
