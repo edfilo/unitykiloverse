@@ -488,6 +488,29 @@ enum K1L0WeatherModeController {
         }
     }
 
+    /// Non-negotiable cinematic floor for Live. Day/night recipes may color
+    /// the atmosphere, but they cannot remove all haze or window bloom.
+    private static let liveAtmosphereFloor: [Setting] = [
+        ("volumetricFogEnabled", "1"),
+        ("fogConstantDensity", "0"),
+        ("fogDensity", "0.00018"),
+        ("fogBrightness", "0.055"),
+        ("fogScatteringIntensity", "0.08"),
+        ("fogNoiseStrength", "0.16"),
+        ("fogNoiseScale", "10"),
+        ("fogDistantFog", "1"),
+        ("fogDistantDensity", "0.000045"),
+        ("fogDistantStart", "260"),
+        ("bloomEnabled", "1"),
+        ("bloomIntensity", "2.8"),
+        ("dayBloomIntensity", "2.8"),
+        ("bloomThreshold", "0.18"),
+        ("bloomScatter", "0.95"),
+        ("zossEmissiveIntensity", "7.0"),
+        ("zossDayWindowIntensity", "7.0"),
+        ("zossWindowBrightness", "1.35")
+    ]
+
     /// Auto is not a third authored look. It continuously blends the canonical
     /// Night and Day presets using the live solar altitude (-6° night, +8° day).
     static func applyAutoForSolarAltitude(_ altitude: Double) {
@@ -495,7 +518,7 @@ enum K1L0WeatherModeController {
               let day = autoDaySettings, let night = autoNightSettings else { return }
         let dayness = (altitude + 6.0) / 14.0
         let settings = interpolatedAutoSettings(day: day, night: night, dayness: dayness)
-        applySettings(settings + [("testSkyOverride", "0"),
+        applySettings(settings + liveAtmosphereFloor + [("testSkyOverride", "0"),
                                   ("layeredBypassWeather", "0"),
                                   ("solarWorldOverride", "0"),
                                   ("visualNightOverride", "0"),
