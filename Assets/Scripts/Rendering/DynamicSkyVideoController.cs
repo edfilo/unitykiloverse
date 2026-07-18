@@ -509,9 +509,21 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         float sunAz = Mathf.Atan2(sun.x, sun.z) * Mathf.Rad2Deg;
         if (bypass)
         {
-            float hour = PlayerPrefs.GetFloat("k1lo_manualHour", 13.25f);
-            altitude = Mathf.Sin((hour - 6f) / 24f * Mathf.PI * 2f) * 62f;
-            sunAz = Mathf.Repeat(hour / 24f * 360f + 90f, 360f);
+            // Workshop presets receive explicit celestial coordinates from the
+            // native environment snapshot. Never recompute them from clock
+            // time: doing so put sunset presets below the horizon and blacked
+            // out the sky. Keep the hour curve only as an offline fallback.
+            if (PlayerPrefs.HasKey("k1lo_nativeSunAltitude"))
+            {
+                altitude = PlayerPrefs.GetFloat("k1lo_nativeSunAltitude", 12f);
+                sunAz = PlayerPrefs.GetFloat("k1lo_nativeSunAzimuth", 180f);
+            }
+            else
+            {
+                float hour = PlayerPrefs.GetFloat("k1lo_manualHour", 13.25f);
+                altitude = Mathf.Sin((hour - 6f) / 12f * Mathf.PI) * 62f;
+                sunAz = Mathf.Repeat(hour / 24f * 360f + 90f, 360f);
+            }
         }
         else if (sun.sqrMagnitude < .5f)
         {
