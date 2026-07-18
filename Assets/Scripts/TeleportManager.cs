@@ -14,6 +14,8 @@ public class TeleportManager : MonoBehaviour
     public KiloverseMapInfo map;
     private bool mapReady;
     private Coroutine pendingTeleport;
+    private LatitudeLongitude? lastSimulatedBuildingLodCenter;
+    private const double SimulatedBuildingLodRefreshMeters = 100.0;
 
     [Header("Buttons")]
     public Button teleportMenuButton;
@@ -679,6 +681,7 @@ public class TeleportManager : MonoBehaviour
 
         GPSLocationController.GPSDisabled = true;
         var target = new LatitudeLongitude(payload.latitude, payload.longitude);
+        bool refreshBuildingLods = ShouldRefreshSimulatedBuildingLods(target);
         var player = FindObjectOfType<KiloFirstPersonController>();
         if (player != null)
         {
@@ -688,8 +691,32 @@ public class TeleportManager : MonoBehaviour
 
         if (map != null)
         {
+            if (refreshBuildingLods)
+            {
+                // Building detail/simple/shell allocation happens while a tile
+                // is generated. Reusing the same tiles after moving the test
+                // player therefore leaves LOD centered on the old position.
+                // Refresh only after meaningful movement to avoid churn while
+                // nudging the live test location.
+                var overture = FindFirstObjectByType<OvertureMapManager>();
+                overture?.ClearLoadedTilesForLocationJump();
+                lastSimulatedBuildingLodCenter = target;
+                Debug.Log($"[TeleportManager] Refreshed building LOD after simulated move to ({target.Latitude:F6}, {target.Longitude:F6})");
+            }
             map.SetPosition(target.Latitude, target.Longitude);
         }
+    }
+
+    private bool ShouldRefreshSimulatedBuildingLods(LatitudeLongitude target)
+    {
+        if (!lastSimulatedBuildingLodCenter.HasValue)
+            return true;
+
+        var previous = Conversions.LatitudeLongitudeToWebMercator(lastSimulatedBuildingLodCenter.Value);
+        var next = Conversions.LatitudeLongitudeToWebMercator(target);
+        double dx = next.x - previous.x;
+        double dy = next.y - previous.y;
+        return Math.Sqrt(dx * dx + dy * dy) >= SimulatedBuildingLodRefreshMeters;
     }
 
     public static bool StoredNativeLocationModeIsFixed()

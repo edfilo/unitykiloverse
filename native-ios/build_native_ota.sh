@@ -113,5 +113,7 @@ PLIST
 perl -0pi -e "s/__BUILD_NUMBER__/$BUILD_NUMBER/g" "$OTA_DIR/manifest.plist"
 
 plutil -lint "$APP_DIR/Info.plist" "$BUILD_ROOT/Entitlements.plist" "$OTA_DIR/manifest.plist"
-ls -lh "$APP_DIR/K1L0" "$OTA_DIR/app.ipa" "$OTA_DIR/manifest.plist"
-echo "itms-services://?action=download-manifest&url=https://tunnel.kilo.gallery/ota/k1l0/latest/manifest.plist"
+test -s "$APP_DIR/K1L0"
+test -s "$OTA_DIR/app.ipa"
+curl -fsS -X GET https://tunnel.kilo.gallery/ota/k1l0/latest/manifest.plist >/dev/null
+echo "Install link: https://tunnel.kilo.gallery/ota/k1l0/latest/"

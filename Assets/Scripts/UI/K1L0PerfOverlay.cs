@@ -60,6 +60,12 @@ public class K1L0PerfOverlay : MonoBehaviour
 
     void Start()
     {
+        // The native sky sampler's preferred rate does not cap Unity's player
+        // loop. Keep world rendering at the intended 30 FPS so the phone does
+        // not spend CPU/GPU and thermal budget producing unseen extra frames.
+        QualitySettings.vSyncCount = 0;
+        Application.targetFrameRate = 30;
+
         if (_instance != null && _instance != this)
         {
             Destroy(gameObject);

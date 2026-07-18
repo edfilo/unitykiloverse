@@ -26,7 +26,10 @@ namespace KiloWorld.Rendering.Systems
         private VolumetricFogManager _cachedVolumetricFogManager;
         private MeshRenderer[] _cachedRoadRenderers;
         private MeshRenderer[] _cachedLandRenderers;
+        private MeshRenderer[] _cachedBuildingRenderers;
         private float _lastRoadCacheTime;
+        private float _lastBuildingCacheTime;
+        private readonly MaterialPropertyBlock _wallPropertyBlock = new MaterialPropertyBlock();
 
         // Cached Overrides for PostFX
         private Bloom _bloom;
@@ -42,27 +45,30 @@ namespace KiloWorld.Rendering.Systems
         private FilmGrain _filmGrain;
         private LensDistortion _lensDistortion;
 
-        // Day vs Night Fog and Ground settings
-        [HideInInspector] public float dayFogDensity = 0.37f;
-        [HideInInspector] public float dayFogNoiseStrength = 1.67f;
-        [HideInInspector] public float dayFogNoiseScale = 17.4f;
-        [HideInInspector] public float dayFogBrightness = 0.34f;
-        [HideInInspector] public float dayFogScatteringIntensity = 1.15f;
-        [HideInInspector] public float dayFogHeight = 77.0f;
-        [HideInInspector] public float dayFogDistantDensity = 0.0f;
-        [HideInInspector] public float dayFogDistantStart = 0.0f;
+        // Day vs Night Fog and Ground settings.
+        // Day: radioactive-blooming look — thicker (visible), high scatter so
+        // sun rims + windows glow into it, height clipped so it hugs the
+        // walkable slab instead of the whole sky.
+        [HideInInspector] public float dayFogDensity = 0.045f;
+        [HideInInspector] public float dayFogNoiseStrength = 2.1f;
+        [HideInInspector] public float dayFogNoiseScale = 24.0f;
+        [HideInInspector] public float dayFogBrightness = 1.05f;
+        [HideInInspector] public float dayFogScatteringIntensity = 2.15f;
+        [HideInInspector] public float dayFogHeight = 62.0f;
+        [HideInInspector] public float dayFogDistantDensity = 0.006f;
+        [HideInInspector] public float dayFogDistantStart = 320.0f;
 
-        [HideInInspector] public float nightFogDensity = 0.37f;
-        [HideInInspector] public float nightFogNoiseStrength = 1.67f;
+        [HideInInspector] public float nightFogDensity = 0.025f;
+        [HideInInspector] public float nightFogNoiseStrength = 0.22f;
         [HideInInspector] public float nightFogNoiseScale = 17.4f;
-        [HideInInspector] public float nightFogBrightness = 0.34f;
-        [HideInInspector] public float nightFogScatteringIntensity = 1.15f;
-        [HideInInspector] public float nightFogHeight = 77.0f;
+        [HideInInspector] public float nightFogBrightness = 0.24f;
+        [HideInInspector] public float nightFogScatteringIntensity = 0.55f;
+        [HideInInspector] public float nightFogHeight = 48.0f;
         [HideInInspector] public float nightFogDistantDensity = 0.0f;
         [HideInInspector] public float nightFogDistantStart = 0.0f;
 
-        [HideInInspector] public float dayGroundHue = 0.3f;
-        [HideInInspector] public float dayGroundSaturation = 0f;
+        [HideInInspector] public float dayGroundHue = 0.33f;
+        [HideInInspector] public float dayGroundSaturation = 0.42f;
         [HideInInspector] public float nightGroundHue = 0.3f;
         [HideInInspector] public float nightGroundSaturation = 0f;
 
@@ -78,17 +84,24 @@ namespace KiloWorld.Rendering.Systems
         {
             if (profile == null) return;
             var pfx = profile.postFX;
-            if (PlayerPrefs.GetInt("k1lo_brightMapDefaults_v1", 0) != 1)
+            if (PlayerPrefs.GetInt("k1lo_colorGradeZero_v1", 0) != 1)
             {
-                PlayerPrefs.SetFloat("k1lo_saturation", 35f);
-                PlayerPrefs.SetFloat("k1lo_contrast", 18f);
+                // Snap all color-grade sliders to 0 for new installs AND to
+                // clear the older "brightMap" / "dystopian" grades that were
+                // baked in on existing installs.
+                PlayerPrefs.SetFloat("k1lo_saturation", 0f);
+                PlayerPrefs.SetFloat("k1lo_contrast", 0f);
+                PlayerPrefs.SetFloat("k1lo_mapBrightness", 0f);
+                PlayerPrefs.SetFloat("k1lo_hueShift", 0f);
+                PlayerPrefs.SetFloat("k1lo_temperature", 0f);
+                PlayerPrefs.SetFloat("k1lo_tint", 0f);
                 PlayerPrefs.SetFloat("k1lo_exposureFixedValue", 0.35f);
-                PlayerPrefs.SetInt("k1lo_brightMapDefaults_v1", 1);
+                PlayerPrefs.SetInt("k1lo_colorGradeZero_v1", 1);
                 PlayerPrefs.Save();
             }
 
-            pfx.saturation = PlayerPrefs.GetFloat("k1lo_saturation", 35f);
-            pfx.contrast = PlayerPrefs.GetFloat("k1lo_contrast", 18f);
+            pfx.saturation = PlayerPrefs.GetFloat("k1lo_saturation", 0f);
+            pfx.contrast = PlayerPrefs.GetFloat("k1lo_contrast", 0f);
             pfx.exposureFixedValue = PlayerPrefs.GetFloat("k1lo_exposureFixedValue", 0.35f);
             LoadPref("contrast", ref pfx.contrast);
             LoadPref("exposureFixedValue", ref pfx.exposureFixedValue);
@@ -114,15 +127,6 @@ namespace KiloWorld.Rendering.Systems
             LoadPrefBool("motionBlurEnabled", ref pfx.motionBlurEnabled);
             LoadPref("filmGrainIntensity", ref pfx.filmGrainIntensity);
             LoadPrefBool("filmGrainEnabled", ref pfx.filmGrainEnabled);
-            if (PlayerPrefs.GetInt("k1lo_skyBandingDither_v1", 0) != 1)
-            {
-                pfx.filmGrainEnabled = true;
-                pfx.filmGrainIntensity = Mathf.Max(pfx.filmGrainIntensity, 0.085f);
-                PlayerPrefs.SetInt("k1lo_filmGrainEnabled", 1);
-                PlayerPrefs.SetFloat("k1lo_filmGrainIntensity", pfx.filmGrainIntensity);
-                PlayerPrefs.SetInt("k1lo_skyBandingDither_v1", 1);
-                PlayerPrefs.Save();
-            }
 
             // Camera
             var cam = profile.camera;
@@ -148,15 +152,26 @@ namespace KiloWorld.Rendering.Systems
             var fog = profile.volumetricFog;
             ClearBadFogDefaultsOnce();
             LoadPrefBool("fogConstantDensity", ref fog.constantDensity);
+            fog.raymarchQuality = Mathf.Clamp(
+                Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_fogRaymarchQuality", fog.raymarchQuality)), 1, 16);
             
             // Load day fog settings into profile.volumetricFog AND our dayFog fields
-            LoadPref("fogDensity", ref fog.density); dayFogDensity = fog.density;
+            LoadPref("fogDensity", ref fog.density);
+            // Daytime fog must stay atmospheric rather than obscuring the map.
+            // Ignore older persisted heavy values and use the approved light density.
+            dayFogDensity = 0.01f;
+            fog.density = dayFogDensity;
             LoadPref("fogNoiseStrength", ref fog.noiseStrength); dayFogNoiseStrength = fog.noiseStrength;
             LoadPref("fogNoiseScale", ref fog.noiseScale); dayFogNoiseScale = fog.noiseScale;
             LoadPref("fogBrightness", ref fog.brightness); dayFogBrightness = fog.brightness;
             LoadPref("fogScatteringIntensity", ref fog.scatteringIntensity); dayFogScatteringIntensity = fog.scatteringIntensity;
             LoadPrefBool("fogCustomHeight", ref fog.customHeight);
             LoadPref("fogHeight", ref fog.height); dayFogHeight = fog.height;
+            LoadPref("fogVerticalOffset", ref fog.verticalOffset);
+            LoadPref("fogDistance", ref fog.distance);
+            LoadPref("fogDistanceFallOff", ref fog.distanceFallOff);
+            LoadPref("fogMaxDistance", ref fog.maxDistance);
+            LoadPref("fogMaxDistanceFallOff", ref fog.maxDistanceFallOff);
             LoadPrefBool("fogDistantFog", ref fog.distantFog);
             LoadPref("fogDistantDensity", ref fog.distantFogDistanceDensity); dayFogDistantDensity = fog.distantFogDistanceDensity;
             LoadPref("fogDistantStart", ref fog.distantFogStartDistance); dayFogDistantStart = fog.distantFogStartDistance;
@@ -190,8 +205,32 @@ namespace KiloWorld.Rendering.Systems
                 buildings.zossEmissiveColor = wc;
                 buildings.zossEmissiveEmission = wc;
             }
+
+            // Vaporwave building look (Swift settings sliders): dark wall
+            // bodies + per-window palette variety on the emissive material.
+            if (PlayerPrefs.HasKey("k1lo_zossWallValue") || PlayerPrefs.HasKey("k1lo_zossWallHue") || PlayerPrefs.HasKey("k1lo_zossWallSaturation"))
+            {
+                Color.RGBToHSV(buildings.zossWallColor, out float bh, out float bs, out float bv);
+                bh = PlayerPrefs.GetFloat("k1lo_zossWallHue", bh);
+                bs = PlayerPrefs.GetFloat("k1lo_zossWallSaturation", bs);
+                bv = PlayerPrefs.GetFloat("k1lo_zossWallValue", bv);
+                buildings.zossWallColor = Color.HSVToRGB(Mathf.Clamp01(bh), Mathf.Clamp01(bs), Mathf.Clamp01(bv));
+            }
+            // K1L0's city identity depends on luminous windows in every visual
+            // mode. Never let stale settings, resets or astronomy turn them off.
+            WindowLitFraction = 1f;
+            WindowPaletteMix = PlayerPrefs.GetFloat("k1lo_zossPaletteMix", 1f);
+            WindowPaletteSaturation = PlayerPrefs.GetFloat("k1lo_zossPaletteSaturation", 1.35f);
+            WindowPaletteSaturationNight = PlayerPrefs.GetFloat("k1lo_zossPaletteSaturation_night", 1.22f);
+            WindowWarmth = PlayerPrefs.GetFloat("k1lo_zossWarmth", 1f);
+            WindowAccentFraction = PlayerPrefs.GetFloat("k1lo_zossAccentFraction", 0.08f);
+            WindowBrightness = Mathf.Max(0.75f, PlayerPrefs.GetFloat("k1lo_zossWindowBrightness", 1f));
             
+            ApplyGreenGroundOnce();
+            ApplyRadioactiveFogOnce();
             Color.RGBToHSV(profile.ground.groundColor, out float initialGh, out float initialGs, out float initialGv);
+            // 0.18 saturation cap removed — was crushing green to washed-out
+            // gray so ambient tungsten + warm sun blew it out to orange/brown.
             dayGroundHue = PlayerPrefs.GetFloat("k1lo_groundHue", initialGh);
             dayGroundSaturation = PlayerPrefs.GetFloat("k1lo_groundSaturation", initialGs);
             nightGroundHue = PlayerPrefs.GetFloat("k1lo_groundHue_night", dayGroundHue);
@@ -209,6 +248,52 @@ namespace KiloWorld.Rendering.Systems
             ManualWeatherOverrideEnabled = PlayerPrefs.GetInt("k1lo_manualWeatherOverrideEnabled", 0) == 1;
             if (PlayerPrefs.HasKey("k1lo_manualWeatherGlyph"))
                 ManualWeatherGlyph = PlayerPrefs.GetString("k1lo_manualWeatherGlyph");
+        }
+
+        // One-shot: force existing installs to the new radioactive-daytime fog
+        // preset (thicker density + high scattering so sun/window rims bloom
+        // through the haze). Prior tuning sessions had left the day fog near
+        // transparent — this bumps every existing install to the new default
+        // once, and users can still slider-tune from there.
+        private static void ApplyRadioactiveFogOnce()
+        {
+            const string migrationKey = "k1lo_radioactiveFog_v1";
+            if (PlayerPrefs.GetInt(migrationKey, 0) == 1) return;
+
+            PlayerPrefs.SetFloat("k1lo_fogDensity", 0.045f);
+            PlayerPrefs.SetFloat("k1lo_fogNoiseStrength", 2.1f);
+            PlayerPrefs.SetFloat("k1lo_fogNoiseScale", 24.0f);
+            PlayerPrefs.SetFloat("k1lo_fogBrightness", 1.05f);
+            PlayerPrefs.SetFloat("k1lo_fogScatteringIntensity", 2.15f);
+            PlayerPrefs.SetFloat("k1lo_fogHeight", 62.0f);
+            PlayerPrefs.SetFloat("k1lo_fogDistantDensity", 0.006f);
+            PlayerPrefs.SetFloat("k1lo_fogDistantStart", 320.0f);
+            PlayerPrefs.SetInt(migrationKey, 1);
+            PlayerPrefs.Save();
+        }
+
+        // One-shot: force the ground back to a legible green. Prior tuning
+        // sessions and migrations had crushed saved ground-saturation prefs
+        // down to 0.18 (or less) which reads as gray, and once the ambient
+        // tungsten + warm sun hit that gray, the whole ground took an
+        // orange/brown cast. This bump gives every install a hue-0.33 /
+        // saturation-0.42 / value-0.55 starting point. Users can still
+        // re-tune via the settings sliders after; this only fires once.
+        private static void ApplyGreenGroundOnce()
+        {
+            const string migrationKey = "k1lo_greenGround_v1";
+            if (PlayerPrefs.GetInt(migrationKey, 0) == 1) return;
+
+            if (!PlayerPrefs.HasKey("k1lo_groundHue"))
+                PlayerPrefs.SetFloat("k1lo_groundHue", 0.33f);
+            if (!PlayerPrefs.HasKey("k1lo_groundSaturation"))
+                PlayerPrefs.SetFloat("k1lo_groundSaturation", 0.42f);
+            if (!PlayerPrefs.HasKey("k1lo_groundHue_night"))
+                PlayerPrefs.SetFloat("k1lo_groundHue_night", 0.33f);
+            if (!PlayerPrefs.HasKey("k1lo_groundSaturation_night"))
+                PlayerPrefs.SetFloat("k1lo_groundSaturation_night", 0.42f);
+            PlayerPrefs.SetInt(migrationKey, 1);
+            PlayerPrefs.Save();
         }
 
         // The dystopian grade briefly defaulted manual weather to Overcast,
@@ -233,7 +318,7 @@ namespace KiloWorld.Rendering.Systems
 
         private void ClearBadFogDefaultsOnce()
         {
-            const string migrationKey = "k1lo_clearBadFogDefaults_v1";
+            const string migrationKey = "k1lo_clearBadFogDefaults_v3";
             if (PlayerPrefs.GetInt(migrationKey, 0) == 1) return;
 
             string[] fogKeys =
@@ -257,6 +342,15 @@ namespace KiloWorld.Rendering.Systems
             {
                 PlayerPrefs.DeleteKey(key);
             }
+
+            // Previous clamp to 0.18 killed the green — leaving the sat pref
+            // alone here now; the green-ground migration (ApplyGreenGroundOnce)
+            // takes over on the ground channel.
+
+            // Wall value pulled down so daytime walls don't wash out.
+            if (PlayerPrefs.HasKey("k1lo_zossWallValue"))
+                PlayerPrefs.SetFloat("k1lo_zossWallValue",
+                    Mathf.Min(PlayerPrefs.GetFloat("k1lo_zossWallValue"), 0.35f));
 
             PlayerPrefs.SetInt(migrationKey, 1);
             PlayerPrefs.Save();
@@ -466,6 +560,39 @@ namespace KiloWorld.Rendering.Systems
             {
                 Debug.LogWarning("[RenderManager] SSAO is enabled in profile but no SSAO feature found in renderer! Add 'Screen Space Ambient Occlusion' feature to your Renderer Data asset.");
             }
+        }
+
+        /// Truly toggles the Volumetric Fog renderer feature. Density alone
+        /// only changes opacity; the URP fog and blur passes otherwise remain
+        /// enqueued and still consume GPU time even at zero density.
+        public void SetVolumetricFogRuntimeEnabled(bool enabled)
+        {
+            var urpAsset = UniversalRenderPipeline.asset;
+            var renderer = urpAsset != null ? urpAsset.scriptableRenderer : null;
+            if (renderer != null)
+            {
+                var field = typeof(ScriptableRenderer).GetField(
+                    "m_RendererFeatures",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var features = field?.GetValue(renderer) as System.Collections.Generic.List<ScriptableRendererFeature>;
+                if (features != null)
+                {
+                    foreach (var feature in features)
+                    {
+                        if (feature == null || !feature.GetType().Name.Contains("VolumetricFogRenderFeature")) continue;
+                        feature.SetActive(enabled);
+                        if (enabled) feature.Create();
+                    }
+                }
+            }
+
+            if (_cachedVolumetricFog == null) _cachedVolumetricFog = FindObjectOfType<VolumetricFog>(true);
+            if (_cachedVolumetricFogManager == null) _cachedVolumetricFogManager = FindObjectOfType<VolumetricFogManager>(true);
+            if (_cachedVolumetricFog != null) _cachedVolumetricFog.enabled = enabled;
+            if (_cachedVolumetricFogManager != null) _cachedVolumetricFogManager.enabled = enabled;
+            PlayerPrefs.SetInt("k1lo_volumetricFogEnabled", enabled ? 1 : 0);
+            PlayerPrefs.Save();
+            Debug.Log($"[RenderManager] Volumetric fog renderer feature enabled={enabled}");
         }
 
         private void SetFeatureField(object target, string fieldName, object value)
@@ -683,6 +810,17 @@ namespace KiloWorld.Rendering.Systems
         // beat the live server weather and real clock even with GPS enabled.
         // Toggled from the Swift settings panel for QA'ing every sky state.
         public static bool TestSkyOverrideEnabled = false;
+
+        // Vaporwave building knobs (Swift sliders → PlayerPrefs → window shader).
+        public static float WindowLitFraction = 0.72f;
+        public static float WindowPaletteMix = 1f;
+        // Saturation blends day→night on the sun-altitude ramp: juiced neon
+        // palette in daylight, monochrome glow after dark.
+        public static float WindowPaletteSaturation = 1.35f;
+        public static float WindowPaletteSaturationNight = 0f;
+        public static float WindowWarmth = 1f;
+        public static float WindowAccentFraction = 0.08f;
+        public static float WindowBrightness = 1f;
 
         public static string EffectiveWeatherGlyph()
         {
@@ -919,7 +1057,12 @@ namespace KiloWorld.Rendering.Systems
                 Color day = Color.Lerp(horizonWarm, midday, Mathf.Clamp01(alt / 22f));
                 col = Color.Lerp(moonColor, day, Mathf.Clamp01((alt + 4f) / 9f));
 
-                float lightScale = profile.lighting != null ? profile.lighting.moonlightIntensity : 1f;
+                // Sun and moon are separate light regimes. Reusing the moonlight
+                // slider here made the intended soft .55 night default cut the
+                // daytime sun nearly in half as well, leaving summer scenes black
+                // beneath a bright blue sky.
+                float lightScale = Mathf.Clamp(
+                    PlayerPrefs.GetFloat("k1lo_daySunIntensity", 1.35f), 0f, 8f);
                 float dayInt = Mathf.Lerp(0f, 1.2f, Mathf.Clamp01((alt + 6f) / 30f));
                 intensity = dayInt * lightScale * (1f - 0.5f * cloud);
             }
@@ -1173,9 +1316,12 @@ namespace KiloWorld.Rendering.Systems
             // profile's Bloom, which makes the scene look like bloom increased.
             _bloom.active = true;
             _bloom.intensity.overrideState = true;
-            float solarDayness = Mathf.Clamp01((_sunAlt + 4f) / 14f);
+            float solarDayness = PlayerPrefs.GetInt("k1lo_visualNightOverride", 0) == 1
+                ? 0f : Mathf.Clamp01((_sunAlt + 4f) / 14f);
             bool solarWorldOverride = PlayerPrefs.GetInt("k1lo_solarWorldOverride", 0) == 1;
-            float liveBloomIntensity = Mathf.Lerp(profile.postFX.bloomIntensity, 0.65f, solarDayness);
+            float dayBloomIntensity = Mathf.Clamp(
+                PlayerPrefs.GetFloat("k1lo_dayBloomIntensity", 2.0f), 0f, 8f);
+            float liveBloomIntensity = Mathf.Lerp(profile.postFX.bloomIntensity, dayBloomIntensity, solarDayness);
             _bloom.intensity.value = bloomEnabled
                 ? Mathf.Max(0f, solarWorldOverride ? profile.postFX.bloomIntensity : liveBloomIntensity)
                 : 0f;
@@ -1318,7 +1464,11 @@ namespace KiloWorld.Rendering.Systems
             if (_filmGrain == null) globalVolume.profile.TryGet(out _filmGrain);
             if (_filmGrain == null) _filmGrain = globalVolume.profile.Add<FilmGrain>(true);
             
-            _filmGrain.active = profile.postFX.filmGrainEnabled;
+            // K1L0's procedural sky and emissive facades already carry fine
+            // visual structure. Film grain only muddies edges and compression,
+            // so keep the post-process removed even if a stale preference says on.
+            profile.postFX.filmGrainEnabled = false;
+            _filmGrain.active = false;
             _filmGrain.type.overrideState = true; _filmGrain.type.value = profile.postFX.filmGrainType;
             _filmGrain.intensity.overrideState = true; _filmGrain.intensity.value = profile.postFX.filmGrainIntensity;
             _filmGrain.response.overrideState = true; _filmGrain.response.value = profile.postFX.filmGrainResponse;
@@ -1352,7 +1502,8 @@ namespace KiloWorld.Rendering.Systems
         private void ApplyVolumetricFog()
         {
             var fog = profile.volumetricFog;
-            float fogDayness = Mathf.Clamp01((_sunAlt + 6f) / 14f);
+            float fogDayness = PlayerPrefs.GetInt("k1lo_visualNightOverride", 0) == 1
+                ? 0f : Mathf.Clamp01((_sunAlt + 6f) / 14f);
 
             if (_cachedVolumetricFogManager == null)
             {
@@ -1378,7 +1529,16 @@ namespace KiloWorld.Rendering.Systems
                 
                 _cachedVolumetricFogManager.scatteringAbsorption = fog.scatteringAbsorption;
                 _cachedVolumetricFogManager.scatteringTint = scatteringTint;
-                _cachedVolumetricFogManager.scatteringHighQuality = fog.scatteringHighQuality;
+                _cachedVolumetricFogManager.scatteringHighQuality = PlayerPrefs.GetInt("k1lo_fogV2ScatteringHighQuality", fog.scatteringHighQuality ? 1 : 0) == 1;
+                _cachedVolumetricFogManager.downscaling = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2Downscaling", _cachedVolumetricFogManager.downscaling), 1f, 8f);
+                _cachedVolumetricFogManager.downscalingEdgeDepthThreshold = Mathf.Max(0.0001f, PlayerPrefs.GetFloat("k1lo_fogV2DownscalingEdgeThreshold", _cachedVolumetricFogManager.downscalingEdgeDepthThreshold));
+                _cachedVolumetricFogManager.blurPasses = Mathf.Clamp(Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_fogV2BlurPasses", _cachedVolumetricFogManager.blurPasses)), 0, 6);
+                _cachedVolumetricFogManager.blurDownscaling = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2BlurDownscaling", _cachedVolumetricFogManager.blurDownscaling), 1f, 8f);
+                _cachedVolumetricFogManager.blurSpread = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2BlurSpread", _cachedVolumetricFogManager.blurSpread), 0.1f, 4f);
+                _cachedVolumetricFogManager.blurHDR = PlayerPrefs.GetInt("k1lo_fogV2BlurHDR", _cachedVolumetricFogManager.blurHDR ? 1 : 0) == 1;
+                _cachedVolumetricFogManager.blurEdgePreserve = PlayerPrefs.GetInt("k1lo_fogV2BlurEdgePreserve", _cachedVolumetricFogManager.blurEdgePreserve ? 1 : 0) == 1;
+                _cachedVolumetricFogManager.blurEdgeDepthThreshold = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2BlurEdgeThreshold", _cachedVolumetricFogManager.blurEdgeDepthThreshold));
+                _cachedVolumetricFogManager.ditherStrength = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2ManagerDither", _cachedVolumetricFogManager.ditherStrength), 0f, 0.2f);
             }
 
             // Find the VolumetricFog component if not cached
@@ -1402,36 +1562,70 @@ namespace KiloWorld.Rendering.Systems
             var fogProfile = _cachedVolumetricFog.profile;
 
             // Rendering Quality
-            fogProfile.raymarchQuality = fog.raymarchQuality;
-            fogProfile.raymarchNearStepping = fog.raymarchNearStepping;
-            fogProfile.raymarchMinStep = fog.raymarchMinStep;
-            fogProfile.jittering = fog.jittering;
-            fogProfile.dithering = fog.dithering;
+            fogProfile.raymarchQuality = Mathf.Clamp(Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_fogRaymarchQuality", fog.raymarchQuality)), 1, 16);
+            fogProfile.raymarchNearStepping = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2NearStepping", fog.raymarchNearStepping), 0f, 50f);
+            fogProfile.raymarchMinStep = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2MinStep", fog.raymarchMinStep));
+            fogProfile.jittering = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2Jittering", fog.jittering));
+            fogProfile.dithering = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2Dithering", fog.dithering), 0f, 2f);
 
             // Density & Appearance
             fogProfile.constantDensity = fog.constantDensity;
             fogProfile.noiseStrength = Mathf.Lerp(nightFogNoiseStrength, dayFogNoiseStrength, fogDayness);
             fogProfile.noiseScale = Mathf.Lerp(nightFogNoiseScale, dayFogNoiseScale, fogDayness);
             fogProfile.noiseFinalMultiplier = fog.noiseFinalMultiplier;
+            fogProfile.noiseFinalMultiplier = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2NoiseMultiplier", fogProfile.noiseFinalMultiplier));
+            fogProfile.useDetailNoise = PlayerPrefs.GetInt("k1lo_fogV2DetailNoise", fogProfile.useDetailNoise ? 1 : 0) == 1;
+            fogProfile.detailScale = Mathf.Max(0.001f, PlayerPrefs.GetFloat("k1lo_fogV2DetailScale", fogProfile.detailScale));
+            fogProfile.detailStrength = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2DetailStrength", fogProfile.detailStrength));
+            fogProfile.detailOffset = PlayerPrefs.GetFloat("k1lo_fogV2DetailOffset", fogProfile.detailOffset);
             fogProfile.density = Mathf.Lerp(nightFogDensity, dayFogDensity, fogDayness);
 
             // Colors
-            fogProfile.albedo = fog.albedo;
+            float fogOrangeAmount = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogOrangeAmount", 0f));
+            Color orangeFog = new Color(1f, .42f, .16f, 1f);
+            Color authoredFog = Color.Lerp(fog.albedo, orangeFog, fogOrangeAmount);
+            // Optional live RGB override. Keeping the authored/blended color as
+            // each key's default preserves every existing preset while allowing
+            // Haze Lab to tune genuinely pink/blue fog without grading the world.
+            bool customFogColor = PlayerPrefs.HasKey("k1lo_fogColorRed") ||
+                                  PlayerPrefs.HasKey("k1lo_fogColorGreen") ||
+                                  PlayerPrefs.HasKey("k1lo_fogColorBlue");
+            fogProfile.albedo = new Color(
+                Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogColorRed", authoredFog.r)),
+                Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogColorGreen", authoredFog.g)),
+                Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogColorBlue", authoredFog.b)),
+                1f);
             fogProfile.brightness = Mathf.Lerp(nightFogBrightness, dayFogBrightness, fogDayness);
             fogProfile.deepObscurance = fog.deepObscurance;
             fogProfile.specularColor = fog.specularColor;
             fogProfile.specularThreshold = fog.specularThreshold;
             fogProfile.specularIntensity = fog.specularIntensity;
+            fogProfile.deepObscurance = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2DeepObscurance", fogProfile.deepObscurance), 0f, 2f);
+            fogProfile.specularThreshold = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2SpecularThreshold", fogProfile.specularThreshold));
+            fogProfile.specularIntensity = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2SpecularIntensity", fogProfile.specularIntensity));
 
             // Animation
-            fogProfile.turbulence = fog.turbulence;
-            fogProfile.windDirection = fog.windDirection;
+            fogProfile.turbulence = Mathf.Clamp(
+                PlayerPrefs.GetFloat("k1lo_fogTurbulence", fog.turbulence), 0f, 10f);
+            fogProfile.windDirection = new Vector3(
+                PlayerPrefs.GetFloat("k1lo_fogWindX", fog.windDirection.x),
+                PlayerPrefs.GetFloat("k1lo_fogWindY", fog.windDirection.y),
+                PlayerPrefs.GetFloat("k1lo_fogWindZ", fog.windDirection.z));
 
             // Directional Light
             fogProfile.lightDiffusionPower = fog.lightDiffusionPower;
             fogProfile.lightDiffusionIntensity = fog.lightDiffusionIntensity;
-            fogProfile.receiveShadows = fog.receiveShadows;
-            fogProfile.shadowIntensity = fog.shadowIntensity;
+            fogProfile.lightDiffusionPower = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2DiffusionPower", fogProfile.lightDiffusionPower), 1f, 256f);
+            fogProfile.lightDiffusionIntensity = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2DiffusionIntensity", fogProfile.lightDiffusionIntensity));
+            fogProfile.lightDiffusionBackScatter = fog.lightDiffusionBackScatter;
+            fogProfile.diffusionFloor = fog.diffusionFloor;
+            fogProfile.lightDiffusionNearDepthAtten = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2DiffusionNearAtten", fogProfile.lightDiffusionNearDepthAtten));
+            fogProfile.lightDiffusionBackScatter = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2BackScatter", fogProfile.lightDiffusionBackScatter));
+            fogProfile.diffusionFloor = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2DiffusionFloor", fogProfile.diffusionFloor));
+            fogProfile.receiveShadows = PlayerPrefs.GetInt("k1lo_fogV2ReceiveShadows", fog.receiveShadows ? 1 : 0) == 1;
+            fogProfile.shadowIntensity = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2ShadowIntensity", fog.shadowIntensity));
+            fogProfile.shadowCancellation = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2ShadowCancellation", fogProfile.shadowCancellation));
+            fogProfile.shadowMaxDistance = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2ShadowMaxDistance", fogProfile.shadowMaxDistance));
 
             // Light Interaction (Point/Spot)
             _cachedVolumetricFog.enableNativeLights = fog.enableNativeLights;
@@ -1443,13 +1637,19 @@ namespace KiloWorld.Rendering.Systems
 
             // Geometry
             fogProfile.border = fog.border;
+            fogProfile.border = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2Border", fogProfile.border), 0f, 2f);
+            fogProfile.scaleNoiseWithHeight = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2ScaleNoiseWithHeight", fogProfile.scaleNoiseWithHeight));
             fogProfile.customHeight = fog.customHeight;
             fogProfile.height = Mathf.Lerp(nightFogHeight, dayFogHeight, fogDayness);
-            fogProfile.verticalOffset = fog.verticalOffset;
-            fogProfile.distance = fog.distance;
-            fogProfile.distanceFallOff = fog.distanceFallOff;
-            fogProfile.maxDistance = fog.maxDistance;
-            fogProfile.maxDistanceFallOff = fog.maxDistanceFallOff;
+            fogProfile.verticalOffset = PlayerPrefs.GetFloat("k1lo_fogVerticalOffset", fog.verticalOffset);
+            fogProfile.distance = Mathf.Max(0f,
+                PlayerPrefs.GetFloat("k1lo_fogDistance", fog.distance));
+            fogProfile.distanceFallOff = Mathf.Clamp01(
+                PlayerPrefs.GetFloat("k1lo_fogDistanceFallOff", fog.distanceFallOff));
+            fogProfile.maxDistance = Mathf.Max(1f,
+                PlayerPrefs.GetFloat("k1lo_fogMaxDistance", fog.maxDistance));
+            fogProfile.maxDistanceFallOff = Mathf.Clamp01(
+                PlayerPrefs.GetFloat("k1lo_fogMaxDistanceFallOff", fog.maxDistanceFallOff));
 
             // Distant Fog
             fogProfile.distantFog = fog.distantFog;
@@ -1458,10 +1658,28 @@ namespace KiloWorld.Rendering.Systems
             fogProfile.distantFogMaxHeight = fog.distantFogMaxHeight;
             fogProfile.distantFogHeightDensity = fog.distantFogHeightDensity;
             // Daylight horizon fogs to pale radioactive dust; night keeps the authored color.
-            fogProfile.distantFogColor = Color.Lerp(fog.distantFogColor, new Color(0.58f, 0.60f, 0.54f), fogDayness);
+            Color daylightFog = Color.Lerp(fog.distantFogColor, new Color(0.58f, 0.60f, 0.54f), fogDayness);
+            Color authoredDistantFog = Color.Lerp(daylightFog, orangeFog, fogOrangeAmount);
+            fogProfile.distantFogColor = customFogColor
+                ? Color.Lerp(authoredDistantFog, fogProfile.albedo, fogDayness)
+                : authoredDistantFog;
             fogProfile.distantFogDiffusionIntensity = fog.distantFogDiffusionIntensity;
             fogProfile.distantFogBaseAltitude = fog.distantFogBaseAltitude;
             fogProfile.distantFogSymmetrical = fog.distantFogSymmetrical;
+            fogProfile.distantFogMaxHeight = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2DistantMaxHeight", fogProfile.distantFogMaxHeight));
+            fogProfile.distantFogHeightDensity = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2DistantHeightDensity", fogProfile.distantFogHeightDensity));
+            fogProfile.distantFogDiffusionIntensity = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2DistantDiffusion", fogProfile.distantFogDiffusionIntensity));
+            fogProfile.distantFogBaseAltitude = PlayerPrefs.GetFloat("k1lo_fogV2DistantBaseAltitude", fogProfile.distantFogBaseAltitude);
+            fogProfile.distantFogSymmetrical = PlayerPrefs.GetInt("k1lo_fogV2DistantSymmetrical", fogProfile.distantFogSymmetrical ? 1 : 0) == 1;
+            fogProfile.distantFogTransparencySupport = PlayerPrefs.GetInt("k1lo_fogV2DistantTransparency", fogProfile.distantFogTransparencySupport ? 1 : 0) == 1;
+            fogProfile.distantFogNoise = PlayerPrefs.GetInt("k1lo_fogV2DistantNoise", fog.distantFogNoise ? 1 : 0) == 1;
+            fogProfile.distantFogDistanceNoiseScale = Mathf.Max(0.01f, PlayerPrefs.GetFloat("k1lo_fogV2DistantNoiseScale", fog.distantFogDistanceNoiseScale));
+            fogProfile.distantFogDistanceNoiseStrength = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2DistantNoiseStrength", fog.distantFogDistanceNoiseStrength));
+            fogProfile.distantFogDistanceNoiseMaxDistance = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogV2DistantNoiseMaxDistance", fog.distantFogDistanceNoiseMaxDistance));
+            fogProfile.distantFogNoiseWindDirection = new Vector3(
+                PlayerPrefs.GetFloat("k1lo_fogV2DistantWindX", fog.distantFogNoiseWindDirection.x),
+                PlayerPrefs.GetFloat("k1lo_fogV2DistantWindY", fog.distantFogNoiseWindDirection.y),
+                PlayerPrefs.GetFloat("k1lo_fogV2DistantWindZ", fog.distantFogNoiseWindDirection.z));
 
             // Trigger the fog to update with new settings
             _cachedVolumetricFog.UpdateMaterialPropertiesNow();
@@ -1529,11 +1747,27 @@ namespace KiloWorld.Rendering.Systems
                 }
 
                 float wallDayness = Mathf.Clamp01((_sunAlt + 4f) / 14f);
+                float wallDaylightLift = PlayerPrefs.GetFloat("k1lo_zossWallDaylightLift", 0.55f);
                 Color daylightWall = new Color(.18f, .22f, .17f, 1f);
-                profile.buildings.zossWallMaterial.SetColor("_BaseColor",
-                    Color.Lerp(profile.buildings.zossWallColor, daylightWall, wallDayness * .72f));
+                if (PlayerPrefs.HasKey("k1lo_zossWallValue"))
+                {
+                    // Player-darkened walls stay crushed at noon: brighten the
+                    // chosen color slightly instead of lerping to stock green-gray.
+                    // Lift slider (0..1) pulls the target back toward the chosen
+                    // wall color so daytime walls don't all read as black.
+                    float crushAmount = 0.35f * (1f - wallDaylightLift);
+                    daylightWall = Color.Lerp(profile.buildings.zossWallColor, Color.black, crushAmount);
+                }
+                float wallDaynessBlend = wallDayness * Mathf.Lerp(0.72f, 0.30f, wallDaylightLift);
+                Color wallBaseColor = Color.Lerp(profile.buildings.zossWallColor, daylightWall, wallDaynessBlend);
+                profile.buildings.zossWallMaterial.SetColor("_BaseColor", wallBaseColor);
                 profile.buildings.zossWallMaterial.SetFloat("_Metallic", profile.buildings.zossWallMetallic);
                 profile.buildings.zossWallMaterial.SetFloat("_Smoothness", profile.buildings.zossWallSmoothness);
+
+                // Give individual building walls restrained, deterministic dark
+                // variation. This only touches renderers using ZossWallMaterial;
+                // road renderers and the road material remain completely separate.
+                ApplyBuildingWallVariation(wallBaseColor);
 
                 // Albedo
                 profile.buildings.zossWallMaterial.SetTexture("_BaseMap", profile.buildings.zossWallAlbedo);
@@ -1630,8 +1864,28 @@ namespace KiloWorld.Rendering.Systems
             // Zoss Emissive Material (window lights)
             if (profile.buildings.zossEmissiveMaterial != null)
             {
-                // FORCE URP LIT SHADER
-                if (profile.buildings.zossEmissiveMaterial.shader.name != "Universal Render Pipeline/Lit")
+                bool buildingLightsEnabled = PlayerPrefs.GetInt("k1lo_buildingLightsEnabled", 1) == 1;
+                // Per-window vaporwave palette shader; falls back to URP Lit
+                // (old uniform-glow behavior) if it's missing from the build.
+                Shader windowShader = Shader.Find("K1L0/ZossWindows");
+                if (windowShader != null)
+                {
+                    if (profile.buildings.zossEmissiveMaterial.shader != windowShader)
+                        profile.buildings.zossEmissiveMaterial.shader = windowShader;
+                    profile.buildings.zossEmissiveMaterial.SetFloat("_LitFraction", buildingLightsEnabled ? 1f : 0f);
+                    profile.buildings.zossEmissiveMaterial.SetFloat("_PaletteMix", WindowPaletteMix);
+                    float saturationDayness = Mathf.Clamp01((_sunAlt + 6f) / 14f);
+                    profile.buildings.zossEmissiveMaterial.SetFloat("_PaletteSaturation",
+                        Mathf.Lerp(WindowPaletteSaturationNight, WindowPaletteSaturation, saturationDayness));
+                    profile.buildings.zossEmissiveMaterial.SetFloat("_Warmth", WindowWarmth);
+                    profile.buildings.zossEmissiveMaterial.SetFloat("_AccentFraction", WindowAccentFraction);
+                    profile.buildings.zossEmissiveMaterial.SetFloat("_WindowBrightness", WindowBrightness);
+                    profile.buildings.zossEmissiveMaterial.SetFloat("_BrightnessJitter",
+                        PlayerPrefs.GetFloat("k1lo_zossBrightnessJitter", 0.5f));
+                    profile.buildings.zossEmissiveMaterial.SetFloat("_BrightnessJitterRate",
+                        PlayerPrefs.GetFloat("k1lo_zossBrightnessJitterRate", 0.6f));
+                }
+                else if (profile.buildings.zossEmissiveMaterial.shader.name != "Universal Render Pipeline/Lit")
                 {
                     Shader urpLit = Shader.Find("Universal Render Pipeline/Lit");
                     if (urpLit != null) profile.buildings.zossEmissiveMaterial.shader = urpLit;
@@ -1645,16 +1899,31 @@ namespace KiloWorld.Rendering.Systems
                 profile.buildings.zossEmissiveMaterial.SetTexture("_BaseMap", profile.buildings.zossEmissiveAlbedo);
 
                 // Emission (HDR)
-                float windowDayness = Mathf.Clamp01((_sunAlt + 6f) / 14f);
+                float windowDayness = PlayerPrefs.GetInt("k1lo_visualNightOverride", 0) == 1
+                    ? 0f : Mathf.Clamp01((_sunAlt + 6f) / 14f);
+                float dayWindowIntensity = Mathf.Clamp(
+                    PlayerPrefs.GetFloat("k1lo_zossDayWindowIntensity", 6.5f), 0f, 30f);
+                float liveWindowIntensity = Mathf.Lerp(profile.buildings.zossEmissiveIntensity, dayWindowIntensity, windowDayness);
                 bool solarWorldOverride = PlayerPrefs.GetInt("k1lo_solarWorldOverride", 0) == 1;
-                float liveWindowIntensity = Mathf.Lerp(profile.buildings.zossEmissiveIntensity, 0.12f, windowDayness);
-                Color hdrEmission = profile.buildings.zossEmissiveEmission *
-                    (solarWorldOverride ? profile.buildings.zossEmissiveIntensity : liveWindowIntensity);
+                if (!solarWorldOverride)
+                    liveWindowIntensity = Mathf.Max(liveWindowIntensity, Mathf.Lerp(12f, 0f, windowDayness));
+                // Permanent emissive floor: day/night/auto and saved overrides
+                // may alter the palette, but windows must always visibly glow.
+                liveWindowIntensity = buildingLightsEnabled ? Mathf.Max(liveWindowIntensity, 8f) : 0f;
+                Color hdrEmission = profile.buildings.zossEmissiveEmission * liveWindowIntensity;
                 profile.buildings.zossEmissiveMaterial.SetColor("_EmissionColor", hdrEmission);
                 profile.buildings.zossEmissiveMaterial.SetTexture("_EmissionMap", profile.buildings.zossEmissiveEmissionMap);
 
-                profile.buildings.zossEmissiveMaterial.EnableKeyword("_EMISSION");
-                profile.buildings.zossEmissiveMaterial.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+                if (buildingLightsEnabled)
+                {
+                    profile.buildings.zossEmissiveMaterial.EnableKeyword("_EMISSION");
+                    profile.buildings.zossEmissiveMaterial.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+                }
+                else
+                {
+                    profile.buildings.zossEmissiveMaterial.DisableKeyword("_EMISSION");
+                    profile.buildings.zossEmissiveMaterial.globalIlluminationFlags = MaterialGlobalIlluminationFlags.EmissiveIsBlack;
+                }
 
                 // Tiling
                 profile.buildings.zossEmissiveMaterial.SetTextureScale("_BaseMap", profile.buildings.zossEmissiveTiling);
@@ -1780,9 +2049,24 @@ namespace KiloWorld.Rendering.Systems
         {
             if (mat == null) return;
 
-            float roadDayness = Mathf.Clamp01((_sunAlt + 4f) / 14f);
-            Color daylightRoad = new Color(.20f, .23f, .18f, 1f);
-            mat.SetColor("_BaseColor", Color.Lerp(profile.roads.roadColor, daylightRoad, roadDayness * .78f));
+            float roadDayness = PlayerPrefs.GetInt("k1lo_visualNightOverride", 0) == 1
+                ? 0f : Mathf.Clamp01((_sunAlt + 4f) / 14f);
+            // Road value slider (0..1) lifts the daytime road color from a
+            // near-black asphalt toward warm gray so streets aren't black.
+            float nightRoadValue = PlayerPrefs.GetFloat("k1lo_roadValue", 0.88f);
+            float dayRoadValue = PlayerPrefs.GetFloat("k1lo_dayRoadValue", 0.32f);
+            float roadValue = Mathf.Lerp(nightRoadValue, dayRoadValue, roadDayness);
+            Color roadDark = new Color(.20f, .23f, .18f, 1f);
+            Color roadLight = new Color(.68f, .66f, .62f, 1f);
+            Color daylightRoad = Color.Lerp(roadDark, roadLight, roadValue);
+            float roadHue = PlayerPrefs.GetFloat("k1lo_roadHue", .62f);
+            float roadSaturation = PlayerPrefs.GetFloat("k1lo_roadSaturation", .08f);
+            Color coolNightRoad = Color.HSVToRGB(Mathf.Repeat(roadHue, 1f), Mathf.Clamp01(roadSaturation), roadValue);
+            // Keep the road network legible at night. Runtime tile property blocks
+            // use the same palette, but this central pass runs repeatedly and used
+            // to restore the authored near-black material underneath them.
+            Color nightRoad = Color.Lerp(profile.roads.roadColor, coolNightRoad, .72f);
+            mat.SetColor("_BaseColor", Color.Lerp(nightRoad, daylightRoad, roadDayness * .78f));
             mat.SetFloat("_Metallic", profile.roads.roadMetallic);
             mat.SetFloat("_Smoothness", profile.roads.roadSmoothness);
 
@@ -1803,11 +2087,13 @@ namespace KiloWorld.Rendering.Systems
             }
 
             // Emission
-            Color hdrEmission = profile.roads.roadEmission * profile.roads.roadEmissionIntensity;
+            float roadGlow = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_roadGlow", .34f));
+            Color nightEmission = coolNightRoad * (roadGlow * 1.8f * (1f - roadDayness));
+            Color hdrEmission = profile.roads.roadEmission * profile.roads.roadEmissionIntensity + nightEmission;
             mat.SetColor("_EmissionColor", hdrEmission);
             mat.SetTexture("_EmissionMap", profile.roads.roadEmissionMap);
 
-            if (profile.roads.roadEmissionIntensity > 0 || profile.roads.roadEmissionMap != null)
+            if (profile.roads.roadEmissionIntensity > 0 || profile.roads.roadEmissionMap != null || roadGlow > .001f)
             {
                 mat.EnableKeyword("_EMISSION");
                 mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
@@ -1895,10 +2181,11 @@ namespace KiloWorld.Rendering.Systems
                 mat.SetFloat("_PuddleSpread", profile.roads.puddleAmount);
                 mat.SetFloat("_PuddleSharpness", profile.roads.puddleSharpness);
 
-                // CRITICAL: Ensure material is in Transparent queue to access CameraOpaqueTexture
-                if (mat.renderQueue != 3000) // 3000 = Transparent queue
+                // The road no longer samples the opaque camera texture for
+                // fake reflections, so keep it in the normal opaque queue.
+                if (mat.renderQueue != 2000)
                 {
-                    mat.renderQueue = 3000;
+                    mat.renderQueue = 2000;
                 }
             }
             else if (Time.frameCount % 300 == 0)
@@ -1930,21 +2217,44 @@ namespace KiloWorld.Rendering.Systems
 
                 // Daylight adds a little atmospheric haze, but keeps the authored
                 // ground hue strong enough for grass/terrain color tuning to matter.
-                float groundDayness = Mathf.Clamp01((_sunAlt + 6f) / 14f);
+                // Manual sky preview must own the entire world-lighting phase,
+                // not only the sky material. Previously `_sunAlt` continued to
+                // carry the real nighttime altitude, leaving the ground dark/
+                // olive underneath a forced sunrise. Match the same synthetic
+                // solar curve used by DynamicSkyVideoController while previewing.
+                float effectiveGroundSunAltitude = _sunAlt;
+                bool manualSkyPreview = TestSkyOverrideEnabled
+                    || PlayerPrefs.GetFloat("k1lo_layeredBypassWeather", 0f) > .5f;
+                if (manualSkyPreview)
+                {
+                    float previewHour = PlayerPrefs.GetFloat("k1lo_manualHour", ManualHour);
+                    effectiveGroundSunAltitude = Mathf.Sin((previewHour - 6f) / 24f * Mathf.PI * 2f) * 62f;
+                }
+                float groundDayness = PlayerPrefs.GetInt("k1lo_visualNightOverride", 0) == 1
+                    ? 0f : Mathf.Clamp01((effectiveGroundSunAltitude + 6f) / 14f);
                 
                 // Day vs Night ground color interpolation
                 Color.RGBToHSV(profile.ground.groundColor, out _, out _, out float gv);
+                gv = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_groundValue", gv));
                 if (gv < 0.05f) gv = 0.5f;
                 float gh = Mathf.Lerp(nightGroundHue, dayGroundHue, groundDayness);
                 float gs = Mathf.Lerp(nightGroundSaturation, dayGroundSaturation, groundDayness);
-                float daylightValue = Mathf.Max(gv, 0.38f);
+                float fogOrangeAmount = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogOrangeAmount", 0f));
+                bool radioactiveDay = groundDayness > .5f && fogOrangeAmount > .05f;
+                float daylightValue = radioactiveDay ? Mathf.Max(gv, 0.08f) : Mathf.Max(gv, 0.38f);
                 Color activeBaseColor = Color.HSVToRGB(gh, gs, Mathf.Lerp(gv, daylightValue, groundDayness));
 
-                Color dayAsh = new Color(0.52f, 0.52f, 0.45f);
-                float daylightHaze = Mathf.Lerp(0.24f, 0.10f, Mathf.Clamp01(gs));
+                // Cool neutral slate keeps sunrise/sunset ground from turning
+                // muddy olive beneath a saturated red-orange horizon.
+                Color dayAsh = new Color(0.46f, 0.48f, 0.52f);
+                float daylightHaze = radioactiveDay ? 0.025f : Mathf.Lerp(0.24f, 0.10f, Mathf.Clamp01(gs));
                 Color groundColor = Color.Lerp(activeBaseColor, dayAsh, groundDayness * daylightHaze);
-                float groundBrightness = Mathf.Lerp(profile.ground.groundBrightness,
-                    Mathf.Max(profile.ground.groundBrightness, 1.18f), groundDayness);
+                float authoredGroundBrightness = Mathf.Clamp(
+                    PlayerPrefs.GetFloat("k1lo_groundBrightness", profile.ground.groundBrightness), 0f, 3f);
+                float daylightBrightness = radioactiveDay
+                    ? authoredGroundBrightness
+                    : Mathf.Max(authoredGroundBrightness, 1.18f);
+                float groundBrightness = Mathf.Lerp(authoredGroundBrightness, daylightBrightness, groundDayness);
 
                 _cachedGroundPlane.UpdateMaterial(
                     color: groundColor,
@@ -1954,9 +2264,13 @@ namespace KiloWorld.Rendering.Systems
                     albedo: profile.ground.groundTexture,
                     normal: profile.ground.groundNormal,
                     normalStrength: profile.ground.groundNormalStrength,
-                    emission: Color.Lerp(profile.ground.groundEmission, new Color(.16f, .22f, .13f), groundDayness),
+                    emission: radioactiveDay
+                        ? Color.Lerp(profile.ground.groundEmission, new Color(.045f, .18f, .055f), groundDayness)
+                        : Color.Lerp(profile.ground.groundEmission, new Color(.13f, .17f, .23f), groundDayness),
                     emissionMap: profile.ground.groundEmissionMap,
-                    emissionIntensity: Mathf.Lerp(profile.ground.groundEmissionIntensity, .42f, groundDayness),
+                    emissionIntensity: radioactiveDay
+                        ? Mathf.Lerp(profile.ground.groundEmissionIntensity, .38f, groundDayness)
+                        : Mathf.Lerp(profile.ground.groundEmissionIntensity, .42f, groundDayness),
                     tiling: profile.ground.groundTiling
                 );
 
@@ -1989,6 +2303,74 @@ namespace KiloWorld.Rendering.Systems
                     map.transform.position = pos;
                 }
             }
+        }
+
+        private void ApplyBuildingWallVariation(Color baseColor)
+        {
+#if UNITY_EDITOR
+            return;
+#else
+            // Apply in batches as map tiles stream; never touch thousands of
+            // renderer property blocks every frame.
+            if (_cachedBuildingRenderers != null && Time.time - _lastBuildingCacheTime < 2f)
+                return;
+
+            if (_cachedBuildingRenderers == null || Time.time - _lastBuildingCacheTime >= 2f)
+            {
+                var buildingRendererSet = new System.Collections.Generic.HashSet<MeshRenderer>();
+                foreach (var candidate in FindObjectsByType<Transform>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                {
+                    if (candidate == null ||
+                        candidate.name.IndexOf("building", System.StringComparison.OrdinalIgnoreCase) < 0 ||
+                        candidate.name.IndexOf("layer objects", System.StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+                    foreach (var renderer in candidate.GetComponentsInChildren<MeshRenderer>(true))
+                        if (renderer != null) buildingRendererSet.Add(renderer);
+                }
+                foreach (var metadata in FindObjectsByType<Kiloverse.Mapbox.BuildingMetadata>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                {
+                    if (metadata == null) continue;
+                    foreach (var renderer in metadata.GetComponentsInChildren<MeshRenderer>(true))
+                        if (renderer != null) buildingRendererSet.Add(renderer);
+                }
+                // Merged distant LOD batches deliberately omit per-building
+                // metadata and can sit outside the standard layer root. Their
+                // GameObject names still identify them as building batches.
+                foreach (var renderer in FindObjectsByType<MeshRenderer>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                {
+                    if (renderer != null &&
+                        renderer.gameObject.name.IndexOf("building", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                        buildingRendererSet.Add(renderer);
+                }
+                _cachedBuildingRenderers = buildingRendererSet.Count > 0
+                    ? new System.Collections.Generic.List<MeshRenderer>(buildingRendererSet).ToArray()
+                    : System.Array.Empty<MeshRenderer>();
+                _lastBuildingCacheTime = Time.time;
+            }
+
+            bool buildingsVisible = PlayerPrefs.GetFloat("k1lo_buildingsVisible", 1f) >= 0.5f;
+            foreach (var renderer in _cachedBuildingRenderers)
+            {
+                if (renderer == null || renderer.sharedMaterial == null) continue;
+                renderer.forceRenderingOff = !buildingsVisible;
+                renderer.enabled = buildingsVisible;
+                if (!buildingsVisible) continue;
+                string materialName = renderer.sharedMaterial.name;
+                if (renderer.sharedMaterial != profile.buildings.zossWallMaterial &&
+                    !materialName.Contains("ZossWall")) continue;
+
+                Vector3 center = renderer.bounds.center;
+                float hash = Mathf.Abs(Mathf.Sin(center.x * 0.1271f + center.z * 0.3117f));
+                float variance = PlayerPrefs.GetFloat("k1lo_zossWallVariance", 0.6f);
+                // variance 0 → all same (1.0x); 1 → per-building 0.5x..1.5x
+                float lo = 1f - 0.5f * variance;
+                float hi = 1f + 0.5f * variance;
+                float mult = Mathf.Lerp(lo, hi, hash);
+                renderer.GetPropertyBlock(_wallPropertyBlock);
+                _wallPropertyBlock.SetColor("_BaseColor", baseColor * mult);
+                renderer.SetPropertyBlock(_wallPropertyBlock);
+            }
+#endif
         }
 
         private static void SetLayerRootY(string layerRootName, float yPosition)

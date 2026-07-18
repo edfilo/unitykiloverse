@@ -13,14 +13,13 @@ MonoBehaviour:
   m_Name: Fog
   m_EditorClassIdentifier: 
   raymarchQuality: 6
-  raymarchNearStepping: 8
   raymarchMinStep: 0.25
   jittering: 1
   dithering: 1
   renderQueue: 3100
   sortingLayerID: 0
   sortingOrder: 0
-  constantDensity: 1
+  constantDensity: 0
   noiseTexture: {fileID: 2800000, guid: 9c79340e1a1054275ba04070a27de306, type: 3}
   noiseTextureOptimizedSize: 256
   noiseStrength: 0.1
@@ -31,7 +30,7 @@ MonoBehaviour:
   detailScale: 10
   detailStrength: 0.119
   detailOffset: -0.5
-  density: 0.01
+  density: 0.35
   shape: 0
   scaleNoiseWithHeight: 0
   border: 0.061
@@ -79,7 +78,6 @@ MonoBehaviour:
     atime6: 0
     atime7: 0
     m_Mode: 0
-    m_ColorSpace: -1
     m_NumColorKeys: 2
     m_NumAlphaKeys: 2
   depthGradientMaxDistance: 500
@@ -111,7 +109,6 @@ MonoBehaviour:
     atime6: 0
     atime7: 0
     m_Mode: 0
-    m_ColorSpace: -1
     m_NumColorKeys: 2
     m_NumAlphaKeys: 2
   brightness: 1
@@ -129,9 +126,8 @@ MonoBehaviour:
   sunIntensity: 1
   ambientLightMultiplier: 0
   lightDiffusionModel: 0
-  lightDiffusionPower: 120
+  lightDiffusionPower: 32
   lightDiffusionIntensity: 0.4
-  lightDiffusionNearDepthAtten: 0
   receiveShadows: 1
   shadowIntensity: 0.5
   shadowCancellation: 0
@@ -147,10 +143,3 @@ MonoBehaviour:
   distantFogRenderQueue: 2999
   distantFogBaseAltitude: 0
   distantFogSymmetrical: 0
-  distantFogNoise: 0
-  distantFogNoiseTexture: {fileID: 11700000, guid: 950add8d241c6479bbab1f10e1035d60, type: 2}
-  distantFogDistanceNoiseScale: 0.1
-  distantFogDistanceNoiseStrength: 0.5
-  distantFogDistanceNoiseMaxDistance: 250
-  distantFogNoiseWindDirection: {x: 0.002, y: 0.002, z: 0}
-  customMesh: {fileID: 0}

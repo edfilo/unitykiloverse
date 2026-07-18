@@ -1,4 +1,4 @@
-﻿// #define FOG_ROTATION
+﻿//#define FOG_ROTATION
 
 //------------------------------------------------------------------------------------------------------------------
 // Volumetric Fog & Mist 2
@@ -26,7 +26,7 @@ namespace VolumetricFogAndMist2 {
 
     [ExecuteInEditMode]
     [DefaultExecutionOrder(100)]
-    [HelpURL("https://kronnect.com/guides/volumetric-fog-urp-introduction/")]
+    [HelpURL("https://kronnect.com/docs/volumetric-fog-urp/")]
     public partial class VolumetricFog : MonoBehaviour {
 
         public VolumetricFogProfile profile;
@@ -37,6 +37,9 @@ namespace VolumetricFogAndMist2 {
         public bool enableNativeLights;
         [Tooltip("Multiplier to native lights intensity")]
         public float nativeLightsMultiplier = 1f;
+        [Tooltip("Native lights distance attenuation falloff (0 = no attenuation, 1 = full attenuation).")]
+        [Range(0f, 1f)]
+        public float nativeLightFallOff = 1f;
         [Tooltip("Enable fast point lights. This option is much faster than native lights. However, if you enable native lights, this option can't be enabled as point lights are already included in the native lights support.")]
         public bool enablePointLights;
         [Tooltip("Supports Adaptative Probe Volumes (Unity 2023.1+)")]
@@ -52,6 +55,8 @@ namespace VolumetricFogAndMist2 {
         public Vector3 followOffset;
         [Tooltip("Fades in/out fog effect when reference controller enters the fog volume.")]
         public bool enableFade;
+        [Tooltip("Also fades distant fog along with this volume.")]
+        public bool fadeIncludeDistantFog;
         [Tooltip("Fog volume blending starts when reference controller is within this fade distance to any volume border.")]
         public float fadeDistance = 1;
         [Tooltip("If this option is disabled, the fog disappears when the reference controller exits the volume and appears when the controller enters the volume. Enable this option to fade out the fog volume when the controller enters the volume. ")]
@@ -77,6 +82,8 @@ namespace VolumetricFogAndMist2 {
         Material fogMat, noiseMat, turbulenceMat;
         Shader fogShader;
         RenderTexture rtNoise, rtTurbulence;
+        Color noiseDetailColor;
+        bool noiseDetailColorValid;
         float turbAcum;
         Vector4 windAcum, detailNoiseWindAcum, distantFogNoiseWindAcum;
         Vector3 sunDir;
@@ -98,6 +105,7 @@ namespace VolumetricFogAndMist2 {
         float lastVolumeHeight;
         Bounds cachedBounds;
         const float DISTANT_FOG_FAR_PLANE = 50000;
+        const int TRANSPARENT_RENDER_QUEUE = 3000;
         static Vector3 distantFogBounds = new Vector3(DISTANT_FOG_FAR_PLANE, DISTANT_FOG_FAR_PLANE, DISTANT_FOG_FAR_PLANE);
 
         /// <summary>
@@ -150,6 +158,12 @@ namespace VolumetricFogAndMist2 {
             if (profile != null) {
                 profile.onSettingsChanged -= UpdateMaterialProperties;
             }
+            for (int k = transparentObjects.Count - 1; k >= 0; k--) {
+                FogTransparentObject transparentObject = transparentObjects[k];
+                if (transparentObject != null) {
+                    transparentObject.AutoFogVolumeCheck();
+                }
+            }
         }
 
         void OnDidApplyAnimationProperties () {  // support for animating property based fields
@@ -158,6 +172,7 @@ namespace VolumetricFogAndMist2 {
 
         void OnValidate () {
             nativeLightsMultiplier = Mathf.Max(0, nativeLightsMultiplier);
+            nativeLightFallOff = Mathf.Clamp01(nativeLightFallOff);
             apvIntensityMultiplier = Mathf.Max(0, apvIntensityMultiplier);
             UpdateMaterialProperties();
         }
@@ -221,6 +236,8 @@ namespace VolumetricFogAndMist2 {
 
             if (enableUpdateModeOptions && !CanUpdate()) return;
 
+            CleanupFogMats();
+
             if (requireUpdateMaterial) {
                 requireUpdateMaterial = false;
                 UpdateMaterialPropertiesNow();
@@ -265,6 +282,15 @@ namespace VolumetricFogAndMist2 {
             Vector3 center = bounds.center;
             Vector3 extents = transform.lossyScale * 0.5f; // required to account for non-uniform scaling & rotation; don't use bounds.extents
 
+            for (int k = transparentObjects.Count - 1; k >= 0; k--) {
+                FogTransparentObject transparentObject = transparentObjects[k];
+                if (transparentObject == null) {
+                    transparentObjects.RemoveAt(k);
+                } else {
+                    transparentObject.CheckFogVolumeContainment(bounds);
+                }
+            }
+
             bool requireApplyProfileSettings = enableFade || enableSubVolumes;
 #if UNITY_EDITOR
             if (currentAppliedColorSpace != QualitySettings.activeColorSpace) {
@@ -296,7 +322,7 @@ namespace VolumetricFogAndMist2 {
             ambientMultiplied = ambientColor * ambientIntensity;
 
             VolumetricFogManager globalManager = VolumetricFogManager.instance;
-            Light sun = globalManager.sun;
+            Light sun = globalManager != null ? globalManager.sun : null;
             Color lightColor;
             Color sunColor;
             float sunIntensity;
@@ -305,6 +331,9 @@ namespace VolumetricFogAndMist2 {
                 if (activeProfile.dayNightCycle) {
                     sunDir = -sun.transform.forward;
                     sunColor = sun.color;
+                    if (sun.useColorTemperature) {
+                        sunColor *= Mathf.CorrelatedColorTemperatureToRGB(sun.colorTemperature);
+                    }
                     sunIntensity = sun.intensity;
                 } else {
                     sunDir = activeProfile.sunDirection.normalized;
@@ -324,13 +353,17 @@ namespace VolumetricFogAndMist2 {
             float colorSpaceMultiplier = QualitySettings.activeColorSpace == ColorSpace.Gamma ? 2f : 1.33f;
             lightColor = sunColor * (dayLight * sunIntensity * brightness * colorSpaceMultiplier);
 
-            Light moon = globalManager.moon;
+            Light moon = globalManager != null ? globalManager.moon : null;
             moonLight = 0;
             if (activeProfile.dayNightCycle && !enableNativeLights && moon != null) {
                 Vector3 moonDir = -moon.transform.forward;
                 moonLight = 1f + moonDir.y * 2f;
                 if (moonLight < 0) moonLight = 0; else if (moonLight > 1f) moonLight = 1f;
-                lightColor += moon.color * (moonLight * moon.intensity * brightness * colorSpaceMultiplier);
+                Color moonColor = moon.color;
+                if (moon.useColorTemperature) {
+                    moonColor *= Mathf.CorrelatedColorTemperatureToRGB(moon.colorTemperature);
+                }
+                lightColor += moonColor * (moonLight * moon.intensity * brightness * colorSpaceMultiplier);
             }
 
             lightColor.a = activeProfile.albedo.a;
@@ -381,6 +414,43 @@ namespace VolumetricFogAndMist2 {
 
             UpdateNoise();
 
+            // Per-renderer fog data for transparent objects; keeps values correct when the SRP Batcher groups them in a single batch
+            int transparentObjectsCount = transparentObjects.Count;
+            if (transparentObjectsCount > 0) {
+                int volumeLayerMask = 1 << gameObject.layer;
+                for (int k = 0; k < transparentObjectsCount; k++) {
+                    FogTransparentObject transparentObject = transparentObjects[k];
+                    if (transparentObject == null) continue;
+                    MaterialPropertyBlock block = transparentObject.PreparePropertyBlock();
+                    if (block == null) continue;
+                    FogRenderTarget target = new FogRenderTarget(block);
+#if FOG_ROTATION
+                    target.SetMatrix(ShaderParams.RotationMatrix, rot);
+                    target.SetMatrix(ShaderParams.RotationInvMatrix, rot.inverse);
+#endif
+                    target.SetInt(ShaderParams.VolumeLayerMask, volumeLayerMask);
+                    SetFogMaterialProperties(target);
+                    target.SetVector(ShaderParams.BoundsCenter, center);
+                    target.SetVector(ShaderParams.BoundsExtents, extents);
+                    target.SetVector(ShaderParams.BoundsBorder, border);
+                    target.SetVector(ShaderParams.BoundsData, boundsData);
+                    target.SetVector(ShaderParams.SunDir, sunDir);
+                    target.SetVector(ShaderParams.LightColor, lightColor);
+                    target.SetVector(ShaderParams.WindDirection, windAcum);
+                    target.SetVector(ShaderParams.DetailWindDirection, detailWindDirection);
+                    if (noiseDetailColorValid) {
+                        target.SetColor(ShaderParams.DetailColor, noiseDetailColor);
+                    }
+                    target.SetTexture(ShaderParams.NoiseTex, rtNoise);
+                    if (activeProfile.terrainFit && surfaceCam != null) {
+                        target.SetMatrix(ShaderParams.SurfaceCaptureMatrix, camMatrix);
+                        target.SetTexture(ShaderParams.SurfaceDepthTexture, surfaceCam.targetTexture);
+                        target.SetVector(ShaderParams.SurfaceData, new Vector4(surfaceCam.transform.position.y, activeProfile.terrainFogHeight, activeProfile.terrainFogMinAltitude, activeProfile.terrainFogMaxAltitude));
+                    }
+                    transparentObject.ApplyPropertyBlock();
+                }
+            }
+
             if (enableFogOfWar) {
                 UpdateFogOfWar();
             }
@@ -410,7 +480,8 @@ namespace VolumetricFogAndMist2 {
                 SurfaceCaptureUpdate();
             }
 
-            if (activeProfile.distantFog) {
+            if (activeProfile.distantFog && ShouldRenderDistantFogInEditMode()) {
+                if (GetDistantFogFadeAlpha() <= 0f) return;
                 if (mf != null && distantFogMat != null) {
                     distantFogMat.SetVector(ShaderParams.SunDir, sunDir);
                     distantFogMat.SetVector(ShaderParams.LightColor, lightColor);
@@ -439,8 +510,13 @@ namespace VolumetricFogAndMist2 {
                     } else {
                         distantFogMat.DisableKeyword(ShaderParams.SKW_DISTANT_FOG_NOISE);
                     }
-                    if (!VolumetricFogRenderFeature.isUsingDepthPeeling) {
-                        distantFogMat.renderQueue = activeProfile.distantFogRenderQueue;
+                    bool useTransparencySupport = VolumetricFogRenderFeature.isUsingDepthPeeling && activeProfile.distantFogTransparencySupport;
+                    if (!useTransparencySupport && !VolumetricFogRenderFeature.isRenderingBeforeTransparents) {
+                        int renderQueue = activeProfile.distantFogRenderQueue;
+                        if (activeProfile.distantFogTransparencySupport && renderQueue < 3001) {
+                            renderQueue = 3001;
+                        }
+                        distantFogMat.renderQueue = renderQueue;
                         Matrix4x4 m = Matrix4x4.TRS(transform.position, Quaternion.identity, distantFogBounds);
                         Graphics.DrawMesh(mf.sharedMesh, m, distantFogMat, gameObject.layer);
                     }
@@ -449,11 +525,31 @@ namespace VolumetricFogAndMist2 {
         }
 
 
+        public bool DistantFogUsesTransparencySupport {
+            get {
+                return activeProfile != null && activeProfile.distantFog && activeProfile.distantFogTransparencySupport && ShouldRenderDistantFogInEditMode();
+            }
+        }
+
+        public bool ShouldRenderDistantFogOverTransparents {
+            get {
+                return DistantFogUsesTransparencySupport;
+            }
+        }
+
         public void RenderDistantFog (CommandBuffer cmd) {
-            if (mf == null || distantFogMat == null || !activeProfile.distantFog) return;
+            if (mf == null || distantFogMat == null || activeProfile == null || !activeProfile.distantFog || !ShouldRenderDistantFogInEditMode()) return;
+            if (GetDistantFogFadeAlpha() <= 0f) return;
             Matrix4x4 m = Matrix4x4.TRS(transform.position, Quaternion.identity, distantFogBounds);
             UpdateDistantFogPropertiesNow();
             cmd.DrawMesh(mf.sharedMesh, m, distantFogMat);
+        }
+
+        bool ShouldRenderDistantFogInEditMode () {
+#if UNITY_EDITOR
+            if (!Application.isPlaying && activeProfile != null && !activeProfile.distantFogShowInEditMode) return false;
+#endif
+            return true;
         }
 
         Bounds cameraFrustumBounds;
@@ -560,6 +656,8 @@ namespace VolumetricFogAndMist2 {
             }
 
             Color detailColor = new Color(textureBaseColor.r * 0.5f, textureBaseColor.g * 0.5f, textureBaseColor.b * 0.5f, 0);
+            noiseDetailColor = detailColor;
+            noiseDetailColorValid = true;
 
             foreach (var mat in fogMats) {
                 mat.SetColor(ShaderParams.DetailColor, detailColor);
@@ -603,9 +701,8 @@ namespace VolumetricFogAndMist2 {
                 this.forceTerrainCaptureUpdate = true;
             }
 
-            if (gameObject.layer == 0) { // fog layer cannot be default so terrain fit culling mask can work properly
-                gameObject.layer = 1;
-            }
+            // Note: fog volumes can be on any layer including Default.
+            // Terrain fit capture camera hides the renderer during capture instead of relying on layer exclusion.
 
             fadeDistance = Mathf.Max(0.1f, fadeDistance);
 
@@ -770,12 +867,19 @@ namespace VolumetricFogAndMist2 {
             currentAppliedColorSpace = QualitySettings.activeColorSpace;
 
             lastVolumeHeight = transform.localScale.y;
-            meshRenderer.sortingLayerID = activeProfile.sortingLayerID;
+            int sortingLayerID = activeProfile.sortingLayerID;
+            if (!SortingLayer.IsValid(sortingLayerID)) {
+                sortingLayerID = 0;
+            }
+            meshRenderer.sortingLayerID = sortingLayerID;
             meshRenderer.sortingOrder = activeProfile.sortingOrder;
             fogMat.renderQueue = activeProfile.renderQueue;
 
             RegisterFogMat(fogMat);
+            CleanupFogMats();
+            int volumeLayerMask = 1 << gameObject.layer;
             foreach (var mat in fogMats) {
+                mat.SetInt(ShaderParams.VolumeLayerMask, volumeLayerMask);
                 SetFogMaterialProperties(mat);
             }
 
@@ -784,7 +888,11 @@ namespace VolumetricFogAndMist2 {
             }
         }
 
-        void SetFogMaterialProperties (Material mat) {
+        void SetFogMaterialProperties (Material material) {
+            SetFogMaterialProperties(new FogRenderTarget(material));
+        }
+
+        void SetFogMaterialProperties (FogRenderTarget mat) {
 
             if (activeProfile == null) return;
 
@@ -793,14 +901,15 @@ namespace VolumetricFogAndMist2 {
                 noiseScale *= Mathf.Lerp(1f, transform.localScale.y * 0.04032f, activeProfile.scaleNoiseWithHeight);
             }
             noiseScale = 0.1f / noiseScale;
-            mat.SetVector(ShaderParams.LightDiffusionData, new Vector4(activeProfile.lightDiffusionModel != DiffusionModel.Simple ? activeProfile.lightDiffusionPower / 256.1f : activeProfile.lightDiffusionPower, activeProfile.lightDiffusionIntensity, activeProfile.lightDiffusionNearDepthAtten));
+            mat.SetVector(ShaderParams.LightDiffusionData, new Vector4(activeProfile.lightDiffusionModel != DiffusionModel.Simple ? activeProfile.lightDiffusionPower / 256.1f : activeProfile.lightDiffusionPower, activeProfile.lightDiffusionIntensity, Mathf.Max(0.0001f, activeProfile.lightDiffusionNearDepthAtten), activeProfile.lightDiffusionBackScatter));
+            mat.SetFloat(ShaderParams.DiffusionFloor, activeProfile.diffusionFloor);
             mat.SetVector(ShaderParams.ShadowData, new Vector4(activeProfile.shadowIntensity, activeProfile.shadowCancellation, activeProfile.shadowMaxDistance, 0));
             mat.SetVector(ShaderParams.RaymarchSettings, new Vector4(1f / activeProfile.raymarchQuality, activeProfile.dithering * 0.01f, activeProfile.jittering, activeProfile.raymarchMinStep));
             mat.SetFloat(ShaderParams.NearStepping, 1f / (1f + activeProfile.raymarchNearStepping));
             mat.SetFloat(ShaderParams.NoiseScale, noiseScale);
             mat.SetFloat(ShaderParams.DeepObscurance, activeProfile.deepObscurance * (currentAppliedColorSpace == ColorSpace.Gamma ? 1f : 1.2f));
             mat.SetFloat(ShaderParams.Density, activeProfile.density);
-            mat.SetFloat(ShaderParams.NativeLightsMultiplier, nativeLightsMultiplier);
+            mat.SetVector(ShaderParams.NativeLightsData, new Vector4(nativeLightsMultiplier, nativeLightFallOff, 1f - nativeLightFallOff, 0f));
             mat.SetFloat(ShaderParams.APVIntensityMultiplier, apvIntensityMultiplier);
 
             if (activeProfile.useDetailNoise) {
@@ -894,8 +1003,9 @@ namespace VolumetricFogAndMist2 {
             }
 #endif
             if (enableFogOfWar) {
-                mat.SetTexture(ShaderParams.FogOfWarTexture, fogOfWarTexture);
-                UpdateFogOfWarMaterialBoundsProperties();
+                EnsureFogOfWarInit();
+                mat.SetTexture(ShaderParams.FogOfWarTexture, fogOfWarBlur && fowBlur2 != null ? (Texture)fowBlur2 : fogOfWarTexture);
+                UpdateFogOfWarMaterialBoundsProperties(mat);
                 mat.EnableKeyword(ShaderParams.SKW_FOW);
             }
             if (activeProfile.density == 0 || activeProfile.constantDensity) {
@@ -917,7 +1027,9 @@ namespace VolumetricFogAndMist2 {
             if (distantFogMat == null) {
                 distantFogMat = new Material(Shader.Find("Hidden/VolumetricFog2/DistantFog"));
             }
-            distantFogMat.SetColor(ShaderParams.Color, activeProfile.distantFogColor);
+            Color distantFogColor = activeProfile.distantFogColor;
+            distantFogColor.a *= GetDistantFogFadeAlpha();
+            distantFogMat.SetColor(ShaderParams.Color, distantFogColor);
             distantFogMat.SetVector(ShaderParams.DistantFogData, new Vector4(activeProfile.distantFogStartDistance, activeProfile.distantFogDistanceDensity, activeProfile.distantFogMaxHeight, activeProfile.distantFogHeightDensity));
             distantFogMat.SetVector(ShaderParams.LightDiffusionData, new Vector4(activeProfile.lightDiffusionPower, activeProfile.distantFogDiffusionIntensity * activeProfile.lightDiffusionIntensity, activeProfile.lightDiffusionNearDepthAtten, 0));
             if (activeProfile.distantFogNoise) {
@@ -933,6 +1045,14 @@ namespace VolumetricFogAndMist2 {
             } else {
                 distantFogMat.DisableKeyword(ShaderParams.SKW_DISTANT_FOG_NOISE);
             }
+        }
+
+        float GetDistantFogFadeAlpha () {
+            if (!enableFade || !fadeIncludeDistantFog) return 1f;
+            if (fadeOut && Application.isPlaying) {
+                return 1f - alphaMultiplier;
+            }
+            return alphaMultiplier;
         }
 
         /// <summary>
@@ -958,6 +1078,14 @@ namespace VolumetricFogAndMist2 {
 
         readonly List<Material> fogMats = new List<Material>();
 
+        void CleanupFogMats () {
+            for (int i = fogMats.Count - 1; i >= 0; i--) {
+                if (fogMats[i] == null) {
+                    fogMats.RemoveAt(i);
+                }
+            }
+        }
+
         public void RegisterFogMat (Material fogMat) {
             if (fogMat == null) return;
             if (!fogMats.Contains(fogMat)) {
@@ -970,6 +1098,70 @@ namespace VolumetricFogAndMist2 {
             fogMats.Remove(fogMat);
         }
 
+        readonly List<FogTransparentObject> transparentObjects = new List<FogTransparentObject>();
+
+        public void RegisterTransparentObject (FogTransparentObject transparentObject) {
+            if (transparentObject == null) return;
+            if (!transparentObjects.Contains(transparentObject)) {
+                transparentObjects.Add(transparentObject);
+            }
+        }
+
+        public void UnregisterTransparentObject (FogTransparentObject transparentObject) {
+            if (transparentObject == null) return;
+            transparentObjects.Remove(transparentObject);
+        }
+
+        public bool UsesFogMat (Material mat) {
+            return mat != null && fogMats.Contains(mat);
+        }
+
+        /// <summary>
+        /// Returns the shader keywords this volume enables on its registered fog materials
+        /// </summary>
+        public void GetFogMaterialKeywords (List<string> keywords) {
+            keywords.Clear();
+            VolumetricFogProfile p = activeProfile != null ? activeProfile : profile;
+            if (p == null) return;
+            if (p.distance > 0) keywords.Add(ShaderParams.SKW_DISTANCE);
+            if (p.enableDepthGradient) keywords.Add(ShaderParams.SKW_DEPTH_GRADIENT);
+            if (p.enableHeightGradient) keywords.Add(ShaderParams.SKW_HEIGHT_GRADIENT);
+            if (p.shape == VolumetricFogShape.Sphere) keywords.Add(ShaderParams.SKW_SHAPE_SPHERE);
+            else keywords.Add(ShaderParams.SKW_SHAPE_BOX);
+            if (enableNativeLights) {
+                if (nativeLightsMultiplier > 0) keywords.Add(ShaderParams.SKW_NATIVE_LIGHTS);
+            } else if (enablePointLights) keywords.Add(ShaderParams.SKW_POINT_LIGHTS);
+            if (enableAPV && apvIntensityMultiplier > 0) keywords.Add(ShaderParams.SKW_APV);
+            if (enableVoids) keywords.Add(ShaderParams.SKW_VOIDS);
+            if (p.receiveShadows && p.shadowMaxDistance > 0) keywords.Add(ShaderParams.SKW_RECEIVE_SHADOWS);
+#if UNITY_2021_3_OR_NEWER
+            if (p.cookie) keywords.Add(ShaderParams.SKW_DIRECTIONAL_COOKIE);
+#endif
+            if (enableFogOfWar) keywords.Add(ShaderParams.SKW_FOW);
+            if (p.density == 0 || p.constantDensity) keywords.Add(ShaderParams.SKW_CONSTANT_DENSITY);
+            else if (p.useDetailNoise) keywords.Add(ShaderParams.SKW_DETAIL_NOISE);
+            if (p.terrainFit) keywords.Add(ShaderParams.SKW_SURFACE);
+            if (p.lightDiffusionModel == DiffusionModel.Smooth) keywords.Add(ShaderParams.SKW_DIFFUSION_SMOOTH);
+            else if (p.lightDiffusionModel == DiffusionModel.Strong) keywords.Add(ShaderParams.SKW_DIFFUSION_STRONG);
+        }
+
+        // Writes fog properties to a material or to a per-renderer property block (keywords only apply to materials)
+        struct FogRenderTarget {
+            public Material material;
+            public MaterialPropertyBlock block;
+
+            public FogRenderTarget (Material material) { this.material = material; block = null; }
+            public FogRenderTarget (MaterialPropertyBlock block) { material = null; this.block = block; }
+
+            public void SetFloat (int nameID, float value) { if (material != null) material.SetFloat(nameID, value); else block.SetFloat(nameID, value); }
+            public void SetInt (int nameID, int value) { if (material != null) material.SetInt(nameID, value); else block.SetFloat(nameID, value); }
+            public void SetVector (int nameID, Vector4 value) { if (material != null) material.SetVector(nameID, value); else block.SetVector(nameID, value); }
+            public void SetColor (int nameID, Color value) { if (material != null) material.SetColor(nameID, value); else block.SetColor(nameID, value); }
+            public void SetMatrix (int nameID, Matrix4x4 value) { if (material != null) material.SetMatrix(nameID, value); else block.SetMatrix(nameID, value); }
+            public void SetTexture (int nameID, Texture value) { if (material != null) material.SetTexture(nameID, value); else if (value != null) block.SetTexture(nameID, value); }
+            public void EnableKeyword (string keyword) { if (material != null) material.EnableKeyword(keyword); }
+            public void DisableKeyword (string keyword) { if (material != null) material.DisableKeyword(keyword); }
+        }
 
     }
 

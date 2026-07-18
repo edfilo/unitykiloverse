@@ -101,6 +101,9 @@ public class Signal
     public string specialItem;       // the object/reward — e.g. "red velvet ribbon"
     public string artifactContainer; // backend-authored container detail for artifact beams
     public string teaser;            // the HUD sentence (backend-authored or locally generated)
+    public string hologramImageUrl;  // isolated reward image, supplied by the backend/native world payload
+    public string hologramDepthUrl;  // matching grayscale depth image
+    public int hologramParticleBudget; // explicit budget for non-ring beams such as locations
 
     // Location-only metadata (null on Artifact / Transmitter transmissions)
     public string locationName;      // e.g. "Recon Brewing at Meeder"
@@ -249,6 +252,8 @@ public class SignalDirectorV2 : MonoBehaviour
         public string senderName;
         public string artifactSenderName;
         public string lore;
+        public string imageUrl;
+        public string depthMapUrl;
         public double distanceMeters;
     }
 
@@ -2686,7 +2691,10 @@ public class SignalDirectorV2 : MonoBehaviour
         float maxMeters = locationBeamMaxMiles * 1609.34f;
         float removeMeters = Mathf.Max(maxMeters, 1f) * 1.05f; // slight hysteresis
 
-        var nearest = scanner.GetNearestUnfiltered(Mathf.Max(1, maxLocationBeams));
+        // Respect the category snapshot/filter selected by the native nearby UI.
+        // Dense areas auto-select their largest useful category on initial load,
+        // and subsequent user toggles replace this filtered scanner population.
+        var nearest = scanner.GetNearest(Mathf.Max(1, maxLocationBeams));
         if (nearest == null) return;
 
         var want = new HashSet<string>();
@@ -2700,7 +2708,8 @@ public class SignalDirectorV2 : MonoBehaviour
             if (string.IsNullOrEmpty(key)) continue;
             want.Add(key);
             bool created;
-            EnsureLocationSignal(t, key, out created);
+            int hologramBudget = i == 0 ? 2500 : (i <= 2 ? 750 : 0);
+            EnsureLocationSignal(t, key, hologramBudget, out created);
             if (created) createdThisSync.Add(key);
         }
 
@@ -2774,7 +2783,7 @@ public class SignalDirectorV2 : MonoBehaviour
         }
     }
 
-    private void EnsureLocationSignal(TransmitterScanner.TransmitterData t, string normalizedKey, out bool created)
+    private void EnsureLocationSignal(TransmitterScanner.TransmitterData t, string normalizedKey, int hologramBudget, out bool created)
     {
         created = false;
         // Find existing by external key
@@ -2795,6 +2804,10 @@ public class SignalDirectorV2 : MonoBehaviour
                 if (!string.IsNullOrWhiteSpace(t.ArtifactLabel)) s.specialItem = t.ArtifactLabel;
                 if (!string.IsNullOrWhiteSpace(t.ArtifactContainer)) s.artifactContainer = t.ArtifactContainer;
                 if (!string.IsNullOrWhiteSpace(t.ArtifactSenderName)) s.character = t.ArtifactSenderName;
+                s.hologramImageUrl = t.HologramImageUrl ?? "";
+                s.hologramDepthUrl = t.HologramDepthUrl ?? "";
+                s.hologramParticleBudget = hologramBudget;
+                SignalBeamBridge.Instance?.RefreshHologram(s);
                 if (s.state == SignalState.Hidden) TransitionTo(s, SignalState.Visible);
                 return;
             }
@@ -2819,12 +2832,16 @@ public class SignalDirectorV2 : MonoBehaviour
             specialItem = !string.IsNullOrWhiteSpace(t.ArtifactLabel) ? t.ArtifactLabel : "",
             artifactContainer = !string.IsNullOrWhiteSpace(t.ArtifactContainer) ? t.ArtifactContainer : "",
             character = !string.IsNullOrWhiteSpace(t.ArtifactSenderName) ? t.ArtifactSenderName : "",
+            hologramImageUrl = t.HologramImageUrl ?? "",
+            hologramDepthUrl = t.HologramDepthUrl ?? "",
+            hologramParticleBudget = hologramBudget,
             externalKey = normalizedKey
         };
 
         signals.Add(sig);
         OnSignalSpawned?.Invoke(sig);
         OnSignalStateChanged?.Invoke(sig);
+        SignalBeamBridge.Instance?.RefreshHologram(sig);
         created = true;
     }
 
@@ -3119,7 +3136,11 @@ public class SignalDirectorV2 : MonoBehaviour
 
 		    private void FillSecondaries()
 		    {
-            if (!AmbientPortalsAllowedByActivity())
+            bool isImmobile = !AmbientPortalsAllowedByActivity();
+            float stride = pedometerService != null ? pedometerService.EstimatedStrideLength : 0.762f;
+            float immobileMinDist = 200f * stride;
+
+            if (isImmobile)
             {
                 _ambientPortalsWereAllowed = false;
                 if (!loggedAmbientBlockedByKilosync || Time.unscaledTime >= nextAmbientBlockedLogTime)
@@ -3128,21 +3149,23 @@ public class SignalDirectorV2 : MonoBehaviour
                     string pedState = pedometerService != null
                         ? $"stepCount={pedometerService.stepCount} kilosync={pedometerService.kilosyncSteps} sixHour={pedometerService.stepsLast6Hours} sessionSteps={pedometerService.walkWindowSteps}/{ambientMinStepsToSpawn} currentBucket={pedometerService.walkCurrentBucketSteps}st/{pedometerService.walkCurrentBucketMeters:F0}m inactive={pedometerService.walkCurrentBucketInactive} bucketMinutes={pedometerService.walkInactiveBucketMinutes} activeBuckets={pedometerService.walkActiveBuckets} bucketReady={pedometerService.walkBucketReady} bucketWalking={pedometerService.HasWalkingBucketSignal(Mathf.Max(0, ambientMinStepsToSpawn))} ready={pedometerService.kilosyncReady} inert={pedometerService.isKilosyncInert}"
                         : "pedometer=null";
-                    Debug.Log($"[SignalDirector] Ambient portals blocked: {pedState}. Walk enough in the last 25 minutes to enable spawning.");
+                    Debug.Log($"[SignalDirector] Ambient portals running in immobile mode (min steps dist={immobileMinDist:F1}m): {pedState}.");
                     loggedAmbientBlockedByKilosync = true;
                 }
-                return;
             }
-            if (!_ambientPortalsWereAllowed)
+            else
             {
-                _ambientPortalsWereAllowed = true;
-                _lastBackendBeamRefreshTime = -999f;
-                _lastBackendScanLat = double.NaN;
-                _lastBackendScanLng = double.NaN;
-                _lastBackendScanTime = -999f;
-                Debug.Log("[SignalDirector] Ambient portals enabled by activity; forcing immediate backend scan.");
+                if (!_ambientPortalsWereAllowed)
+                {
+                    _ambientPortalsWereAllowed = true;
+                    _lastBackendBeamRefreshTime = -999f;
+                    _lastBackendScanLat = double.NaN;
+                    _lastBackendScanLng = double.NaN;
+                    _lastBackendScanTime = -999f;
+                    Debug.Log("[SignalDirector] Ambient portals enabled by activity; forcing immediate backend scan.");
+                }
+                loggedAmbientBlockedByKilosync = false;
             }
-            loggedAmbientBlockedByKilosync = false;
 
             if (useNativeDrivenAmbientBeams)
             {
@@ -3152,19 +3175,52 @@ public class SignalDirectorV2 : MonoBehaviour
 		        if (!useConcentricAmbientPool)
 		        {
 		            var playerMerc = GetPlayerMercator();
+                    float activeMinDist = secondaryMinDist;
+                    float minD = isImmobile ? Mathf.Max(activeMinDist, immobileMinDist) : activeMinDist;
+
+                    // Prune any signals that are too close in immobile mode
+                    if (isImmobile)
+                    {
+                        for (int i = signals.Count - 1; i >= 0; i--)
+                        {
+                            var s = signals[i];
+                            if (s == null) continue;
+                            if (s.role != SignalRole.SecondaryNearby) continue;
+                            if (s.state == SignalState.CoolingDown) continue;
+                            if (DistanceTo(s, playerMerc) < minD)
+                            {
+                                RemoveSignal(s);
+                            }
+                        }
+                    }
+
 		            while (CountByRole(SignalRole.SecondaryNearby) < maxSecondary)
-	            {
+	                {
 		                SpawnSignal(SignalRole.SecondaryNearby, SignalType.Presence, playerMerc,
-		                            secondaryMinDist, secondaryMaxDist, null,
+		                            minD, secondaryMaxDist, null,
 		                            TransmissionType.Artifact);
+	                }
+	                return;
 	            }
-	            return;
-	        }
 
 	        var origin = GetPlayerMercator();
 	        if (useBackendConcentricBeams)
 	        {
 	            EnsureBackendConcentricBeams(origin);
+                if (isImmobile)
+                {
+                    for (int i = signals.Count - 1; i >= 0; i--)
+                    {
+                        var s = signals[i];
+                        if (s == null) continue;
+                        if (s.role != SignalRole.SecondaryNearby) continue;
+                        if (s.state == SignalState.CoolingDown) continue;
+                        if (DistanceTo(s, origin) < immobileMinDist)
+                        {
+                            RemoveSignal(s);
+                        }
+                    }
+                }
 	            return;
 	        }
 
@@ -3192,7 +3248,7 @@ public class SignalDirectorV2 : MonoBehaviour
 	            RemoveSignal(s);
 	        }
 
-	        // Remove ambient ring beams that drift too far away.
+	        // Remove ambient ring beams that drift too far away, or are under 200 steps in immobile mode.
 	        for (int i = signals.Count - 1; i >= 0; i--)
 	        {
 	            var s = signals[i];
@@ -3200,7 +3256,7 @@ public class SignalDirectorV2 : MonoBehaviour
 	            if (s.role != SignalRole.SecondaryNearby) continue;
 	            if (s.state == SignalState.CoolingDown) continue;
 	            float d = DistanceTo(s, origin);
-	            if (d > poolMaxMeters * 1.05f) RemoveSignal(s);
+	            if (d > poolMaxMeters * 1.05f || (isImmobile && d < immobileMinDist)) RemoveSignal(s);
 	        }
 
 	        // Ensure one beam per ring at ~ringIndex*step.
@@ -3224,6 +3280,18 @@ public class SignalDirectorV2 : MonoBehaviour
 
 	            // Strict: if we can't find a road point within the band's ring, skip spawning this ring.
 	            if (!TryPickRoadPointInRing(origin, minD, maxD, out var pos)) continue;
+
+                if (isImmobile)
+                {
+                    var tempSig = new Signal { mercatorPosition = pos };
+                    var latLon = Conversions.WebMercatorToLatitudeLongitude(pos);
+                    tempSig.latitude = latLon.Latitude;
+                    tempSig.longitude = latLon.Longitude;
+                    if (DistanceTo(tempSig, origin) < immobileMinDist)
+                    {
+                        continue;
+                    }
+                }
 
 	            var sig = SpawnSignalAtPosition(SignalRole.SecondaryNearby, SignalType.Presence, pos, null, t);
 	            if (sig != null) sig.poolRingIndex = ringIndex;
@@ -3422,6 +3490,22 @@ public class SignalDirectorV2 : MonoBehaviour
                 ? TransmissionType.Transmitter
                 : TransmissionType.Artifact;
 
+            bool isImmobile = !AmbientPortalsAllowedByActivity();
+            float stride = pedometerService != null ? pedometerService.EstimatedStrideLength : 0.762f;
+            float immobileMinDist = 200f * stride;
+
+            var tempSig = new Signal { mercatorPosition = merc, latitude = b.lat, longitude = b.lng };
+            float currentDist = DistanceTo(tempSig, GetPlayerMercator());
+
+            if (isImmobile && currentDist < immobileMinDist)
+            {
+                if (existing != null)
+                {
+                    RemoveSignal(existing);
+                }
+                continue;
+            }
+
             bool isArtifact = t == TransmissionType.Artifact;
             string artifactName = isArtifact && !string.IsNullOrEmpty(b.material) ? b.material : (!string.IsNullOrEmpty(b.label) ? b.label : null);
             string teaser = isArtifact && !string.IsNullOrEmpty(b.material) ? b.material : (!string.IsNullOrEmpty(b.label) ? b.label : (string.IsNullOrEmpty(b.lore) ? "" : b.lore));
@@ -3437,6 +3521,9 @@ public class SignalDirectorV2 : MonoBehaviour
                     sig.artifactContainer = b.container;
                 if (t == TransmissionType.Artifact && !string.IsNullOrEmpty(senderName))
                     sig.character = senderName;
+                sig.hologramImageUrl = b.imageUrl ?? "";
+                sig.hologramDepthUrl = b.depthMapUrl ?? "";
+                SignalBeamBridge.Instance?.RefreshHologram(sig);
                 Debug.Log($"[SignalDirector] RingBeam spawn ring={ringIndex} type={b.type} tx={t} dist={b.distanceMeters:F1}m id={b.id} label='{b.label}'");
             }
             else
@@ -3453,6 +3540,9 @@ public class SignalDirectorV2 : MonoBehaviour
                     existing.artifactContainer = b.container ?? "";
                 if (t == TransmissionType.Artifact && !string.IsNullOrEmpty(senderName))
                     existing.character = senderName;
+                existing.hologramImageUrl = b.imageUrl ?? "";
+                existing.hologramDepthUrl = b.depthMapUrl ?? "";
+                SignalBeamBridge.Instance?.RefreshHologram(existing);
             }
         }
     }

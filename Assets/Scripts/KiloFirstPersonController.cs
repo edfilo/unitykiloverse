@@ -62,8 +62,8 @@ public class KiloFirstPersonController : MonoBehaviour
     public float skyViewDistance = -0.15f;
     public float skyViewPitch = -70f;
     [Header("Native HUD Camera")]
-    [Tooltip("Pitch used while the native Swift HUD is open. -31 currently puts the horizon low enough that the HUD reads as all sky.")]
-    public float nativeHudSkyPitch = -31f;
+    [Tooltip("Additional upward pitch relative to the user's current God View pitch while Sky Mode is open.")]
+    public float nativeHudSkyPitchOffset = -35f;
 
     private Vector3 moveDirection = Vector3.zero;
     private float lastLogTime = -5f; // Start at -5 so first log happens immediately
@@ -97,6 +97,8 @@ public class KiloFirstPersonController : MonoBehaviour
 
     private int cameraMode = 0; // 0=first person, 1=god view
     private bool isGodViewActive = false; // True only for overhead god view
+    private bool debugPositionOverrideActive;
+    private Vector3 debugPositionOverride;
     private static bool nativePanelOpen;
     public static bool IsNativePanelOpen => nativePanelOpen;
     public bool IsGodView => isGodViewActive;
@@ -351,7 +353,6 @@ public class KiloFirstPersonController : MonoBehaviour
         HandleDesktopGpsToggle();
         HandleMovement();
         HandleRotation();
-        HandleCameraToggleTap();
     }
 
     void HandleDesktopGpsToggle()
@@ -364,6 +365,8 @@ public class KiloFirstPersonController : MonoBehaviour
 
     void LateUpdate()
     {
+        if (debugPositionOverrideActive)
+            transform.position = debugPositionOverride;
         UpdateGodViewPlayerMarker();
         ApplyCameraRotation();
     }
@@ -660,20 +663,19 @@ public class KiloFirstPersonController : MonoBehaviour
     // Public method to be called by input managers (e.g., MobileInputManager)
     public void SignalCameraSwipe(float swipeMagnitude)
     {
+        if (nativePanelOpen)
+        {
+            Debug.Log("[Camera] Ignoring map camera swipe while native sky mode is open.");
+            return;
+        }
+
         if (Mathf.Abs(swipeMagnitude) > 0.1f) // Any significant swipe magnitude
         {
-            if (swipeMagnitude > 0 && !isGodViewActive) // Swipe Up
-            {
-                SetCameraMode(1);
-                currentCameraTransitionTime = 0f; // Reset transition time
-                Debug.Log($"[Camera] Starting transition to GOD VIEW - transitionTime: {profile?.camera.transitionTime ?? 0}s");
-            }
-            else if (swipeMagnitude < 0 && isGodViewActive) // Swipe Down
-            {
-                SetCameraMode(0);
-                currentCameraTransitionTime = 0f; // Reset transition time
-                Debug.Log($"[Camera] Starting transition to FIRST PERSON - transitionTime: {profile?.camera.transitionTime ?? 0}s");
-            }
+            // Direction is intentionally irrelevant: either vertical gesture
+            // toggles between closeup and God view.
+            SetCameraMode(isGodViewActive ? 0 : 1);
+            currentCameraTransitionTime = 0f;
+            Debug.Log($"[Camera] Vertical swipe toggled to {CameraModeName()}");
         }
     }
 
@@ -689,6 +691,63 @@ public class KiloFirstPersonController : MonoBehaviour
         SetCameraMode(isGodViewActive ? 0 : 1);
         currentCameraTransitionTime = 0f;
         Debug.Log($"[Camera] Toggled to {CameraModeName()}\n{UnityEngine.StackTraceUtility.ExtractStackTrace()}");
+    }
+
+    // Tethered render-inspection controls. These are deliberately explicit
+    // methods rather than input synthesis, so automated screenshot passes can
+    // frame the same content repeatably without interfering with normal touch.
+    public void SetDebugGodView(bool enabled)
+    {
+        SetNativePanelOpen(false);
+        SetCameraMode(enabled ? 1 : 0);
+        currentCameraTransitionTime = 1f;
+        ApplyCameraRotation();
+    }
+
+    public void SetDebugHeading(float degrees)
+    {
+        Vector3 euler = transform.eulerAngles;
+        transform.rotation = Quaternion.Euler(euler.x, Mathf.Repeat(degrees, 360f), euler.z);
+        currentCameraTransitionTime = 1f;
+        ApplyCameraRotation();
+    }
+
+    public bool DebugFrameNearestBeam(float standOffMeters = 24f)
+    {
+        BeamAvatar nearest = null;
+        float nearestSqr = float.MaxValue;
+        foreach (var beam in FindObjectsByType<BeamAvatar>(FindObjectsInactive.Exclude, FindObjectsSortMode.None))
+        {
+            if (beam == null || !beam.gameObject.activeInHierarchy) continue;
+            float sqr = (beam.transform.position - transform.position).sqrMagnitude;
+            if (sqr >= nearestSqr) continue;
+            nearestSqr = sqr;
+            nearest = beam;
+        }
+        if (nearest == null) return false;
+
+        Vector3 approach = transform.position - nearest.transform.position;
+        approach.y = 0f;
+        if (approach.sqrMagnitude < .001f) approach = -transform.forward;
+        approach.Normalize();
+        Vector3 target = nearest.transform.position + approach * Mathf.Clamp(standOffMeters, 6f, 80f);
+        target.y = transform.position.y;
+        transform.position = target;
+        debugPositionOverride = target;
+        debugPositionOverrideActive = true;
+        Vector3 face = nearest.transform.position - target;
+        face.y = 0f;
+        if (face.sqrMagnitude > .001f)
+            transform.rotation = Quaternion.LookRotation(face.normalized, Vector3.up);
+        SetDebugGodView(true);
+        Debug.Log($"[CameraDebug] Framed nearest beam '{nearest.name}' at {nearest.transform.position}, rig={transform.position}");
+        return true;
+    }
+
+    public void ClearDebugPositionOverride()
+    {
+        debugPositionOverrideActive = false;
+        Debug.Log("[CameraDebug] Released inspection position; live GPS/floating origin restored.");
     }
 
     public static void SetNativePanelOpen(bool open)
@@ -807,13 +866,15 @@ public class KiloFirstPersonController : MonoBehaviour
         {
             float skyHeight = Mathf.Clamp(profile.camera.godPositionY, 10f, 180f);
             float skyDistance = Mathf.Clamp(profile.camera.godPositionZ, 10f, 180f);
+            float currentPitch = Mathf.Clamp(profile.camera.godRotationX, -90f, 80f);
+            float skyPitch = Mathf.Clamp(currentPitch + nativeHudSkyPitchOffset, -89f, 80f);
             targetPos = new Vector3(
                 0f,
                 skyHeight,
                 -skyDistance
             );
             targetRot = Quaternion.Euler(
-                nativeHudSkyPitch,
+                skyPitch,
                 0f,
                 0f
             );
@@ -893,6 +954,15 @@ public class KiloFirstPersonController : MonoBehaviour
         playerVisualOriginalLocalScale = playerVisualRoot.localScale;
         playerVisualOriginalCached = true;
         Debug.Log($"[KiloFirstPersonController] God-view visual root: {playerVisualRoot.name}");
+    }
+
+    public Vector3 PlayerVisualWorldPosition
+    {
+        get
+        {
+            CachePlayerVisualRoot();
+            return playerVisualRoot != null ? playerVisualRoot.position : transform.position;
+        }
     }
 
     private void UpdateGodViewPlayerMarker()

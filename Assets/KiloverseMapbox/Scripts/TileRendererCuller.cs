@@ -11,8 +11,8 @@ namespace Kiloverse.Mapbox
     public class TileRendererCuller : MonoBehaviour
 {
     [Header("Culling Settings")]
-    [Tooltip("Enable frustum culling (disable renderers outside camera view)")]
-    public bool enableFrustumCulling = true;
+    [Tooltip("Legacy manual frustum toggle. Keep disabled; Unity already performs renderer frustum culling.")]
+    public bool enableFrustumCulling = false;
 
     [Tooltip("Enable distance culling (disable renderers beyond this distance)")]
     public bool enableDistanceCulling = true;
@@ -49,6 +49,10 @@ namespace Kiloverse.Mapbox
 
     private void Start()
     {
+        // Unity already omits out-of-frustum renderers from draw submission. Manually
+        // changing Renderer.enabled in small batches made geometry remain disabled
+        // briefly (or indefinitely after a list rebuild) when the camera rotated.
+        enableFrustumCulling = false;
         _camera = Camera.main;
         if (_camera == null)
         {

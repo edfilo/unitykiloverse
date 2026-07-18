@@ -1,0 +1,14 @@
+{
+    "name": "K1L0.VolumetricFogDemo.EditorOnly",
+    "rootNamespace": "",
+    "references": [],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": ["K1L0_INCLUDE_FOG_DEMOS"],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

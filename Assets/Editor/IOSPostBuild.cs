@@ -36,6 +36,23 @@ public class IOSPostBuild
         proj.ReadFromFile(projPath);
 
         string targetGuid = proj.GetUnityMainTargetGuid(); // Main app target
+        string frameworkGuid = proj.GetUnityFrameworkTargetGuid();
+
+        // Native Swift owns the live RTDB chain observer. Keep Firebase as an
+        // explicit Swift Package dependency so every Unity export preserves it.
+        string firebasePackage = proj.AddRemotePackageReferenceAtVersionUpToNextMajor(
+            "https://github.com/firebase/firebase-ios-sdk.git", "12.0.0");
+        proj.AddRemotePackageFrameworkToProject(frameworkGuid, "FirebaseCore", firebasePackage, false);
+        proj.AddRemotePackageFrameworkToProject(frameworkGuid, "FirebaseDatabase", firebasePackage, false);
+
+        string firebasePlistSource = "Assets/Plugins/iOS/GoogleService-Info.plist";
+        if (File.Exists(firebasePlistSource))
+        {
+            string firebasePlistName = "GoogleService-Info.plist";
+            File.Copy(firebasePlistSource, Path.Combine(path, firebasePlistName), true);
+            string firebasePlistGuid = proj.AddFile(firebasePlistName, firebasePlistName, PBXSourceTree.Source);
+            proj.AddFileToBuild(targetGuid, firebasePlistGuid);
+        }
 
         // MetalPluginPostBuild owns native Metal target membership. Keep this
         // postprocessor focused on plist/capability configuration.

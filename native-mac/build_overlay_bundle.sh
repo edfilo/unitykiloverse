@@ -1,10 +1,9 @@
 #!/bin/bash
-# Builds the shared K1L0 weather/HUD overlay (Assets/Plugins/iOS/K1L0WeatherOverlay.swift)
+# Builds the lightweight macOS SwiftUI host with the shared weather presets
 # into a universal macOS native plugin bundle: K1L0Overlay.bundle
 #
-# The SAME Swift source ships to iOS (compiled by Unity's Xcode export) and to the
-# macOS standalone player (compiled here). Platform divergence is handled inside the
-# file via #if canImport(UIKit)/AppKit and #if os(iOS).
+# The large iOS HUD remains in its native file; Mac features migrate into this
+# small host incrementally so routine builds never type-check the full HUD.
 #
 # Usage:
 #   native-mac/build_overlay_bundle.sh [OUTPUT_DIR]
@@ -14,6 +13,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/Assets/Plugins/iOS/K1L0WeatherOverlay.swift"
+MODE_SRC="$ROOT/Assets/Plugins/iOS/K1L0WeatherModeController.swift"
+SOLAR_SRC="$ROOT/Assets/Plugins/iOS/K1L0SolarEnvironmentSync.swift"
+SPLITTER="$ROOT/native-mac/split_overlay_for_mac.sh"
 OUT_DIR="${1:-$ROOT/native-mac}"
 BUNDLE="$OUT_DIR/K1L0Overlay.bundle"
 MACOS_DIR="$BUNDLE/Contents/MacOS"
@@ -32,6 +34,10 @@ mkdir -p "$MACOS_DIR"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+SPLIT_DIR="$TMP/Sources"
+"$SPLITTER" "$SRC" "$SPLIT_DIR" >/dev/null
+SWIFT_SOURCES=("$SPLIT_DIR"/*.swift "$MODE_SRC" "$SOLAR_SRC")
+echo "[build_overlay_bundle] split sources: ${#SWIFT_SOURCES[@]}"
 
 HOST_ARCH="$(uname -m)"
 echo "[build_overlay_bundle] Host architecture detected: $HOST_ARCH"
@@ -39,10 +45,11 @@ SLICES=""
 for ARCH in $HOST_ARCH; do
   echo "[build_overlay_bundle] compiling $ARCH..."
   if xcrun swiftc -Onone \
+      -Xfrontend -solver-expression-time-threshold=60 \
       -target "${ARCH}-apple-macos${DEPLOY_TARGET}" \
       -emit-library -module-name K1L0Overlay \
       -o "$TMP/K1L0Overlay-$ARCH" \
-      "$SRC" \
+      "${SWIFT_SOURCES[@]}" \
       -framework SwiftUI -framework AppKit -framework CoreLocation; then
     SLICES="$SLICES $TMP/K1L0Overlay-$ARCH"
   else

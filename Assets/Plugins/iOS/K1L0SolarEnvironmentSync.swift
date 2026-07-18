@@ -27,16 +27,38 @@ enum NativeUnitySolarSync {
         let azimuth = atan2(-sin(hourAngle), tan(declination) * cos(latitude) - sin(latitude) * cos(hourAngle))
         let defaults = UserDefaults.standard
         let bypass = defaults.bool(forKey: "k1lo_native_layeredBypassWeather")
+        let testOverride = defaults.bool(forKey: "k1lo_native_testSkyOverride")
+        let lookMode = defaults.string(forKey: "k1lo_native_weatherLookMode") ?? "pink_haze"
+        // Fixed lab presets opt into a manual preview explicitly. Day, Night,
+        // and Auto all retain the real sun position and live cloud cover.
+        let manualPreview = bypass || testOverride
+        let manualHour = defaults.object(forKey: "k1lo_native_manualHour") as? Double ?? 13.25
+        let manualAltitude = sin((manualHour - 6.0) / 24.0 * .pi * 2.0) * 62.0
+        let manualAzimuth = (manualHour / 24.0 * 360.0 + 90.0).truncatingRemainder(dividingBy: 360.0)
+        let effectiveAltitude = manualPreview ? manualAltitude : altitude * 180 / .pi
+        let effectiveAzimuth = manualPreview ? manualAzimuth : (azimuth * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+        // Auto blends the canonical Night and Day presets continuously. Night
+        // keeps its visual lock but still receives live celestial positioning.
+        if lookMode == "auto" {
+            defaults.set(false, forKey: "k1lo_native_visualNightOverride")
+            K1L0WeatherOverlayInstaller.setUnitySetting("visualNightOverride", "0")
+            K1L0WeatherModeController.applyAutoForSolarAltitude(effectiveAltitude)
+        } else if lookMode == "midnight" {
+            defaults.set(true, forKey: "k1lo_native_visualNightOverride")
+            K1L0WeatherOverlayInstaller.setUnitySetting("visualNightOverride", "1")
+        }
         let liveCloudCover = defaults.object(forKey: "k1lo_native_liveCloudCover") as? Double ?? 35
         let liveCloudOpacity = min(0.88, max(0.08, liveCloudCover / 100.0))
+        let liveCloudCoverage = min(1.0, max(0.0, liveCloudCover / 100.0))
         defaults.set(altitude * 180 / .pi, forKey: "k1lo_native_liveSolarAltitude")
         defaults.set((azimuth * 180 / .pi + 360).truncatingRemainder(dividingBy: 360), forKey: "k1lo_native_liveSolarAzimuth")
         K1L0ApplyEnvironmentSnapshot([
-            "solarAltitude": altitude * 180 / .pi,
-            "solarAzimuth": (azimuth * 180 / .pi + 360).truncatingRemainder(dividingBy: 360),
-            "bypassWeather": bypass,
+            "solarAltitude": effectiveAltitude,
+            "solarAzimuth": effectiveAzimuth,
+            "bypassWeather": manualPreview,
             "effect": defaults.integer(forKey: "k1lo_native_layeredSkyEffect"),
-            "cloudOpacity": bypass ? (defaults.object(forKey: "k1lo_native_layeredCloudOpacity") as? Double ?? 0.35) : liveCloudOpacity,
+            "cloudOpacity": manualPreview ? (defaults.object(forKey: "k1lo_native_layeredCloudOpacity") as? Double ?? 0.35) : liveCloudOpacity,
+            "cloudCoverage": manualPreview ? (defaults.object(forKey: "k1lo_native_layeredCloudCoverage") as? Double ?? 0.35) : liveCloudCoverage,
             "cloudSpeed": defaults.object(forKey: "k1lo_native_layeredCloudSpeed") as? Double ?? 0.08,
             "cloudScale": defaults.object(forKey: "k1lo_native_layeredCloudScale") as? Double ?? 2.2,
             "cloudContrast": defaults.object(forKey: "k1lo_native_layeredCloudContrast") as? Double ?? 1.5,

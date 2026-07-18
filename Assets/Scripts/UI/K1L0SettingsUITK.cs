@@ -353,10 +353,6 @@ public class K1L0SettingsUITK : MonoBehaviour
             Toggle(effects, "ENABLED", "chromaticEnabled", pfx.chromaticAberrationEnabled, v => pfx.chromaticAberrationEnabled = v);
             Sliders(effects, "INTENSITY", "chromaticIntensity", 0, 1, pfx.chromaticAberrationIntensity, v => pfx.chromaticAberrationIntensity = v);
 
-            Header(effects, "LENS DISTORTION");
-            Toggle(effects, "ENABLED", "lensDistEnabled", pfx.lensDistortionEnabled, v => pfx.lensDistortionEnabled = v);
-            Sliders(effects, "INTENSITY", "lensDistIntensity", -1, 1, pfx.lensDistortionIntensity, v => pfx.lensDistortionIntensity = v);
-
             Header(effects, "DEPTH OF FIELD");
             Toggle(effects, "ENABLED", "dofEnabled", pfx.depthOfFieldEnabled, v => pfx.depthOfFieldEnabled = v);
             Sliders(effects, "FOCUS DIST", "focusDistance", 0.1f, 300, pfx.focusDistance, v => pfx.focusDistance = v);

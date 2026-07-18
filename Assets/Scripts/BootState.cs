@@ -10,10 +10,45 @@ public static class BootState
 
     /// <summary> Set when at least one map tile has been loaded (so boot can complete after tiles on screen). </summary>
     public static bool FirstTilesLoaded { get; private set; }
+    private static int _completedBuildingTiles;
+    private static int _completedRoadTiles;
+    private static float _lastInitialLayerCompletionTime = -1f;
+    private static float _firstTilesLoadedTime = -1f;
+
+    public static int CompletedBuildingTiles => _completedBuildingTiles;
+    public static int CompletedRoadTiles => _completedRoadTiles;
+    public static bool InitialMapLayersSettled
+    {
+        get
+        {
+            bool trackedLayersSettled = _completedBuildingTiles > 0 && _completedRoadTiles > 0 &&
+                _lastInitialLayerCompletionTime >= 0f &&
+                Time.realtimeSinceStartup - _lastInitialLayerCompletionTime >= 1.5f;
+            // Some native map paths visibly finish but do not invoke the legacy
+            // per-layer completion hook. Do not leave the marquee loading forever.
+            bool visibleMapFallback = FirstTilesLoaded && _firstTilesLoadedTime >= 0f &&
+                Time.realtimeSinceStartup - _firstTilesLoadedTime >= 8f;
+            return trackedLayersSettled || visibleMapFallback;
+        }
+    }
+    public static bool InitialRenderReady => InitialMapLayersSettled && SignalBeamBridge.InitialPopulationReady;
+
+    public static void MarkTileRenderComplete(string layerName)
+    {
+        if (string.IsNullOrEmpty(layerName)) return;
+        if (layerName.IndexOf("building", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            _completedBuildingTiles++;
+        else if (layerName.IndexOf("road", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            _completedRoadTiles++;
+        else
+            return;
+        _lastInitialLayerCompletionTime = Time.realtimeSinceStartup;
+    }
     public static void SetFirstTilesLoaded()
     {
         if (FirstTilesLoaded) return;
         FirstTilesLoaded = true;
+        _firstTilesLoadedTime = Time.realtimeSinceStartup;
         BootDiagnostics.Mark("BootState FirstTilesLoaded");
     }
 

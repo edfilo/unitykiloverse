@@ -1,267 +1,147 @@
 #!/bin/bash
-# K1L0 full iOS build pipeline: Unity → Xcode → Install → Launch
-# Usage:
-#   kbuild run --tag "K1L0 iOS" build-k1l0-device.sh          # Device build
-#   kbuild run --tag "K1L0 OTA" build-k1l0-device.sh --ota    # OTA build
-#   K1L0_USE_UNITY=1 build-k1l0-device.sh --ota               # Legacy Unity build
-set -e
+# K1L0 iOS build lanes:
+#   --swift-only (default): sync changed Swift files, skip Unity/IL2CPP
+#   --unity: run CommandLineBuild.BuildiOS, then Xcode
+#   --ota: archive and publish instead of device install
+# Live render-tuning changes require no build.
+set -euo pipefail
 
-MODE="device"
-if [[ "$1" == "--ota" ]]; then MODE="ota"; fi
-
-UNITY="/Applications/Unity/Hub/Editor/6000.3.12f1/Unity.app/Contents/MacOS/Unity"
 PROJECT="/Users/kiloverse/unitykiloverse"
-IOS_BUILD="/Users/kiloverse/unitykiloverse/Builds/iOS"
-BUNDLE_ID="com.filowatt.K1L0"
+IOS_BUILD="$PROJECT/Builds/iOS"
+UNITY="/Applications/Unity/Hub/Editor/6000.3.12f1/Unity.app/Contents/MacOS/Unity"
 TEAM_ID="7R2746UPX7"
-APP_NAME="K1L0"
-LOG="/tmp/k1l0_unity_build.log"
-OTA_DIR="/tmp/tedfred_ota"
-OTA_URL="https://tunnel.kilo.gallery/ota/latest"
-USE_UNITY="${K1L0_USE_UNITY:-0}"
-NATIVE_BUILD_SCRIPT="$PROJECT/native-ios/build_native_ota.sh"
-NATIVE_APP="/tmp/k1l0_native_build/K1L0.app"
+BUNDLE_ID="com.filowatt.K1L0"
+PREFERRED_DEVICE="00008140-000A292A0CE0801C"
+MODE="device"
+LANE="swift"
 
-detect_device() {
-    # xcodebuild uses ECID, devicectl uses CoreDevice UUID
-    local XCODE_ID=$(xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" -scheme Unity-iPhone -showdestinations 2>/dev/null | grep "platform:iOS, arch" | head -1 | sed 's/.*id:\([^,]*\).*/\1/')
-    local DEVCTL_ID=$(xcrun devicectl list devices 2>/dev/null | grep -i "iphone" | grep -E "connected|available" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[A-F0-9]{8}-/) print $i}')
-    if [ -n "$XCODE_ID" ] && [ -n "$DEVCTL_ID" ]; then
-        echo "${XCODE_ID}|${DEVCTL_ID}"
-    fi
+for arg in "$@"; do
+  case "$arg" in
+    --swift-only|--xcode-only) LANE="swift" ;;
+    --unity) LANE="unity" ;;
+    --ota) MODE="ota" ;;
+    *) echo "Unknown option: $arg"; exit 2 ;;
+  esac
+done
+
+check_build_lane() {
+  local active bridge_active
+  active=$(
+    for name in Unity xcodebuild il2cpp; do pgrep -x "$name" 2>/dev/null || true; done
+  )
+  if [ -n "$active" ]; then
+    echo "K1L0/Unity build lane already active; refusing a second build:"
+    echo "$active"
+    exit 3
+  fi
+  bridge_active=$(curl -s --max-time 2 http://localhost:5055/v2/build-jobs 2>/dev/null \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(f"{j.get(chr(105)+chr(100))} {j.get(chr(112)+chr(114)+chr(111)+chr(102)+chr(105)+chr(108)+chr(101)+chr(95)+chr(110)+chr(97)+chr(109)+chr(101))} {j.get(chr(115)+chr(116)+chr(97)+chr(116)+chr(117)+chr(115))}" for j in d.get("jobs",[]) if j.get("status") in ("queued","running","building")))' 2>/dev/null || true)
+  if [ -n "$bridge_active" ]; then
+    echo "TedFred build lane already active; refusing a second build:"
+    echo "$bridge_active"
+    exit 3
+  fi
 }
 
-# ===================================================================
-echo "╔══════════════════════════════════════════╗"
-echo "║  K1L0 iOS Build — $MODE mode"
-echo "╚══════════════════════════════════════════╝"
-echo ""
-PIPELINE_START=$(date +%s)
-
-if [[ "$USE_UNITY" != "1" ]]; then
-  echo "▸ Native Swift mode: Unity compile/export is intentionally skipped"
-  echo "  Unity build path is still intact; run with K1L0_USE_UNITY=1 to restore it."
-  "$NATIVE_BUILD_SCRIPT"
-
-  if [[ "$MODE" == "device" ]]; then
-    DEVCTL_ID="00008140-000A292A0CE0801C"
-    if ! xcrun devicectl list devices 2>/dev/null | grep -q "$DEVCTL_ID"; then
-      DEVCTL_ID=$(xcrun devicectl list devices 2>/dev/null | grep -i "iphone" | grep -vi "unavailable" | awk '{for(i=1;i<=NF;i++) if($i ~ /^[A-F0-9]{8}-/) print $i}' | head -1)
+sync_swift() {
+  local src dst changed=0
+  mkdir -p "$IOS_BUILD/Libraries/Plugins/iOS"
+  while IFS= read -r src; do
+    dst="$IOS_BUILD/Libraries/Plugins/iOS/$(basename "$src")"
+    if [ ! -f "$dst" ] || ! cmp -s "$src" "$dst"; then
+      cp -p "$src" "$dst"
+      echo "Copied changed Swift: $(basename "$src")"
+      changed=$((changed + 1))
     fi
-    if [ -z "$DEVCTL_ID" ]; then
-      echo "  ✗ No connected iPhone found for native install"
-      exit 1
-    fi
-    echo "▸ Installing native Swift app on $DEVCTL_ID"
-    xcrun devicectl device install app --device "$DEVCTL_ID" "$NATIVE_APP"
-    xcrun devicectl device process launch --device "$DEVCTL_ID" "$BUNDLE_ID"
+  done < <(find "$PROJECT/Assets/Plugins/iOS" -maxdepth 1 -type f -name '*.swift' | sort)
+  if [ "$changed" -eq 0 ]; then
+    echo "Swift overlay already synchronized; preserving timestamps."
   fi
+}
 
-  TOTAL=$(($(date +%s) - PIPELINE_START))
-  TOTAL_STR="${TOTAL}s"
-  if [ $TOTAL -ge 60 ]; then TOTAL_STR="$((TOTAL/60))m $((TOTAL%60))s"; fi
-  echo ""
-  echo "╔══════════════════════════════════════════╗"
-  echo "║  ✓ K1L0 native $MODE BUILD COMPLETE: $TOTAL_STR"
-  echo "╚══════════════════════════════════════════╝"
-  echo "BUILD SUCCEEDED"
-  exit 0
-fi
-
-# --- Step 1: Unity ---
-echo "▸ Step 1/3: Unity IL2CPP"
-echo "  Killing stale Unity processes..."
-pkill -9 -f "Unity.*MacOS/Unity" 2>/dev/null || true
-pkill -9 -f "Unity.ILPP|bee_backend|Unity.Licensing|UnityPackageManager|VBCSCompiler" 2>/dev/null || true
-sleep 1
-rm -rf "$PROJECT/Temp" 2>/dev/null || true
-rm -f "$LOG"
-
-STEP_START=$(date +%s)
-"$UNITY" -batchmode -quit -nographics \
-  -projectPath "$PROJECT" \
-  -executeMethod CommandLineBuild.BuildiOS \
-  -logFile "$LOG" 2>&1 &
-UNITY_PID=$!
-
-# Tail Unity log for live progress
-LAST_LINE=""
-while kill -0 $UNITY_PID 2>/dev/null; do
-  if [ -f "$LOG" ]; then
-    LINE=$(tail -1 "$LOG" 2>/dev/null | head -c 120)
-    if [ "$LINE" != "$LAST_LINE" ]; then
-      case "$LINE" in
-        *IL2CPP*|*Compiling*|*"Build target"*|*Shader*|*"error CS"*|*"Build Finished"*|*BUSY*)
-          echo "  $LINE"
-          LAST_LINE="$LINE"
-          ;;
-      esac
-    fi
+patch_xcode_export() {
+  printf '#!/bin/sh\nexit 0\n' > "$IOS_BUILD/process_symbols.sh"
+  chmod +x "$IOS_BUILD/process_symbols.sh"
+  sed -i '' 's/CYE232ULMR/7R2746UPX7/g' "$IOS_BUILD/Unity-iPhone.xcodeproj/project.pbxproj"
+  sed -i '' '/PROVISIONING_PROFILE_APP *= *"[0-9A-Fa-f-]*";/d' "$IOS_BUILD/Unity-iPhone.xcodeproj/project.pbxproj" || true
+  if [ -f "$IOS_BUILD/Unity-iPhone.entitlements" ]; then
+    /usr/libexec/PlistBuddy -c 'Delete :com.apple.developer.location.push' "$IOS_BUILD/Unity-iPhone.entitlements" 2>/dev/null || true
   fi
-  sleep 5
-done
-wait $UNITY_PID || true
+}
 
-if grep -q "Build Finished, Result: Success" "$LOG" 2>/dev/null; then
-  echo "  ✓ Unity: $(($(date +%s) - STEP_START))s"
+device_id() {
+  if xcrun devicectl list devices 2>/dev/null | grep "$PREFERRED_DEVICE" | grep -vi unavailable >/dev/null; then
+    echo "$PREFERRED_DEVICE"
+    return
+  fi
+  xcrun devicectl list devices 2>/dev/null | grep -i iphone | grep -vi unavailable \
+    | awk '{for(i=1;i<=NF;i++) if($i ~ /^[A-F0-9]{8}-/ || $i ~ /^[0-9A-Fa-f-]{25,}$/) {print $i; exit}}'
+}
+
+check_build_lane
+echo "K1L0 lane=$LANE mode=$MODE"
+
+if [ "$LANE" = "unity" ]; then
+  echo "Running Unity export; preserving Library, Temp, Builds/iOS, and DerivedData caches."
+  "$UNITY" -batchmode -quit -nographics -projectPath "$PROJECT" \
+    -executeMethod CommandLineBuild.BuildiOS -logFile /tmp/k1l0-unity-export.log
+  grep -q 'Build Finished, Result: Success' /tmp/k1l0-unity-export.log
 else
-  echo "  ✗ Unity FAILED after $(($(date +%s) - STEP_START))s"
-  echo ""
-  echo "  Errors:"
-  grep "error CS" "$LOG" 2>/dev/null | head -10 | sed 's/^/    /'
-  exit 1
+  echo "Skipping Unity and IL2CPP for Swift-only lane."
+  sync_swift
 fi
 
-# --- Step 2: Xcode ---
-echo ""
-echo "▸ Step 2/3: Xcode compile"
+patch_xcode_export
 
-# Patch project
-printf '#!/bin/sh\nexit 0\n' > "$IOS_BUILD/process_symbols.sh"
-chmod +x "$IOS_BUILD/process_symbols.sh"
-sed -i "" "s/CYE232ULMR/$TEAM_ID/g" "$IOS_BUILD/Unity-iPhone.xcodeproj/project.pbxproj"
-
-# Drop any hardcoded provisioning-profile UUID baked into the project by Unity.
-# The generated pbxproj pins PROVISIONING_PROFILE_APP to an old profile created
-# for the legacy lowercase bundle id (com.filowatt.k1lo); with CODE_SIGN_STYLE
-# already Automatic that stale reference trips a "conflicting provisioning
-# settings" error. Removing it lets Xcode auto-resolve the correct caps profile
-# (com.filowatt.K1L0).
-sed -i "" '/PROVISIONING_PROFILE_APP *= *"[0-9A-Fa-f-]*";/d' "$IOS_BUILD/Unity-iPhone.xcodeproj/project.pbxproj" 2>/dev/null || true
-
-# Strip Location Push entitlement but keep Sign in with Apple
-if [ -f "$IOS_BUILD/Unity-iPhone.entitlements" ]; then
-  cat > "$IOS_BUILD/Unity-iPhone.entitlements" << 'ENTITLEMENTS'
-<?xml version="1.0" encoding="utf-8"?>
-<plist version="1.0">
-  <dict>
-    <key>com.apple.developer.applesignin</key>
-    <array>
-      <string>Default</string>
-    </array>
-  </dict>
-</plist>
-ENTITLEMENTS
-  echo "  Kept Sign in with Apple entitlement, stripped Location Push"
+DEVICE=""
+if [ "$MODE" = "device" ]; then
+  DEVICE=$(device_id)
+  if [ -z "$DEVICE" ]; then
+    echo "No physical iPhone available; automatically pivoting to OTA."
+    MODE="ota"
+  fi
 fi
 
-STEP_START=$(date +%s)
-
-if [[ "$MODE" == "ota" ]]; then
-    # OTA: Archive + manual IPA packaging
-    echo "  Archiving for OTA..."
-    ARCHIVE="/tmp/ota_archive/$APP_NAME.xcarchive"
-    rm -rf "$ARCHIVE" 2>/dev/null
-    mkdir -p /tmp/ota_archive
-
-    xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" \
-      -scheme Unity-iPhone -configuration Release \
-      -archivePath "$ARCHIVE" \
-      -allowProvisioningUpdates \
-      CODE_SIGN_STYLE=Automatic \
-      PROVISIONING_PROFILE_SPECIFIER="" \
-      PROVISIONING_PROFILE="" \
-      DEVELOPMENT_TEAM=$TEAM_ID \
-      CODE_SIGN_IDENTITY="Apple Development" \
-      archive 2>&1 | tee /tmp/k1l0_xcode_archive.log | tail -5
-
-    if [ ! -d "$ARCHIVE" ]; then
-      echo "  ✗ Archive FAILED after $(($(date +%s) - STEP_START))s"
-      exit 1
-    fi
-    echo "  ✓ Archive: $(($(date +%s) - STEP_START))s"
-
-    # Package IPA manually (no exportArchive — no distribution cert)
-    echo "  Packaging IPA..."
-    rm -rf /tmp/ota_payload "$OTA_DIR/export" 2>/dev/null
-    mkdir -p /tmp/ota_payload/Payload "$OTA_DIR/export"
-    cp -R "$ARCHIVE/Products/Applications/$APP_NAME.app" /tmp/ota_payload/Payload/
-    cd /tmp/ota_payload && zip -qr "$OTA_DIR/export/$APP_NAME.ipa" Payload/
-
-    # Generate manifest
-    cat > "$OTA_DIR/manifest_1.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict><key>items</key><array><dict>
-  <key>assets</key><array><dict>
-    <key>kind</key><string>software-package</string>
-    <key>url</key><string>$OTA_URL/export/$APP_NAME.ipa</string>
-  </dict></array>
-  <key>metadata</key><dict>
-    <key>bundle-identifier</key><string>$BUNDLE_ID</string>
-    <key>bundle-version</key><string>1.0</string>
-    <key>kind</key><string>software</string>
-    <key>title</key><string>$APP_NAME</string>
-  </dict>
-</dict></array></dict></plist>
-PLIST
-
-    INSTALL_LINK="itms-services://?action=download-manifest&url=https%3A%2F%2Ftunnel.kilo.gallery%2Fota%2Flatest%2Fmanifest_1.plist"
-    echo ""
-    echo "  ╔═══════════════════════════════════╗"
-    echo "  ║  OTA Install Link:                ║"
-    echo "  ║  $INSTALL_LINK"
-    echo "  ╚═══════════════════════════════════╝"
-    echo "$INSTALL_LINK" | pbcopy 2>/dev/null || true
-    echo "  (copied to clipboard)"
-
+if [ "$MODE" = "device" ]; then
+  XCODE_LOG="/tmp/k1l0-incremental-device-build.log"
+  xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" -scheme Unity-iPhone \
+    -configuration Debug -destination "id=$DEVICE" -allowProvisioningUpdates \
+    DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic build > "$XCODE_LOG" 2>&1
+  APP=$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug-iphoneos/K1L0.app' -print0 \
+    | xargs -0 ls -td 2>/dev/null | head -1)
+  test -n "$APP"
+  xcrun devicectl device install app --device "$DEVICE" "$APP"
+  xcrun devicectl device process launch --device "$DEVICE" "$BUNDLE_ID"
+  echo "BUILD SUCCEEDED; installed and launched on $DEVICE"
+  echo "Log: $XCODE_LOG"
 else
-    # Device: Build directly to device
-    DEVICE_IDS=$(detect_device)
-    XCODE_LOG="/tmp/k1l0_xcode_build.log"
-
-    # Build with -sdk iphoneos + explicit signing (avoids destination resolver requiring simulator runtime)
-    echo "  Building with -sdk iphoneos..."
-    xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" \
-      -scheme Unity-iPhone -configuration Debug \
-      -sdk iphoneos -arch arm64 \
-      -allowProvisioningUpdates \
-      ONLY_ACTIVE_ARCH=YES \
-      CODE_SIGN_STYLE=Automatic \
-      PROVISIONING_PROFILE_SPECIFIER="" \
-      PROVISIONING_PROFILE="" \
-      DEVELOPMENT_TEAM=$TEAM_ID \
-      CODE_SIGN_IDENTITY="Apple Development" \
-      build > "$XCODE_LOG" 2>&1 || true
-
-    if [ -z "$DEVICE_IDS" ]; then
-      echo "  No iOS device detected — opening Xcode"
-      echo "  ✓ Xcode: $(($(date +%s) - STEP_START))s (no device)"
-      open "$IOS_BUILD/Unity-iPhone.xcodeproj"
-    else
-      XCODE_ID=$(echo "$DEVICE_IDS" | cut -d'|' -f1)
-      DEVCTL_ID=$(echo "$DEVICE_IDS" | cut -d'|' -f2)
-      echo "  Device: $XCODE_ID (xcode) / $DEVCTL_ID (devicectl)"
-
-      if grep -q "BUILD SUCCEEDED" "$XCODE_LOG"; then
-        echo "  ✓ Xcode: $(($(date +%s) - STEP_START))s"
-      else
-        echo "  ✗ Xcode FAILED after $(($(date +%s) - STEP_START))s"
-        grep -E "error:" "$XCODE_LOG" | head -5 | sed 's/^/    /'
-        exit 1
-      fi
-
-      # --- Step 3: Install + Launch ---
-      echo ""
-      echo "▸ Step 3/3: Install + Launch"
-
-      APP=$(find ~/Library/Developer/Xcode/DerivedData -path "*/Debug-iphoneos/$APP_NAME.app" -maxdepth 5 2>/dev/null | head -1)
-      if [ -z "$APP" ]; then
-        echo "  ✗ $APP_NAME.app not found in DerivedData"
-        exit 1
-      fi
-
-      xcrun devicectl device install app --device "$DEVCTL_ID" "$APP" 2>&1 | grep -E "installed|error|App installed" || true
-      xcrun devicectl device process launch --device "$DEVCTL_ID" "$BUNDLE_ID" 2>&1 | grep -E "Launched|error" || true
-      echo "  ✓ Installed and launched"
-    fi
+  ARCHIVE="/tmp/k1l0_archive/K1L0.xcarchive"
+  OTA="/tmp/tedfred_ota/k1l0/latest"
+  BUILD_NUMBER="$(date +%Y%m%d%H%M)"
+  mkdir -p /tmp/k1l0_archive "$OTA"
+  XCODE_LOG="/tmp/k1l0-incremental-archive.log"
+  xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" -scheme Unity-iPhone \
+    -configuration Release -archivePath "$ARCHIVE" -allowProvisioningUpdates \
+    DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic \
+    CURRENT_PROJECT_VERSION="$BUILD_NUMBER" archive > "$XCODE_LOG" 2>&1
+  rm -rf /tmp/k1l0_payload
+  mkdir -p /tmp/k1l0_payload/Payload
+  cp -R "$ARCHIVE/Products/Applications/K1L0.app" /tmp/k1l0_payload/Payload/
+  (cd /tmp/k1l0_payload && zip -qr "$OTA/app.ipa" Payload)
+  /usr/libexec/PlistBuddy -c 'Clear dict' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items array' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items:0 dict' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items:0:assets array' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items:0:assets:0 dict' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items:0:assets:0:kind string software-package' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items:0:assets:0:url string https://tunnel.kilo.gallery/ota/k1l0/latest/app.ipa' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items:0:metadata dict' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items:0:metadata:bundle-identifier string com.filowatt.K1L0' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c "Add :items:0:metadata:bundle-version string $BUILD_NUMBER" "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items:0:metadata:kind string software' "$OTA/manifest.plist"
+  /usr/libexec/PlistBuddy -c 'Add :items:0:metadata:title string K1L0' "$OTA/manifest.plist"
+  curl -fsS -X GET https://tunnel.kilo.gallery/ota/k1l0/latest/manifest.plist >/dev/null
+  test -s "$OTA/app.ipa"
+  echo 'Install link: https://tunnel.kilo.gallery/ota/k1l0/latest/'
+  echo "ARCHIVE SUCCEEDED; log: $XCODE_LOG"
 fi
-
-TOTAL=$(($(date +%s) - PIPELINE_START))
-TOTAL_STR="${TOTAL}s"
-if [ $TOTAL -ge 60 ]; then TOTAL_STR="$((TOTAL/60))m $((TOTAL%60))s"; fi
-echo ""
-echo "╔══════════════════════════════════════════╗"
-echo "║  ✓ K1L0 $MODE BUILD COMPLETE: $TOTAL_STR"
-echo "╚══════════════════════════════════════════╝"
-echo "BUILD SUCCEEDED"

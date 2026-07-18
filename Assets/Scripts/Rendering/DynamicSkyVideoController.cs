@@ -8,7 +8,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     [Serializable]
     public sealed class EnvironmentSnapshot
     {
-        public float solarAltitude, solarAzimuth, cloudOpacity, cloudSpeed,
+        public float solarAltitude, solarAzimuth, cloudOpacity, cloudCoverage, cloudSpeed,
             cloudScale, cloudContrast, topHue, midHue, horizonHue,
             nightBlackness, rain, aurora;
         public int effect;
@@ -19,11 +19,20 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     {
         var state = JsonUtility.FromJson<EnvironmentSnapshot>(json);
         if (state == null) return;
+        // A manual/test look explicitly owns the renderer until the user turns
+        // it off. The native astronomy timer reports every minute; accepting
+        // that snapshot here used to snap sunrise previews back to the real
+        // night sky in the middle of a tuning pass.
+        bool manualPreview = RenderManager.TestSkyOverrideEnabled
+            || PlayerPrefs.GetInt("k1lo_testSkyOverride", 0) == 1
+            || PlayerPrefs.GetFloat("k1lo_layeredBypassWeather", 0f) > .5f;
+        if (manualPreview && !state.bypassWeather) return;
         PlayerPrefs.SetFloat("k1lo_nativeSunAltitude", state.solarAltitude);
         PlayerPrefs.SetFloat("k1lo_nativeSunAzimuth", state.solarAzimuth);
         PlayerPrefs.SetFloat("k1lo_layeredBypassWeather", state.bypassWeather ? 1 : 0);
         PlayerPrefs.SetFloat("k1lo_layeredSkyEffect", state.effect);
         PlayerPrefs.SetFloat("k1lo_layeredCloudOpacity", state.cloudOpacity);
+        PlayerPrefs.SetFloat("k1lo_layeredCloudCoverage", state.cloudCoverage);
         PlayerPrefs.SetFloat("k1lo_layeredCloudSpeed", state.cloudSpeed);
         PlayerPrefs.SetFloat("k1lo_layeredCloudScale", state.cloudScale);
         PlayerPrefs.SetFloat("k1lo_layeredCloudContrast", state.cloudContrast);
@@ -50,10 +59,27 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     public static float SkyTargetFps { get; private set; } = 30f;
     public static bool ExperimentalLayeredSky { get; private set; }
     private static bool nativePanelOpen;
+    private static float skyModeEntryYaw;
+    // Set true while the Swift settings panel is showing. Gates the live
+    // solar palette so slider values (topHue/midHue/horizonHue/etc.) actually
+    // affect the sky while the user is tuning — without needing bypass mode.
+    private static bool settingsPanelOpen;
 
     public static void SetNativePanelOpen(bool open)
     {
+        if (open && !nativePanelOpen && Camera.main != null)
+            skyModeEntryYaw = Camera.main.transform.eulerAngles.y;
         nativePanelOpen = open;
+        if (!open && Instance?.layeredSkyMaterial != null)
+            Instance.layeredSkyMaterial.SetFloat("_SkyYawOffset", 0f);
+    }
+
+    public static void SetSettingsPanelOpen(bool open)
+    {
+        settingsPanelOpen = open;
+        // Opening Settings must not itself change the rendered look. Individual
+        // slider messages still apply their preview values while the live palette
+        // is frozen, and closing the panel resumes the live solar palette.
     }
 
     public static void SetSkyFps(float fps)
@@ -352,6 +378,10 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         Camera cam = Camera.main;
         if (cam != null)
         {
+            float yawDelta = nativePanelOpen
+                ? Mathf.DeltaAngle(skyModeEntryYaw, cam.transform.eulerAngles.y)
+                : 0f;
+            layeredSkyMaterial.SetFloat("_SkyYawOffset", -yawDelta * Mathf.Deg2Rad);
             if (cam.clearFlags != CameraClearFlags.SolidColor)
                 cam.clearFlags = CameraClearFlags.SolidColor;
             cam.backgroundColor = Color.black;
@@ -367,6 +397,16 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             ? lighting.ambientIntensity
             : 0f;
         Color ambientColor = lighting != null ? lighting.ambientFlatColor : new Color(0.2f, 0.2f, 0.2f);
+        // The video/layered sky has no skybox GI source. Never let automatic
+        // astronomical night collapse to a black world just because the saved
+        // ambient toggle is off: add a cool moonlit floor that fades away by day.
+        bool solarWorldOverride = PlayerPrefs.GetInt("k1lo_solarWorldOverride", 0) == 1;
+        if (!solarWorldOverride)
+        {
+            float nightness = 1f - Mathf.Clamp01((RenderManager.LiveSunAltitudeDeg + 4f) / 14f);
+            ambientIntensity = Mathf.Max(ambientIntensity, Mathf.Lerp(0f, .72f, nightness));
+            ambientColor = Color.Lerp(ambientColor, new Color(.28f, .38f, .58f), nightness * .72f);
+        }
         if (RenderSettings.ambientMode != UnityEngine.Rendering.AmbientMode.Flat)
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
         RenderSettings.ambientIntensity = ambientIntensity;
@@ -428,14 +468,19 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     private void ApplyExperimentalParameters()
     {
         if (layeredSkyMaterial == null) return;
-        float topHue = PlayerPrefs.GetFloat("k1lo_layeredSkyTopHue", 0.62f);
-        float midHue = PlayerPrefs.GetFloat("k1lo_layeredSkyMidHue", 0.76f);
-        float horizonHue = PlayerPrefs.GetFloat("k1lo_layeredSkyHorizonHue", 0.94f);
+        float topHue = PlayerPrefs.GetFloat("k1lo_layeredSkyTopHue", 0.80f);
+        float midHue = PlayerPrefs.GetFloat("k1lo_layeredSkyMidHue", 0.62f);
+        float horizonHue = PlayerPrefs.GetFloat("k1lo_layeredSkyHorizonHue", 0.73f);
         layeredSkyMaterial.SetColor("_TopColor", Color.HSVToRGB(Mathf.Repeat(topHue, 1f), .82f, .78f));
         layeredSkyMaterial.SetColor("_MidColor", Color.HSVToRGB(Mathf.Repeat(midHue, 1f), .72f, .82f));
         layeredSkyMaterial.SetColor("_HorizonColor", Color.HSVToRGB(Mathf.Repeat(horizonHue, 1f), .62f, .92f));
+        float cloudVapor = PlayerPrefs.GetFloat("k1lo_vaporDayPink", 0.65f);
         layeredSkyMaterial.SetColor("_CloudColor", new Color(.96f,.93f,.90f,1f));
+        // Cloud undersides blush pink with the vapor amount; tops stay white.
+        layeredSkyMaterial.SetColor("_CloudShadeColor",
+            Color.Lerp(new Color(.78f,.76f,.78f,1f), new Color(.96f,.62f,.74f,1f), cloudVapor));
         layeredSkyMaterial.SetFloat("_CloudOpacity", PlayerPrefs.GetFloat("k1lo_layeredCloudOpacity", .72f));
+        layeredSkyMaterial.SetFloat("_CloudCoverage", PlayerPrefs.GetFloat("k1lo_layeredCloudCoverage", .35f));
         layeredSkyMaterial.SetFloat("_CloudSpeed", PlayerPrefs.GetFloat("k1lo_layeredCloudSpeed", .07f));
         layeredSkyMaterial.SetFloat("_CloudScale", PlayerPrefs.GetFloat("k1lo_layeredCloudScale", 1.35f));
         layeredSkyMaterial.SetFloat("_CloudContrast", PlayerPrefs.GetFloat("k1lo_layeredCloudContrast", 1.1f));
@@ -449,6 +494,8 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetFloat("_AuroraStrength", effect == 3 ? .28f + aurora * .72f : .22f);
         layeredSkyMaterial.SetFloat("_StormStrength", effect == 4 ? 1f : 0f);
         layeredSkyMaterial.SetFloat("_NightBlackness", PlayerPrefs.GetFloat("k1lo_layeredNightBlackness", .72f));
+        ApplyNightHorizonGlow();
+        layeredSkyMaterial.SetFloat("_HorizonHeight", 0f); // hardcoded — horizon band always flush
         SkyWeatherVolume.SetEffect(effect, rain);
     }
 
@@ -466,22 +513,26 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             altitude = Mathf.Sin((hour - 6f) / 24f * Mathf.PI * 2f) * 62f;
             sunAz = Mathf.Repeat(hour / 24f * 360f + 90f, 360f);
         }
-        else if (PlayerPrefs.HasKey("k1lo_nativeSunAltitude") && PlayerPrefs.HasKey("k1lo_nativeSunAzimuth"))
-        {
-            altitude = PlayerPrefs.GetFloat("k1lo_nativeSunAltitude");
-            sunAz = PlayerPrefs.GetFloat("k1lo_nativeSunAzimuth");
-        }
         else if (sun.sqrMagnitude < .5f)
         {
             // Safe startup state until either astronomy or live isDay arrives.
             altitude = 12f;
             sunAz = 180f;
         }
-        if (!bypass) ApplyLiveSolarPalette(altitude);
+        bool visualNightOverride = PlayerPrefs.GetInt("k1lo_visualNightOverride", 0) == 1;
+        float visualAltitude = visualNightOverride ? -18f : altitude;
+        layeredSkyMaterial.SetFloat("_HorizonHeight", 0f); // hardcoded — horizon band always flush
+        // Settings visibility must never freeze or mutate the live sky. A
+        // generic manual bypass keeps its authored palette, but the explicit
+        // Day visual mode also sets solarWorldOverride and expects the normal
+        // solar palette evaluated at its synthetic daytime altitude.
+        bool solarWorldOverride = PlayerPrefs.GetInt("k1lo_solarWorldOverride", 0) == 1;
+        if (!bypass || solarWorldOverride)
+            ApplyLiveSolarPalette(visualAltitude, sunAz);
         float horizontalFov = 2f * Mathf.Atan(Mathf.Tan(cam.fieldOfView * .5f * Mathf.Deg2Rad) * cam.aspect) * Mathf.Rad2Deg;
         float sunX = .5f + Mathf.DeltaAngle(cam.transform.eulerAngles.y, sunAz) / Mathf.Max(1f, horizontalFov);
         float sunY = .08f + Mathf.Clamp(altitude, -8f, 90f) / 90f * .78f;
-        float sunVisible = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-4f, 2f, altitude));
+        float sunVisible = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-4f, 2f, visualAltitude));
         layeredSkyMaterial.SetVector("_SunUV", new Vector4(sunX, sunY, 0, 0));
         Vector3 celestialSun = Quaternion.Euler(-altitude, sunAz, 0f) * Vector3.forward;
         layeredSkyMaterial.SetVector("_SunDirection", new Vector4(celestialSun.x, celestialSun.y, celestialSun.z, 0));
@@ -492,7 +543,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetVector("_MoonUV", new Vector4(moonX, .38f, 0, 0));
         Vector3 celestialMoon = -celestialSun;
         layeredSkyMaterial.SetVector("_MoonDirection", new Vector4(celestialMoon.x, celestialMoon.y, celestialMoon.z, 0));
-        float night = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-2f, -10f, altitude));
+        float night = Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-2f, -10f, visualAltitude));
         if (bypass && Mathf.RoundToInt(PlayerPrefs.GetFloat("k1lo_layeredSkyEffect", 0f)) == 3)
             night = 1f;
         layeredSkyMaterial.SetFloat("_MoonVisibility", night);
@@ -500,30 +551,79 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         layeredSkyMaterial.SetFloat("_NightAmount", night);
     }
 
-    private void ApplyLiveSolarPalette(float altitude)
+    private void ApplyLiveSolarPalette(float altitude, float solarAzimuth)
     {
+        // 0 = classic blue day, 1 = full vaporwave: lavender mids, pink
+        // horizon, pink-blushed clouds. Swift slider, live-tunable.
+        float vapor = PlayerPrefs.GetFloat("k1lo_vaporDayPink", 0.65f);
+        float goldenHourStart = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_skyGoldenHourStart", 15f), 6f, 30f);
+        bool isSunset = Mathf.Repeat(solarAzimuth, 360f) > 180f;
+        float goldenWarmth = Mathf.Clamp01(PlayerPrefs.GetFloat(
+            isSunset ? "k1lo_skySunsetWarmth" : "k1lo_skySunriseWarmth",
+            isSunset ? .85f : .62f));
+        float dayBrightness = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_skyDayBrightness", 1f), .5f, 1.8f);
+        float goldenBrightness = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_skyGoldenBrightness", 1.12f), .5f, 2f);
+        float goldenCloudWarmth = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_skyGoldenCloudWarmth", .58f));
+        float cloudPink = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_skyCloudPink", 0f));
+        float horizonPink = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_skyHorizonPink", 0f));
+        // Native receives cloudCover from the weather API and converts it to
+        // this normalized opacity in the environment snapshot. Do not infer
+        // weather a second time from the display glyph/string here.
+        float liveCloudOpacity = Mathf.Clamp(
+            PlayerPrefs.GetFloat("k1lo_layeredCloudOpacity", .35f), .08f, .88f);
+        layeredSkyMaterial.SetFloat("_CloudOpacity", liveCloudOpacity);
+        float liveCloudCoverage = Mathf.Clamp01(
+            PlayerPrefs.GetFloat("k1lo_layeredCloudCoverage", .35f));
+        layeredSkyMaterial.SetFloat("_CloudCoverage", liveCloudCoverage);
+        float distantDensity = Mathf.Max(0f, PlayerPrefs.GetFloat("k1lo_fogDistantDensity", 0f));
+        float fogRed = PlayerPrefs.GetFloat("k1lo_fogColorRed", 1f);
+        float fogGreen = PlayerPrefs.GetFloat("k1lo_fogColorGreen", .58f);
+        float fogBlue = PlayerPrefs.GetFloat("k1lo_fogColorBlue", .16f);
+        float hotFogColor = Mathf.Clamp01((fogRed - (fogGreen + fogBlue) * .5f) * 2f);
+        float hotDistantFog = Mathf.Clamp01(distantDensity / .1f) * hotFogColor;
+        // The distance fog already supplies a saturated red/pink skyline. Avoid
+        // stacking a second full-strength magenta sunrise band on top of it.
+        horizonPink *= Mathf.Lerp(1f, .25f, hotDistantFog);
+        goldenWarmth *= Mathf.Lerp(1f, .65f, hotDistantFog);
         Color top;
         Color mid;
         Color horizon;
-        if (altitude >= 10f)
+        // Daytime palette anchors match the sky-override HSV formula (this
+        // is the look the app renders when "test sky override" is on and
+        // reads correctly). Vapor slider lerps between the muted classic
+        // atmospheric look (0) and the saturated vaporwave look (1).
+        Color dayTopOverride = Color.HSVToRGB(0.80f, 0.82f, 0.78f);
+        Color dayMidOverride = Color.HSVToRGB(0.62f, 0.72f, 0.82f);
+        Color dayHorizonOverride = Color.HSVToRGB(0.73f, 0.62f, 0.92f);
+        if (altitude >= goldenHourStart)
         {
-            top = new Color(.055f, .25f, .66f);
-            mid = new Color(.18f, .48f, .84f);
-            horizon = new Color(.62f, .76f, .86f);
+            // Strong daylight remains visibly bright until the sun is genuinely
+            // low. Keep the vapor character primarily near the horizon instead
+            // of turning the entire 6pm sky purple/navy.
+            float dayVapor = vapor * .28f;
+            top = Color.Lerp(new Color(.075f, .34f, .88f), dayTopOverride, dayVapor);
+            mid = Color.Lerp(new Color(.25f, .58f, .96f), dayMidOverride, dayVapor);
+            horizon = Color.Lerp(new Color(.46f, .70f, .86f), dayHorizonOverride, vapor * .42f);
         }
-        else if (altitude >= 0f)
+        else if (altitude >= -2f)
         {
-            float t = altitude / 10f;
-            top = Color.Lerp(new Color(.055f, .12f, .38f), new Color(.055f, .25f, .66f), t);
-            mid = Color.Lerp(new Color(.30f, .29f, .48f), new Color(.18f, .48f, .84f), t);
-            horizon = Color.Lerp(new Color(.98f, .43f, .18f), new Color(.62f, .76f, .86f), t);
+            float t = Mathf.InverseLerp(-2f, goldenHourStart, altitude);
+            Color dayMid = Color.Lerp(new Color(.25f, .58f, .96f), dayMidOverride, vapor * .28f);
+            Color dayHorizon = Color.Lerp(new Color(.46f, .70f, .86f), dayHorizonOverride, vapor * .42f);
+            Color dayTop = Color.Lerp(new Color(.075f, .34f, .88f), dayTopOverride, vapor * .28f);
+            Color goldenTop = Color.Lerp(new Color(.055f, .12f, .38f), new Color(.075f, .22f, .62f), goldenWarmth);
+            Color goldenMid = Color.Lerp(new Color(.30f, .29f, .48f), new Color(.46f, .43f, .68f), goldenWarmth);
+            Color goldenHorizon = Color.Lerp(new Color(.98f, .48f, .60f), new Color(1f, .64f, .34f), goldenWarmth);
+            top = Color.Lerp(goldenTop, dayTop, t);
+            mid = Color.Lerp(goldenMid, dayMid, t);
+            horizon = Color.Lerp(goldenHorizon, dayHorizon, t);
         }
         else if (altitude >= -6f)
         {
             float t = (altitude + 6f) / 6f;
             top = Color.Lerp(new Color(.018f, .035f, .14f), new Color(.055f, .12f, .38f), t);
             mid = Color.Lerp(new Color(.07f, .07f, .22f), new Color(.30f, .29f, .48f), t);
-            horizon = Color.Lerp(new Color(.20f, .13f, .25f), new Color(.98f, .43f, .18f), t);
+            horizon = Color.Lerp(new Color(.20f, .13f, .25f), new Color(.98f, .48f, .60f), t);
         }
         else if (altitude >= -12f)
         {
@@ -538,9 +638,63 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
             mid = new Color(.006f, .012f, .035f);
             horizon = new Color(.018f, .028f, .065f);
         }
+        // A restrained night-only line of atmospheric color keeps the world
+        // silhouette readable without lifting the whole sky or washing out
+        // auroras. These defaults also apply on a clean install.
+        float nightHorizonAmount = PlayerPrefs.GetFloat("k1lo_skyNightHorizonGlow", .55f);
+        float nightHorizonHue = PlayerPrefs.GetFloat("k1lo_skyNightHorizonHue", .62f);
+        float nightHorizonBrightness = PlayerPrefs.GetFloat("k1lo_skyNightHorizonBrightness", .32f);
+        float nightHorizonWeight = 1f - Mathf.InverseLerp(-8f, -1f, altitude);
+        Color nightHorizonColor = Color.HSVToRGB(
+            Mathf.Repeat(nightHorizonHue, 1f), .78f, Mathf.Clamp01(nightHorizonBrightness));
+        horizon = Color.Lerp(horizon, nightHorizonColor,
+            Mathf.Clamp01(nightHorizonAmount) * nightHorizonWeight);
+        float goldenAmount = altitude >= -2f
+            ? 1f - Mathf.InverseLerp(-2f, goldenHourStart, altitude)
+            : Mathf.InverseLerp(-12f, -2f, altitude);
+        float phaseBrightness = Mathf.Lerp(dayBrightness, goldenBrightness, goldenAmount);
+        if (altitude >= -2f)
+            horizon = Color.Lerp(horizon, new Color(1f, .31f, .57f), horizonPink * .78f);
+        top *= phaseBrightness;
+        mid *= phaseBrightness;
+        horizon *= phaseBrightness;
+        // Keep the theatrical vapor color concentrated at the skyline instead
+        // of letting it become a solid neon wall through half the sky.
+        if (altitude >= -2f)
+            horizon = Color.Lerp(mid, horizon, Mathf.Lerp(.80f, .46f, hotDistantFog));
+        Color warmCloudShade = isSunset
+            ? new Color(1f, .54f, .38f, 1f)
+            : new Color(1f, .68f, .48f, 1f);
+        // Pink tint colors the shaded body while the shader's direct-light
+        // component retains clean white highlights and cloud volume.
+        warmCloudShade = Color.Lerp(warmCloudShade, new Color(1f, .42f, .68f, 1f), cloudPink);
+        float cloudWarmWeight = Mathf.Max(
+            goldenCloudWarmth * (.14f + .86f * goldenAmount),
+            cloudPink * .46f);
+        layeredSkyMaterial.SetColor("_CloudShadeColor",
+            Color.Lerp(new Color(.70f, .73f, .78f, 1f), warmCloudShade, cloudWarmWeight));
         layeredSkyMaterial.SetColor("_TopColor", top);
         layeredSkyMaterial.SetColor("_MidColor", mid);
         layeredSkyMaterial.SetColor("_HorizonColor", horizon);
+        ApplyNightHorizonGlow();
+        // Expose live palette hues so the Sky Lab (Swift) can seed its
+        // sliders from the current live sky when the panel opens.
+        Color.RGBToHSV(top, out float lTop, out _, out _);
+        Color.RGBToHSV(mid, out float lMid, out _, out _);
+        Color.RGBToHSV(horizon, out float lHor, out _, out _);
+        PlayerPrefs.SetFloat("k1lo_liveSkyTopHue", lTop);
+        PlayerPrefs.SetFloat("k1lo_liveSkyMidHue", lMid);
+        PlayerPrefs.SetFloat("k1lo_liveSkyHorizonHue", lHor);
+    }
+
+    private void ApplyNightHorizonGlow()
+    {
+        if (layeredSkyMaterial == null) return;
+        float amount = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_skyNightHorizonGlow", .55f), 0f, 2f);
+        float hue = Mathf.Repeat(PlayerPrefs.GetFloat("k1lo_skyNightHorizonHue", .62f), 1f);
+        float brightness = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_skyNightHorizonBrightness", .32f));
+        layeredSkyMaterial.SetColor("_NightHorizonGlowColor", Color.HSVToRGB(hue, .78f, brightness));
+        layeredSkyMaterial.SetFloat("_NightHorizonGlow", amount);
     }
 
 #if K1L0_LEGACY_VIDEO_SKY

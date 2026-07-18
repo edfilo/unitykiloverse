@@ -25,7 +25,7 @@ Support
 -------
 Please read the documentation PDF and browse/play with the demo scenes and sample source code included before contacting us for support :-)
 
-* Support-Web: https://kronnect.com/support
+* Support-Web: https://kronnect.com/docs/volumetric-fog-urp/
 * Support-Discord: https://discord.gg/EH2GMaM
 * Email: contact@kronnect.com
 * Twitter: @Kronnect
@@ -42,6 +42,54 @@ Of course, all updates of Volumetric Fog & Mist will be eventually available on 
 
 Version history
 ---------------
+
+v31.3
+- Fog Transparent Object: fog data is now applied per renderer using material property blocks. Fixes transparent objects assigned to different fog volumes showing the wrong fog when the SRP Batcher grouped them into a single batch
+- Fog Transparent Object: added a console warning when a material is shared by objects assigned to fog volumes that require different shader keywords
+- Fog of War: added "Export Coverage Texture" button to the inspector to save the coverage texture with its alpha channel as a PNG file
+- [Fix] Fog no longer disappears when enabling Fog of War in the editor or at runtime (the fog of war texture is now created and assigned to the fog material immediately)
+- [Fix] Fog of war coverage vectors and blurred texture are now also applied to registered transparent materials so transparent objects match the volume's fog of war
+- [Fix] Transparent objects no longer receive fog when they are outside the fog volume (the transparent object fog computation now clamps the ray to the volume bounds and discards rays that miss it)
+
+v31.2.2
+- Fog Transparent Object: new "Auto Fog Volume" option. When enabled, the script picks the fog volume that contains the object and switches automatically when the object or the volumes move. Useful with several fog volumes when scattering, downscaling or blur are used.
+- [Fix] Transparent materials are now correctly unregistered from the previous fog volume when the assigned fog volume changes
+
+v31.2.1
+- [Fix] GetFogOpacity shader graph function now respects the Terrain Fit feature on transparent objects
+
+v31.2
+- Volumetric Fog Manager: added "Disable Auto-Creation" option (editor only) to stop fog volumes from spawning a manager when a scene is opened on its own, useful when the manager lives in a separate additive scene
+- Light Diffusion: added Back Scatter parameter (Smooth/Strong) for a silver rim/glow when looking away from the sun, keeping the forward sun halo intact
+- Light Diffusion: added Base Lighting parameter to control the isotropic base brightness; lower values concentrate light into the directional sun halo for more contrast
+- [Fix] Light Diffusion: guarded near depth attenuation against a divide-by-zero when set to 0
+
+v31.1.2
+- Light color temperature support for fast point lights, directional and moon lights
+- [Fix] Depth pre-pass shader is now compatible with SRP Batcher, BatchRendererGroup, GPU Resident Drawer and Entities Graphics
+- [Fix] Alpha Cutout Layer Mask: corrected texture binding so foliage/leaves now properly clip in the depth pre-pass
+- [Fix] Editor: improved compatibility with Unity 6.4 (Enter Play Mode Options / Domain Reload disabled)
+- [Fix] Fog of war texture size minimum reduced to allow smaller textures (e.g. 128x128)
+- [Fix] Fog volumes not included in the volumetric fog render feature layer mask now render separately as usual
+- [Fix] Fog volume layer is no longer modified automatically at startup
+
+v31.1
+- [Fix] Fog of war: fixed off-by-one boundary bug where pixels at X=0, Y=0 (and last row/column) of the fog texture could never be set by SetFogOfWarAlpha and ResetFogOfWarAlpha methods
+- API: added batched SetFogOfWarAlpha overloads that accept a mesh shape and arrays of positions/alphas, for efficient tile-based fog of war (hex grids, etc.)
+
+v31.0
+- Point lights: added Blending parameter to Point Light Manager
+
+v30.3.4
+- Distant fog: added "Show In Edit Mode"
+- Fade: added option to include distant fog
+
+v30.3
+- Revamped profile inspector
+- Improved rendering of border option
+- Distant fog: added transparency support option
+- Native lights: added optional "FallOff" property (enable it in Volumetric Fog Manager Shader Options)
+- Added support for Unity 6.4
 
 v30.2.7
 - Improvements to fog of war system: prevents initialization race condition and new SetFogOfWar API overloads

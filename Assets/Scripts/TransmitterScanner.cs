@@ -39,6 +39,8 @@ public class TransmitterScanner : MonoBehaviour
         public string ArtifactLabel;
         public string ArtifactLore;
         public string ArtifactSenderName;
+        public string HologramImageUrl;
+        public string HologramDepthUrl;
 
         // Legacy fields (kept for backwards compatibility)
         public string Class;
@@ -321,6 +323,8 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
         public string artifactLabel;
         public string artifactLore;
         public string artifactSenderName;
+        public string imageUrl;
+        public string depthMapUrl;
         public PlaceCoordinates coordinates;
     }
 
@@ -359,6 +363,8 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
                 ArtifactLabel = place.artifactLabel,
                 ArtifactLore = place.artifactLore,
                 ArtifactSenderName = place.artifactSenderName,
+                HologramImageUrl = place.imageUrl,
+                HologramDepthUrl = place.depthMapUrl,
                 GeoLocation = latLon,
                 Class = group,
                 Type = primary,

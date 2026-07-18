@@ -185,7 +185,7 @@ public sealed class K1L0TransmitStatusCard : MonoBehaviour
         switch (status)
         {
             case "gathering":   return "scanning location...";
-            case "planning":    return "planning transmission...";
+            case "planning":    return "transmitting...";
             case "planned":     return "generating image...";
             case "image_ready": return "composing video...";
             case "composing":   return "composing video...";

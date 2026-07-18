@@ -22,8 +22,37 @@ struct K1L0PointUniforms {
     float spacing;
     float zSpread;
     float brightness;
+    float rotationDegrees;
+    float rotationSpeed;
+    float perspective;
+    float cameraDistance;
+    float sparkle;
+    float2 foregroundCenter;
 };
 struct K1L0PointOut { float4 position [[position]]; float pointSize [[point_size]]; half4 color; float sparkle; };
+struct K1L0ItemGlitchOut { float4 position [[position]]; float2 uv; };
+
+vertex K1L0ItemGlitchOut k1l0ItemGlitchVertex(uint id [[vertex_id]]) {
+    const float2 positions[4] = { {-1,-1}, {1,-1}, {-1,1}, {1,1} };
+    const float2 uvs[4] = { {0,1}, {1,1}, {0,0}, {1,0} };
+    return { float4(positions[id], 0, 1), uvs[id] };
+}
+
+fragment half4 k1l0ItemGlitchFragment(K1L0ItemGlitchOut in [[stage_in]], texture2d<half> colorTex [[texture(0)]], texture2d<half> maskTex [[texture(1)]], constant K1L0PointUniforms& u [[buffer(0)]]) {
+    constexpr sampler s(address::clamp_to_edge, filter::linear);
+    float2 uv = in.uv;
+    float band = floor(uv.y * 36.0 + u.time * 8.0);
+    float burst = step(.76, hash12(float2(floor(u.time * 9.0), band)));
+    uv.x += (hash12(float2(band, floor(u.time * 13.0))) - .5) * .085 * burst;
+    half4 c = colorTex.sample(s, uv); half mask = maskTex.sample(s, uv).r;
+    float luma = dot(float3(c.rgb), float3(.299,.587,.114));
+    float alpha = smoothstep(.035, .18, max(luma, float(mask))) * float(c.a);
+    half r = colorTex.sample(s, uv + float2(.009 * burst, 0)).r;
+    half b = colorTex.sample(s, uv - float2(.009 * burst, 0)).b;
+    float scan = .80 + .20 * sin(uv.y * 980.0 + u.time * 20.0);
+    half3 rgb = half3(r,c.g,b) * half(scan*u.brightness) + half3(.05,.55,1.0) * pow(mask,half(.7)) * half(.35+.15*u.sparkle);
+    return half4(rgb, half(alpha*.88));
+}
 
 // Item hologram: two depth layers per texel of a 192×192 resampling.
 // Depth mask (grayscale, near=bright) displaces points in z; the cloud sways
@@ -79,7 +108,9 @@ vertex K1L0PointOut k1l0ItemPointVertex(uint id [[vertex_id]],
         out.position = float4(star.x / max(u.aspect, .01), star.y, .2, 1);
         out.pointSize = u.pointSize * (.55 + seed * .65 + rareSpark * .45);
         out.sparkle = twinkle;
-        out.color = half4(mix(half3(.18, .62, 1.0), half3(1.0), half(twinkle)) * half(u.brightness),
+        float starBlink = pow(max(0.0, sin(u.time * (2.0 + seed * 3.0) + seed * 130.0)), 12.0);
+        float starGain = 1.0 + starBlink * max(0.0, u.sparkle) * 1.8;
+        out.color = half4(mix(half3(.18, .62, 1.0), half3(1.0), half(twinkle)) * half(u.brightness * starGain),
                           half(.5 + .5 * twinkle));
         return out;
     }
@@ -103,8 +134,12 @@ vertex K1L0PointOut k1l0ItemPointVertex(uint id [[vertex_id]],
     float3 p;
     // Normalized UVs otherwise distort non-square source images. Convert the
     // source's pixel aspect back into display space before perspective.
-    p.x = (uv.x - .5) * 1.5 * u.textureAspect * u.spacing;
-    p.y = (.5 - uv.y) * 1.5 * u.spacing;
+    p.x = (uv.x - u.foregroundCenter.x) * 1.5 * u.textureAspect * u.spacing;
+    // Core Graphics uploads the normalized RGBA buffer bottom-to-top relative
+    // to Metal's sampled UV convention. Map sampled rows in the same direction
+    // here so the reconstructed item is upright; the independent star ring is
+    // already screen-oriented and must not be flipped.
+    p.y = (uv.y - u.foregroundCenter.y) * 1.5 * u.spacing;
     // The generated mask describes the visible/front surface. Reflect it into
     // a dimmer rear shell so a complete turn reads as a volume, not a card.
     // The generated grayscale maps encode the nearer surface darker. Flip the
@@ -114,7 +149,8 @@ vertex K1L0PointOut k1l0ItemPointVertex(uint id [[vertex_id]],
 
     // Centered sixty-degree sway in either direction: enough parallax to read
     // the depth while keeping the recognizable front silhouette in view.
-    float angle = sin(u.time * .42) * 1.0471976;
+    float rotationRadians = clamp(u.rotationDegrees, 10.0, 360.0) * 0.01745329252;
+    float angle = sin(u.time * .42 * max(.05, u.rotationSpeed)) * rotationRadians;
     float ca = cos(angle), sa = sin(angle);
     float x = ca * p.x - sa * p.z;
     float z = sa * p.x + ca * p.z;
@@ -122,20 +158,24 @@ vertex K1L0PointOut k1l0ItemPointVertex(uint id [[vertex_id]],
     x += sin(u.time * 1.4 + seed * 21.0) * .012;
     float y = p.y + cos(u.time * 1.1 + seed * 15.0) * .012;
 
-    // Pull the virtual camera closer to make the cloud occupy more of its
-    // viewport and make depth changes easier to read.
-    float persp = 1.0 / max(.52, 1.34 - z);
+    // Camera distance controls framing; perspective independently controls how
+    // strongly depth changes apparent size.
+    float cameraDistance = clamp(u.cameraDistance, .55, 3.5);
+    float perspectiveDepth = z * clamp(u.perspective, 0.0, 2.0);
+    float persp = 1.0 / max(.42, cameraDistance - perspectiveDepth);
     out.position = float4(x * persp / max(u.aspect, .01), y * persp, 0, 1);
     float shimmer = .88 + .12 * sin(u.time * (1.6 + seed * 2.8) + seed * 20.0);
     float sizeVariation = .72 + seed * .48;
     float glint = pow(max(0.0, sin(u.time * 3.1 + seed * 180.0)), 24.0);
+    float blink = pow(max(0.0, sin(u.time * (1.8 + seed * 4.2) + seed * 210.0)), 10.0);
+    float blinkGain = 1.0 + blink * max(0.0, u.sparkle) * 2.2;
     // Glints affect luminance only. Letting them affect diameter caused rare,
     // distracting giant particle flashes.
     out.pointSize = u.pointSize * u.particleScale * persp * sizeVariation * shimmer;
     out.sparkle = shimmer;
     half3 hologramColor = mix(c.rgb, half3(.56, .86, 1.0), half(.10 + glint * .18));
     half layerBrightness = backLayer ? half(.38) : half(.82);
-    out.color = half4(hologramColor * layerBrightness * half(.82 + .18 * shimmer) * half(u.brightness),
+    out.color = half4(hologramColor * layerBrightness * half(.82 + .18 * shimmer) * half(u.brightness * blinkGain),
                       (backLayer ? half(.30) : half(.78)) * half(.90 + .10 * shimmer));
     return out;
 }

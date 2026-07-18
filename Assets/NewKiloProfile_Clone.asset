@@ -14,7 +14,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::KiloWorld.Rendering.KiloWorldMasterProfile
   lighting:
     moonlightColor: {r: 0.7, g: 0.8, b: 1, a: 1}
-    moonlightIntensity: 0.5
+    moonlightIntensity: 0.55
     moonlightRotation: {x: 90, y: 0, z: 0}
     enableShadows: 1
     shadowStrength: 1
@@ -129,8 +129,8 @@ MonoBehaviour:
     vignetteRounded: 0
     chromaticAberrationEnabled: 1
     chromaticAberrationIntensity: 0.95
-    lensDistortionEnabled: 1
-    lensDistortionIntensity: -0.15
+    lensDistortionEnabled: 0
+    lensDistortionIntensity: 0
     lensDistortionXMultiplier: 1
     lensDistortionYMultiplier: 1
     lensDistortionScale: 1

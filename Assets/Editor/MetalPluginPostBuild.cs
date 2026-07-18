@@ -7,8 +7,9 @@ using System.IO;
 /// <summary>
 /// Unity's PluginImporter doesn't treat .metal files under Assets/Plugins/iOS
 /// as iOS plugins (they get a DefaultImporter and are skipped at export).
-/// Copy them into the exported project and add them to the main app target.
-/// Native item holograms then own/load their metallib independently of UnityFramework.
+/// Copy them into the exported project and add them to both native targets.
+/// The Swift overlay lives in UnityFramework while some native views are hosted by
+/// the main app, so either bundle may be asked to resolve the hologram metallib.
 /// </summary>
 public class MetalPluginPostBuild
 {
@@ -26,6 +27,8 @@ public class MetalPluginPostBuild
 
         string appGuid = proj.GetUnityMainTargetGuid();
         string appSourcesGuid = proj.GetSourcesBuildPhaseByTarget(appGuid);
+        string frameworkGuid = proj.GetUnityFrameworkTargetGuid();
+        string frameworkSourcesGuid = proj.GetSourcesBuildPhaseByTarget(frameworkGuid);
 
         foreach (string src in metalFiles)
         {
@@ -37,7 +40,8 @@ public class MetalPluginPostBuild
 
             string fileGuid = proj.AddFile(destRel, destRel, PBXSourceTree.Source);
             proj.AddFileToBuildSection(appGuid, appSourcesGuid, fileGuid);
-            UnityEngine.Debug.Log($"[MetalPluginPostBuild] Added {fileName} to main app Metal sources.");
+            proj.AddFileToBuildSection(frameworkGuid, frameworkSourcesGuid, fileGuid);
+            UnityEngine.Debug.Log($"[MetalPluginPostBuild] Added {fileName} to app and UnityFramework Metal sources.");
         }
 
         proj.WriteToFile(projPath);

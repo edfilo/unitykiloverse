@@ -77,7 +77,14 @@ public class K1L0HUD : MonoBehaviour
     private const float DimmerSpeed = 4f;
     private float lastDockDebugUploadTime = -999f;
     private float lastNativeStepStatePushTime = -999f;
+    private PedometerService cachedNativePedometer;
+    private KiloFirstPersonController cachedNativePlayer;
     private string lastNativeStepStateSignature = "";
+    private string lastRenderReadinessSignature = "";
+    private float nextRenderReadinessPushTime;
+    private float nextLiveTuningPollTime;
+    private bool liveTuningPollActive;
+    private int liveTuningRevision;
 
     public static Sprite RoundedRectSprite { get; private set; }
     public static float PanelMapBrightness => Mathf.Clamp01(PlayerPrefs.GetFloat(PanelMapBrightnessPref, 0.34f));
@@ -119,16 +126,22 @@ public class K1L0HUD : MonoBehaviour
     [DllImport("__Internal")] private static extern void K1L0DeliverUserMetadataSaveResult(string json);
     [DllImport("__Internal")] private static extern void K1L0DeliverNativeAuthState(string json);
     [DllImport("__Internal")] private static extern void K1L0DeliverStepState(string json);
+    [DllImport("__Internal")] private static extern void K1L0DeliverRenderReadiness(string json);
+    [DllImport("__Internal")] private static extern void K1L0SetWeatherLookMode(string mode);
 #elif UNITY_STANDALONE_OSX && !UNITY_EDITOR
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverTransmissionResult(string json);
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverUserMetadataSaveResult(string json);
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverNativeAuthState(string json);
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverStepState(string json);
+    [DllImport("K1L0Overlay")] private static extern void K1L0DeliverRenderReadiness(string json);
+    [DllImport("K1L0Overlay")] private static extern void K1L0SetWeatherLookMode(string mode);
 #else
     private static void K1L0DeliverTransmissionResult(string json) { /* no-op in editor */ }
     private static void K1L0DeliverUserMetadataSaveResult(string json) { /* no-op in editor */ }
     private static void K1L0DeliverNativeAuthState(string json) { /* no-op in editor */ }
     private static void K1L0DeliverStepState(string json) { /* no-op in editor */ }
+    private static void K1L0DeliverRenderReadiness(string json) { /* no-op in editor */ }
+    private static void K1L0SetWeatherLookMode(string mode) { /* no-op in editor */ }
 #endif
 
     private bool nativeTransmissionSubscribed;
@@ -311,6 +324,8 @@ public class K1L0HUD : MonoBehaviour
 
     void Update()
     {
+        PushRenderReadinessIfNeeded();
+        PollLiveRenderTuningIfNeeded();
         if (!oldUIHidden)
             TryHideOldUI();
 
@@ -341,6 +356,94 @@ public class K1L0HUD : MonoBehaviour
             _lastWeatherPoll = Time.realtimeSinceStartup;
             PollWeatherText();
         }
+    }
+
+    [Serializable]
+    private class LiveRenderSetting
+    {
+        public string key;
+        public string value;
+    }
+
+    [Serializable]
+    private class LiveRenderTuningResponse
+    {
+        public bool ok;
+        public int revision;
+        public LiveRenderSetting[] settings;
+        public bool capture;
+    }
+
+    private void PollLiveRenderTuningIfNeeded()
+    {
+        if (liveTuningPollActive || Time.unscaledTime < nextLiveTuningPollTime || APIManager.Instance == null) return;
+        // This is a developer control channel, not gameplay state. Three-second
+        // polling remains responsive while avoiding a perpetual high-frequency
+        // request on every player's phone.
+        nextLiveTuningPollTime = Time.unscaledTime + 3f;
+        StartCoroutine(PollLiveRenderTuning());
+    }
+
+    private IEnumerator PollLiveRenderTuning()
+    {
+        liveTuningPollActive = true;
+        yield return APIManager.Instance.Get($"/api/k1l0/render-tuning?since={liveTuningRevision}", (success, response) =>
+        {
+            if (!success || string.IsNullOrWhiteSpace(response)) return;
+            try
+            {
+                var command = JsonUtility.FromJson<LiveRenderTuningResponse>(response);
+                if (command == null || !command.ok || command.revision <= liveTuningRevision) return;
+                liveTuningRevision = command.revision;
+                if (command.settings != null)
+                {
+                    foreach (var setting in command.settings)
+                    {
+                        if (setting == null || string.IsNullOrWhiteSpace(setting.key)) continue;
+                        SetNativeSetting(setting.key + "=" + (setting.value ?? string.Empty));
+                    }
+                }
+                if (command.capture) StartCoroutine(CaptureAfterLiveTuning());
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[LiveRenderTuning] Invalid command: {ex.Message}");
+            }
+        });
+        liveTuningPollActive = false;
+    }
+
+    private IEnumerator CaptureAfterLiveTuning()
+    {
+        yield return new WaitForSecondsRealtime(0.6f);
+        K1L0Screenshot.Instance?.Capture(false);
+    }
+
+    [Serializable]
+    private class RenderReadinessPayload
+    {
+        public bool ready;
+        public int buildings;
+        public int roads;
+        public bool beamsReady;
+    }
+
+    private void PushRenderReadinessIfNeeded()
+    {
+        if (Time.unscaledTime < nextRenderReadinessPushTime) return;
+        nextRenderReadinessPushTime = Time.unscaledTime + 0.5f;
+        var payload = new RenderReadinessPayload
+        {
+            ready = BootState.InitialRenderReady,
+            buildings = BootState.CompletedBuildingTiles,
+            roads = BootState.CompletedRoadTiles,
+            beamsReady = SignalBeamBridge.InitialPopulationReady
+        };
+        string json = JsonUtility.ToJson(payload);
+        if (json == lastRenderReadinessSignature) return;
+        lastRenderReadinessSignature = json;
+        try { K1L0DeliverRenderReadiness(json); }
+        catch (Exception ex) { Debug.LogWarning($"[K1L0HUD] render readiness delivery failed: {ex.Message}"); }
     }
 
     void PollWeatherText()
@@ -377,7 +480,9 @@ public class K1L0HUD : MonoBehaviour
         if (Time.realtimeSinceStartup - lastNativeStepStatePushTime < 0.5f)
             return;
 
-        var pedometer = FindFirstObjectByType<PedometerService>();
+        if (cachedNativePedometer == null)
+            cachedNativePedometer = FindFirstObjectByType<PedometerService>();
+        var pedometer = cachedNativePedometer;
         if (pedometer == null)
             return;
 
@@ -386,7 +491,9 @@ public class K1L0HUD : MonoBehaviour
         int steps7d = Mathf.Max(0, pedometer.stepsLast7Days);
         double latitude = double.NaN;
         double longitude = double.NaN;
-        var player = FindFirstObjectByType<KiloFirstPersonController>();
+        if (cachedNativePlayer == null)
+            cachedNativePlayer = FindFirstObjectByType<KiloFirstPersonController>();
+        var player = cachedNativePlayer;
         if (player != null)
         {
             latitude = player.playerGPS.Latitude;
@@ -671,7 +778,7 @@ public class K1L0HUD : MonoBehaviour
     // "Map off" = black the whole world (buildings, roads, sky, etc.) by culling
     // everything on the main camera and clearing to solid black. The HUD canvas
     // is screen-space overlay, so it still renders on top of the black.
-    void SetMapVisible(bool visible)
+    void SetMapVisible(bool visible, bool forceMapCameraPose = true)
     {
         _mapVisible = visible;
         var cam = WorldCam();
@@ -690,7 +797,7 @@ public class K1L0HUD : MonoBehaviour
                 cam.backgroundColor = _savedBgColor;
                 cam.cullingMask = _savedCullingMask != 0 ? _savedCullingMask : ~0;
                 var playerController = FindFirstObjectByType<KiloFirstPersonController>();
-                if (playerController != null)
+                if (playerController != null && forceMapCameraPose)
                     playerController.SetMapModalCameraActive(true);
                 Debug.Log($"[K1L0HUD] Map visible: camera={cam.name} cullingMask={cam.cullingMask} clearFlags={cam.clearFlags}");
             }
@@ -891,15 +998,30 @@ public class K1L0HUD : MonoBehaviour
         KiloFirstPersonController.SetNativePanelOpen(open);
         if (!open)
         {
-            SetMapVisible(true);
+            // HandleNativePanelOpenChanged(false) has just reset camera
+            // transition progress to zero. Do not call the forced map-pose
+            // path here or the exit animation snaps directly to its endpoint.
+            SetMapVisible(true, false);
             EnsureNativeMapRuntimeActive();
         }
         if (!NativeOverlayOwnsHud)
             ApplyMapHudSuppression(open);
     }
 
+    public void SetSettingsPanelOpen(string enabled)
+    {
+        bool open = enabled == "1" || string.Equals(enabled, "true", System.StringComparison.OrdinalIgnoreCase);
+        DynamicSkyVideoController.SetSettingsPanelOpen(open);
+    }
+
     private static void EnsureNativeMapRuntimeActive()
     {
+        var signalDirector = SignalDirectorV2.Instance;
+        if (signalDirector != null) signalDirector.enabled = true;
+        var scanner = TransmitterScanner.Instance;
+        if (scanner != null) scanner.enabled = true;
+        SignalBeamBridge.RestoreMapRuntime();
+
         foreach (var behaviour in FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None))
         {
             if (behaviour == null || behaviour.GetType().Name != "AbstractMap") continue;
@@ -1429,8 +1551,37 @@ public class K1L0HUD : MonoBehaviour
 
         string key = payload.Substring(0, split);
         string value = payload.Substring(split + 1);
+        if (key == "weatherLookMode")
+        {
+            K1L0SetWeatherLookMode(value);
+            return;
+        }
         bool boolValue = value == "1" || value.Equals("true", System.StringComparison.OrdinalIgnoreCase);
         float.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float floatValue);
+
+        // Kronnect VF2 advanced controls are intentionally pass-through live
+        // tuning values. RenderManager validates/clamps each value before it is
+        // applied, so adding preset controls no longer requires another build.
+        if (key.StartsWith("fogV2", System.StringComparison.Ordinal))
+        {
+            switch (key)
+            {
+                case "fogV2ScatteringHighQuality":
+                case "fogV2BlurHDR":
+                case "fogV2BlurEdgePreserve":
+                case "fogV2DetailNoise":
+                case "fogV2ReceiveShadows":
+                case "fogV2DistantSymmetrical":
+                case "fogV2DistantTransparency":
+                case "fogV2DistantNoise":
+                    SaveBool(key, boolValue);
+                    break;
+                default:
+                    SaveFloat(key, floatValue);
+                    break;
+            }
+            return;
+        }
 
         var rm = RenderManager.Instance;
         var profile = rm != null ? rm.profile : null;
@@ -1473,6 +1624,9 @@ public class K1L0HUD : MonoBehaviour
                     profile.postFX.bloomIntensity = floatValue;
                     SaveFloat("bloomIntensity", floatValue);
                     break;
+                case "dayBloomIntensity":
+                    SaveFloat("dayBloomIntensity", Mathf.Clamp(floatValue, 0f, 8f));
+                    break;
                 case "bloomThreshold":
                     profile.postFX.bloomThreshold = floatValue;
                     SaveFloat("bloomThreshold", floatValue);
@@ -1502,12 +1656,13 @@ public class K1L0HUD : MonoBehaviour
                     SaveFloat("chromaticIntensity", profile.postFX.chromaticAberrationIntensity);
                     break;
                 case "lensDistEnabled":
-                    profile.postFX.lensDistortionEnabled = boolValue;
-                    SaveBool("lensDistEnabled", boolValue);
+                    profile.postFX.lensDistortionEnabled = false;
+                    SaveBool("lensDistEnabled", false);
                     break;
                 case "lensDistIntensity":
-                    profile.postFX.lensDistortionIntensity = Mathf.Clamp(floatValue, -1f, 1f);
-                    SaveFloat("lensDistIntensity", profile.postFX.lensDistortionIntensity);
+                    profile.postFX.lensDistortionEnabled = false;
+                    profile.postFX.lensDistortionIntensity = 0f;
+                    SaveFloat("lensDistIntensity", 0f);
                     break;
                 case "dofEnabled":
                     profile.postFX.depthOfFieldEnabled = boolValue;
@@ -1556,6 +1711,51 @@ public class K1L0HUD : MonoBehaviour
                     SaveFloat("godRotationX", floatValue);
                     ApplyCameraProfile();
                     break;
+                case "debugGodMode":
+                {
+                    var controller = FindFirstObjectByType<KiloFirstPersonController>();
+                    controller?.SetDebugGodView(boolValue);
+                    break;
+                }
+                case "debugCameraHeading":
+                {
+                    var controller = FindFirstObjectByType<KiloFirstPersonController>();
+                    controller?.SetDebugHeading(floatValue);
+                    break;
+                }
+                case "debugFrameNearestBeam":
+                {
+                    var controller = FindFirstObjectByType<KiloFirstPersonController>();
+                    controller?.DebugFrameNearestBeam(Mathf.Max(6f, floatValue));
+                    break;
+                }
+                case "debugPositionOverride":
+                {
+                    if (!boolValue)
+                    {
+                        var controller = FindFirstObjectByType<KiloFirstPersonController>();
+                        controller?.ClearDebugPositionOverride();
+                    }
+                    break;
+                }
+                case "debugHernandezPark":
+                {
+                    if (boolValue)
+                    {
+                        var teleporter = FindFirstObjectByType<TeleportManager>();
+                        teleporter?.ApplyNativeLocationMode("{\"mode\":\"hernandez_park\",\"name\":\"Hernandez Park\",\"latitude\":40.7028806,\"longitude\":-73.9240261,\"liveGps\":false}");
+                    }
+                    break;
+                }
+                case "itemViewportHeight":
+                    BeamItemHologram.SetViewportHeight(floatValue);
+                    break;
+                case "itemMaxWorldSize":
+                    BeamItemHologram.SetMaxWorldSize(floatValue);
+                    break;
+                case "itemGlitchAmount":
+                    BeamItemHologram.SetGlitchAmount(floatValue);
+                    break;
                 case "farClipPlane":
                     profile.camera.farClipPlane = Mathf.Max(50f, floatValue);
                     SaveFloat("farClipPlane", profile.camera.farClipPlane);
@@ -1570,6 +1770,9 @@ public class K1L0HUD : MonoBehaviour
                 case "moonlightIntensity":
                     profile.lighting.moonlightIntensity = Mathf.Clamp(floatValue, 0f, 8f);
                     SaveFloat("moonlightIntensity", profile.lighting.moonlightIntensity);
+                    break;
+                case "daySunIntensity":
+                    SaveFloat("daySunIntensity", Mathf.Clamp(floatValue, 0f, 3f));
                     break;
                 case "moonlightRed":
                     profile.lighting.moonlightColor.r = Mathf.Clamp(floatValue, 0f, 2f);
@@ -1620,8 +1823,14 @@ public class K1L0HUD : MonoBehaviour
                     profile.volumetricFog.constantDensity = boolValue;
                     SaveBool("fogConstantDensity", boolValue);
                     break;
+                case "volumetricFogEnabled":
+                    rm?.SetVolumetricFogRuntimeEnabled(boolValue);
+                    break;
                 case "fogDensity":
-                    profile.volumetricFog.density = Mathf.Clamp(floatValue, 0f, 3f);
+                    // Sky-depth rejection now keeps this dedicated ground fog
+                    // off procedural-sky pixels, so Haze Lab can use genuinely
+                    // volumetric densities without washing out the blue sky.
+                    profile.volumetricFog.density = Mathf.Clamp(floatValue, 0f, 0.35f);
                     SaveFloat("fogDensity", profile.volumetricFog.density);
                     if (rm != null) rm.dayFogDensity = profile.volumetricFog.density;
                     break;
@@ -1630,10 +1839,30 @@ public class K1L0HUD : MonoBehaviour
                     SaveFloat("fogNoiseStrength", profile.volumetricFog.noiseStrength);
                     if (rm != null) rm.dayFogNoiseStrength = profile.volumetricFog.noiseStrength;
                     break;
+                case "fogRaymarchQuality":
+                    profile.volumetricFog.raymarchQuality = Mathf.Clamp(Mathf.RoundToInt(floatValue), 1, 16);
+                    SaveFloat("fogRaymarchQuality", profile.volumetricFog.raymarchQuality);
+                    break;
                 case "fogNoiseScale":
                     profile.volumetricFog.noiseScale = Mathf.Clamp(floatValue, 0.1f, 80f);
                     SaveFloat("fogNoiseScale", profile.volumetricFog.noiseScale);
                     if (rm != null) rm.dayFogNoiseScale = profile.volumetricFog.noiseScale;
+                    break;
+                case "fogTurbulence":
+                    profile.volumetricFog.turbulence = Mathf.Clamp(floatValue, 0f, 10f);
+                    SaveFloat("fogTurbulence", profile.volumetricFog.turbulence);
+                    break;
+                case "fogWindX":
+                    profile.volumetricFog.windDirection.x = Mathf.Clamp(floatValue, -2f, 2f);
+                    SaveFloat("fogWindX", profile.volumetricFog.windDirection.x);
+                    break;
+                case "fogWindY":
+                    profile.volumetricFog.windDirection.y = Mathf.Clamp(floatValue, -2f, 2f);
+                    SaveFloat("fogWindY", profile.volumetricFog.windDirection.y);
+                    break;
+                case "fogWindZ":
+                    profile.volumetricFog.windDirection.z = Mathf.Clamp(floatValue, -2f, 2f);
+                    SaveFloat("fogWindZ", profile.volumetricFog.windDirection.z);
                     break;
                 case "fogBrightness":
                     profile.volumetricFog.brightness = Mathf.Clamp(floatValue, 0f, 2f);
@@ -1645,12 +1874,44 @@ public class K1L0HUD : MonoBehaviour
                     SaveFloat("fogScatteringIntensity", profile.volumetricFog.scatteringIntensity);
                     if (rm != null) rm.dayFogScatteringIntensity = profile.volumetricFog.scatteringIntensity;
                     break;
+                case "fogOrangeAmount":
+                    SaveFloat("fogOrangeAmount", Mathf.Clamp01(floatValue));
+                    break;
+                case "fogColorRed":
+                    SaveFloat("fogColorRed", Mathf.Clamp01(floatValue));
+                    break;
+                case "fogColorGreen":
+                    SaveFloat("fogColorGreen", Mathf.Clamp01(floatValue));
+                    break;
+                case "fogColorBlue":
+                    SaveFloat("fogColorBlue", Mathf.Clamp01(floatValue));
+                    break;
                 case "fogHeight":
                     profile.volumetricFog.customHeight = true;
                     profile.volumetricFog.height = Mathf.Clamp(floatValue, 0f, 500f);
                     SaveBool("fogCustomHeight", true);
                     SaveFloat("fogHeight", profile.volumetricFog.height);
                     if (rm != null) rm.dayFogHeight = profile.volumetricFog.height;
+                    break;
+                case "fogVerticalOffset":
+                    profile.volumetricFog.verticalOffset = Mathf.Clamp(floatValue, -500f, 500f);
+                    SaveFloat("fogVerticalOffset", profile.volumetricFog.verticalOffset);
+                    break;
+                case "fogDistance":
+                    profile.volumetricFog.distance = Mathf.Clamp(floatValue, 0f, 12000f);
+                    SaveFloat("fogDistance", profile.volumetricFog.distance);
+                    break;
+                case "fogDistanceFallOff":
+                    profile.volumetricFog.distanceFallOff = Mathf.Clamp01(floatValue);
+                    SaveFloat("fogDistanceFallOff", profile.volumetricFog.distanceFallOff);
+                    break;
+                case "fogMaxDistance":
+                    profile.volumetricFog.maxDistance = Mathf.Clamp(floatValue, 1f, 12000f);
+                    SaveFloat("fogMaxDistance", profile.volumetricFog.maxDistance);
+                    break;
+                case "fogMaxDistanceFallOff":
+                    profile.volumetricFog.maxDistanceFallOff = Mathf.Clamp01(floatValue);
+                    SaveFloat("fogMaxDistanceFallOff", profile.volumetricFog.maxDistanceFallOff);
                     break;
                 case "fogDistantFog":
                     profile.volumetricFog.distantFog = boolValue;
@@ -1735,8 +1996,58 @@ public class K1L0HUD : MonoBehaviour
                     if (rm != null) rm.dayGroundSaturation = floatValue;
                     break;
                 }
+                case "groundValue":
+                {
+                    Color.RGBToHSV(profile.ground.groundColor, out var h, out var s, out _);
+                    float value01 = Mathf.Clamp01(floatValue);
+                    profile.ground.groundColor = Color.HSVToRGB(h, s, value01);
+                    SaveFloat("groundValue", value01);
+                    break;
+                }
+                case "groundBrightness":
+                    profile.ground.groundBrightness = Mathf.Clamp(floatValue, 0f, 3f);
+                    SaveFloat("groundBrightness", profile.ground.groundBrightness);
+                    break;
+                case "zossDayWindowIntensity":
+                    SaveFloat("zossDayWindowIntensity", Mathf.Clamp(floatValue, 8f, 30f));
+                    break;
+                case "buildingLightsEnabled":
+                    SaveBool("buildingLightsEnabled", boolValue);
+                    break;
+                case "buildingsVisible":
+                    SaveBool("buildingsVisible", boolValue);
+                    foreach (var renderer in FindObjectsByType<MeshRenderer>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    {
+                        if (renderer == null) continue;
+                        bool isBuilding = renderer.gameObject.name.IndexOf("building", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            renderer.GetComponentInParent<Kiloverse.Mapbox.BuildingMetadata>(true) != null;
+                        if (!isBuilding)
+                        {
+                            for (Transform parent = renderer.transform.parent; parent != null; parent = parent.parent)
+                            {
+                                if (parent.name.IndexOf("building", System.StringComparison.OrdinalIgnoreCase) >= 0 &&
+                                    parent.name.IndexOf("layer objects", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                                {
+                                    isBuilding = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (isBuilding)
+                        {
+                            renderer.forceRenderingOff = !boolValue;
+                            renderer.enabled = boolValue;
+                        }
+                    }
+                    break;
+                case "buildingDetailRadius":
+                    SaveFloat("buildingDetailRadius", Mathf.Clamp(floatValue, 300f, 1200f));
+                    break;
+                case "buildingEmissiveRadius":
+                    SaveFloat("buildingEmissiveRadius", Mathf.Clamp(floatValue, 300f, 2200f));
+                    break;
                 case "zossEmissiveIntensity":
-                    profile.buildings.zossEmissiveIntensity = Mathf.Clamp(floatValue, 0f, 50f);
+                    profile.buildings.zossEmissiveIntensity = Mathf.Clamp(floatValue, 8f, 50f);
                     SaveFloat("zossEmissiveIntensity", profile.buildings.zossEmissiveIntensity);
                     break;
                 case "zossEmissiveSmoothness":
@@ -1770,13 +2081,131 @@ public class K1L0HUD : MonoBehaviour
                 case "skyTargetFps":
                     DynamicSkyVideoController.SetSkyFps(floatValue);
                     break;
+                case "zossWallValue":
+                {
+                    // Crush/lift the building wall bodies (vaporwave: near-black).
+                    Color.RGBToHSV(profile.buildings.zossWallColor, out var bh, out var bs, out _);
+                    profile.buildings.zossWallColor = Color.HSVToRGB(bh, bs, Mathf.Clamp01(floatValue));
+                    SaveFloat("zossWallValue", floatValue);
+                    break;
+                }
+                case "zossWallSaturation":
+                {
+                    Color.RGBToHSV(profile.buildings.zossWallColor, out var bh, out _, out var bv);
+                    profile.buildings.zossWallColor = Color.HSVToRGB(bh, Mathf.Clamp01(floatValue), bv);
+                    SaveFloat("zossWallSaturation", floatValue);
+                    break;
+                }
+                case "zossLitFraction":
+                    RenderManager.WindowLitFraction = 1f;
+                    SaveFloat("zossLitFraction", RenderManager.WindowLitFraction);
+                    break;
+                case "zossPaletteMix":
+                    RenderManager.WindowPaletteMix = Mathf.Clamp01(floatValue);
+                    SaveFloat("zossPaletteMix", RenderManager.WindowPaletteMix);
+                    break;
+                case "zossPaletteSaturation":
+                    RenderManager.WindowPaletteSaturation = Mathf.Clamp(floatValue, 0f, 1.5f);
+                    SaveFloat("zossPaletteSaturation", RenderManager.WindowPaletteSaturation);
+                    break;
+                case "zossPaletteSaturation_night":
+                    RenderManager.WindowPaletteSaturationNight = Mathf.Clamp(floatValue, 0f, 1.5f);
+                    SaveFloat("zossPaletteSaturation_night", RenderManager.WindowPaletteSaturationNight);
+                    break;
+                case "zossWarmth":
+                    RenderManager.WindowWarmth = Mathf.Clamp01(floatValue);
+                    SaveFloat("zossWarmth", RenderManager.WindowWarmth);
+                    break;
+                case "zossAccentFraction":
+                    RenderManager.WindowAccentFraction = Mathf.Clamp(floatValue, 0f, 0.5f);
+                    SaveFloat("zossAccentFraction", RenderManager.WindowAccentFraction);
+                    break;
+                case "zossWindowBrightness":
+                    RenderManager.WindowBrightness = Mathf.Clamp(floatValue, 0.75f, 2f);
+                    SaveFloat("zossWindowBrightness", RenderManager.WindowBrightness);
+                    break;
+                case "zossBrightnessJitter":
+                    SaveFloat("zossBrightnessJitter", Mathf.Clamp01(floatValue));
+                    break;
+                case "zossBrightnessJitterRate":
+                    SaveFloat("zossBrightnessJitterRate", Mathf.Clamp(floatValue, 0.05f, 4f));
+                    break;
+                case "zossWallDaylightLift":
+                    SaveFloat("zossWallDaylightLift", Mathf.Clamp01(floatValue));
+                    break;
+                case "zossWallVariance":
+                    SaveFloat("zossWallVariance", Mathf.Clamp01(floatValue));
+                    break;
+                case "roadValue":
+                {
+                    float roadBrightness = Mathf.Clamp01(floatValue);
+                    SaveFloat("roadValue", roadBrightness);
+                    var map = FindFirstObjectByType<Kiloverse.Mapbox.OvertureMapManager>();
+                    if (map != null)
+                        map.SendMessage("ApplyRoadBrightness", roadBrightness, SendMessageOptions.DontRequireReceiver);
+                    break;
+                }
+                case "dayRoadValue":
+                {
+                    SaveFloat("dayRoadValue", Mathf.Clamp01(floatValue));
+                    var dayRoadMap = FindFirstObjectByType<Kiloverse.Mapbox.OvertureMapManager>();
+                    if (dayRoadMap != null)
+                        dayRoadMap.SendMessage("ApplyRoadBrightness", PlayerPrefs.GetFloat("k1lo_roadValue", .88f), SendMessageOptions.DontRequireReceiver);
+                    KiloWorld.Rendering.Systems.RenderManager.Instance?.Apply();
+                    break;
+                }
+                case "roadHue":
+                case "roadSaturation":
+                case "roadGlow":
+                {
+                    SaveFloat(key, Mathf.Clamp01(floatValue));
+                    var map = FindFirstObjectByType<Kiloverse.Mapbox.OvertureMapManager>();
+                    if (map != null)
+                        map.SendMessage("ApplyRoadBrightness", PlayerPrefs.GetFloat("k1lo_roadValue", .88f), SendMessageOptions.DontRequireReceiver);
+                    break;
+                }
+                case "vaporDayPink":
+                    // Saves the pref and re-pushes sky material params live.
+                    DynamicSkyVideoController.SetExperimentalSkyFloat("vaporDayPink", Mathf.Clamp01(floatValue));
+                    break;
             }
         }
 
         switch (key)
         {
+            case "groundHazeEnabled":
+                PlayerPrefs.SetInt("k1lo_groundHazeEnabled", boolValue ? 1 : 0);
+                PlayerPrefs.Save();
+                GroundHazeController.ApplySettings();
+                break;
+            case "groundHazeDensity":
+            case "groundHazeDetail":
+            case "groundHazeSpeed":
+            case "groundHazeHeight":
+            case "groundHazeSpacing":
+            case "groundHazeHue":
+            case "groundHazeSaturation":
+            case "groundHazeBrightness":
+            case "groundHazeExtent":
+            case "groundHazePinkAmount":
+            case "groundHazeWhiteAmount":
+            case "groundHazeBlueAmount":
+            case "groundHazeOrangeAmount":
+            case "groundHazeHorizonDensity":
+            case "groundHazeHorizonDistance":
+            case "groundHazeHorizonHeight":
+                PlayerPrefs.SetFloat("k1lo_" + key, floatValue);
+                PlayerPrefs.Save();
+                GroundHazeController.ApplySettings();
+                break;
+            case "settingsPanelOpen":
+                DynamicSkyVideoController.SetSettingsPanelOpen(boolValue);
+                break;
             case "beamDistanceLabels":
                 SignalBeamBridge.SetDistanceLabelsVisible(boolValue);
+                break;
+            case "projectorLaserBeams":
+                BeamAvatar.SetProjectorLaserEnabled(boolValue);
                 break;
             case "beamDebug":
                 ProfileEditorModal.SetBeamDebugVisible(boolValue);
@@ -1822,11 +2251,28 @@ public class K1L0HUD : MonoBehaviour
             case "layeredAurora":
             case "layeredSkyEffect":
             case "layeredNightBlackness":
+            case "layeredHorizonHeight":
+            case "skyGoldenHourStart":
+            case "skySunriseWarmth":
+            case "skySunsetWarmth":
+            case "skyDayBrightness":
+            case "skyGoldenBrightness":
+            case "skyGoldenCloudWarmth":
+            case "skyCloudPink":
+            case "skyHorizonPink":
+            case "skyNightHorizonGlow":
+            case "skyNightHorizonHue":
+            case "skyNightHorizonBrightness":
                 DynamicSkyVideoController.SetExperimentalSkyFloat(key, floatValue);
                 break;
             case "solarWorldOverride":
                 PlayerPrefs.SetInt("k1lo_solarWorldOverride", boolValue ? 1 : 0);
                 PlayerPrefs.Save();
+                break;
+            case "visualNightOverride":
+                PlayerPrefs.SetInt("k1lo_visualNightOverride", boolValue ? 1 : 0);
+                PlayerPrefs.Save();
+                DynamicSkyVideoController.ForceApply();
                 break;
             case "nativeSunAltitude":
             case "nativeSunAzimuth":

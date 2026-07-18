@@ -43,6 +43,7 @@ public class K1L0LocationBeams : MonoBehaviour
         public ParticleSystem particles;
         public TextMeshPro label;
         public Renderer labelBackground;
+        public BeamItemHologram itemBillboard;
         public string currentName;
         public string currentCategory;
         // Last applied beam-height target (meters). Tracked so we only push the
@@ -60,7 +61,8 @@ public class K1L0LocationBeams : MonoBehaviour
     private const float BeamTargetPixelsAboveHorizon = 135f;
     private const float BeamTopSafeMarginPixels = 130f;
     private const float BeamMinScreenHeightPixels = 70f;
-    private const float LabelTopSnugOffset = 0.35f;
+    // BeamItemHologram sits 6m above the tip; put the location name halfway.
+    private const float LabelTopSnugOffset = 3f;
     static float ComputeTargetBeamHeight(float distance)
     {
         if (distance <= BeamNearDistance) return BeamNearHeight;
@@ -262,6 +264,8 @@ public class K1L0LocationBeams : MonoBehaviour
                 if (firstShow)
                 {
                     entry.root.SetActive(true);
+                    entry.itemBillboard.SetBeamHeight(targetHeight);
+                    entry.itemBillboard.Configure(data.HologramImageUrl, data.HologramDepthUrl, false, 1, beamMaterial);
                 }
 
                 if (firstShow || heightChanged)
@@ -269,6 +273,7 @@ public class K1L0LocationBeams : MonoBehaviour
                     var psMain = entry.particles.main;
                     psMain.startLifetimeMultiplier = Mathf.Max(0.01f, targetHeight / BeamHeight);
                     entry.currentTargetHeight = targetHeight;
+                    entry.itemBillboard.SetBeamHeight(targetHeight);
                     if (entry.label != null)
                         entry.label.transform.localPosition = new Vector3(0f, targetHeight + LabelTopSnugOffset, 0f);
                     // Repopulate so the visible column instantly snaps to the
@@ -281,6 +286,13 @@ public class K1L0LocationBeams : MonoBehaviour
 
                 // Update name, distance, and category color
                 string catGroup = data.MainCategoryGroup ?? "other";
+                float solarDayness = Mathf.Clamp01(
+                    (KiloWorld.Rendering.Systems.RenderManager.LiveSunAltitudeDeg + 4f) / 14f);
+                float daylightBeamAlpha = Mathf.Lerp(1f, .12f, solarDayness);
+                var liveMain = entry.particles.main;
+                Color liveBeamColor = CategoryColor(catGroup);
+                liveBeamColor.a = daylightBeamAlpha;
+                liveMain.startColor = liveBeamColor;
                 if (entry.currentName != data.Name || entry.currentCategory != catGroup)
                 {
                     entry.currentName = data.Name;
@@ -293,6 +305,7 @@ public class K1L0LocationBeams : MonoBehaviour
                     // Set beam particle color by category
                     Color catColor = CategoryColor(catGroup);
                     var main = entry.particles.main;
+                    catColor.a = daylightBeamAlpha;
                     main.startColor = catColor;
 
                     // Update gradient
@@ -357,6 +370,7 @@ public class K1L0LocationBeams : MonoBehaviour
         GameObject root = new GameObject($"LocBeam_{index}");
         root.transform.SetParent(transform, false);
         root.SetActive(false);
+        BeamItemHologram itemBillboard = root.AddComponent<BeamItemHologram>();
 
         // Particle beam
         GameObject psGO = new GameObject("Particles");
@@ -455,6 +469,7 @@ public class K1L0LocationBeams : MonoBehaviour
             particles = ps,
             label = tmp,
             labelBackground = bgRenderer,
+            itemBillboard = itemBillboard,
             currentName = null
         };
     }

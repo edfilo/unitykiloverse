@@ -204,7 +204,9 @@ echo "▸ Step 5: Restarting kiloworld-api..."
 echo "  ✓ restarted kiloworld-api"
 
 # 6. Verification
-echo "▸ Step 6: Verifying URL..."
-curl -sI -X GET https://tunnel.kilo.gallery/ota/k1l0/latest/manifest.plist | head -n 10
+echo "▸ Step 6: Verifying OTA artifacts..."
+curl -fsS -X GET https://tunnel.kilo.gallery/ota/k1l0/latest/manifest.plist >/dev/null
+test -s /tmp/tedfred_ota/k1l0/latest/app.ipa
 
 echo "=== Deployment Pipeline Complete ==="
+echo "Install link: https://tunnel.kilo.gallery/ota/k1l0/latest/"

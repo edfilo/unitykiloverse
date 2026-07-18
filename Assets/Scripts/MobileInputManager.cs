@@ -6,7 +6,6 @@ using System.Collections.Generic;
 public class MobileInputManager : MonoBehaviour
 {
     private static MobileInputManager instance;
-    private static float lastCameraToggleTime = -10f;
     private static float lastGpsToggleTime = -10f;
 
     [Header("Settings")]
@@ -148,13 +147,11 @@ public class MobileInputManager : MonoBehaviour
             if (rotate != 0) currentRotateVelocity = rotate; // Capture velocity
         };
         handler.OnStateChange = (dragging) => { isTouching = dragging; };
-        handler.OnTap = () =>
+        handler.OnVerticalSwipe = (swipe) =>
         {
             if (playerController == null) return;
-            if (Time.unscaledTime - lastCameraToggleTime < 0.35f) return;
-            lastCameraToggleTime = Time.unscaledTime;
-            Debug.Log("[MobileInput] TAP → ToggleCameraView");
-            playerController.ToggleCameraView();
+            Debug.Log($"[MobileInput] VERTICAL SWIPE → SignalCameraSwipe({swipe:F1})");
+            playerController.SignalCameraSwipe(swipe);
         };
 
         // GPS/test location mode is owned by the native Swift settings panel.
@@ -230,7 +227,7 @@ public class MobileInputManager : MonoBehaviour
     {
         public System.Action<float, float> OnInput; // move (y), rotate (x)
         public System.Action<bool> OnStateChange;
-        public System.Action OnTap;
+        public System.Action<float> OnVerticalSwipe;
         public float sensitivity = 0.01f;
 
         private Vector2 startPos;
@@ -243,6 +240,7 @@ public class MobileInputManager : MonoBehaviour
         private const float LOCK_THRESHOLD_PX = 12f;
         private const float TAP_TIME = 0.35f;
         private const float TAP_THRESHOLD_PX = 24f;
+        private const float CAMERA_SWIPE_THRESHOLD_PX = 60f;
 
         private GPSLocationController gps;
 
@@ -338,6 +336,8 @@ public class MobileInputManager : MonoBehaviour
             else if (lockedAxis == Axis.Vertical)
             {
                 delta.x = 0; // Ignore horizontal
+                OnInput?.Invoke(0, 0);
+                return;
             }
             else
             {
@@ -365,21 +365,14 @@ public class MobileInputManager : MonoBehaviour
             {
                 Vector2 totalDelta = eventData.position - startPos;
                 float dur = Time.time - startTime;
-                // A tap is a short hold with only normal finger jitter. On iOS a tiny
-                // finger wobble often emits OnDrag, so do not disqualify only because
-                // a drag callback fired; use actual total distance instead.
-                float timeSinceLastDrag = Time.time - lastDragEndTime;
                 float totalMove = totalDelta.magnitude;
-                bool isTap = totalMove <= TAP_THRESHOLD_PX
-                    && dur < TAP_TIME
-                    && dur > 0.01f // Must have actual duration (phantom taps have dur=0)
-                    && timeSinceLastDrag > 0.12f; // Cooldown after real drags
-                Debug.Log($"[MobileInput] PointerUp: hasMoved={hasMoved} dur={dur:F3}s move={totalMove:F1}px delta=({totalDelta.x:F1},{totalDelta.y:F1}) dragCooldown={timeSinceLastDrag:F3}s isTap={isTap}");
+                bool isVerticalSwipe = Mathf.Abs(totalDelta.y) >= CAMERA_SWIPE_THRESHOLD_PX
+                    && Mathf.Abs(totalDelta.y) > Mathf.Abs(totalDelta.x) * 1.15f;
+                Debug.Log($"[MobileInput] PointerUp: hasMoved={hasMoved} dur={dur:F3}s move={totalMove:F1}px delta=({totalDelta.x:F1},{totalDelta.y:F1}) verticalSwipe={isVerticalSwipe}");
                 if (totalMove > TAP_THRESHOLD_PX) lastDragEndTime = Time.time;
-                if (isTap)
+                if (isVerticalSwipe)
                 {
-                    Debug.Log("[MobileInput] ✓ TAP → ToggleCameraView");
-                    OnTap?.Invoke();
+                    OnVerticalSwipe?.Invoke(totalDelta.y);
                 }
             }
 

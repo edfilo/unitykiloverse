@@ -261,6 +261,11 @@ namespace Kiloverse.Mapbox
 
         public void Put(T item) => _objects.Enqueue(item);
         public void Clear() => _objects.Clear();
+        public void Drain(Action<T> dispose)
+        {
+            while (_objects.Count > 0)
+                dispose?.Invoke(_objects.Dequeue());
+        }
     }
 
     // ── Mesh Extensions ─────────────────────────────────────────────
@@ -382,6 +387,16 @@ namespace Kiloverse.Mapbox
         }
 
         public void OnDestroy() => _objectPool?.Clear();
+
+        public void PurgePool()
+        {
+            _objectPool?.Drain(entity =>
+            {
+                if (entity == null) return;
+                if (entity.Mesh != null) UnityEngine.Object.Destroy(entity.Mesh);
+                if (entity.GameObject != null) UnityEngine.Object.Destroy(entity.GameObject);
+            });
+        }
 
         public bool IsZinSupportedRange(int targetZ)
         {
@@ -571,4 +586,3 @@ namespace Kiloverse.Mapbox
     // The scene has a VectorLayerModuleScript component with serialized visualizer configs.
     // OvertureMapManager uses FindFirstObjectByType to find the Mapbox component at runtime.
 }
-

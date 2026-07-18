@@ -206,20 +206,20 @@ namespace KiloWorld.Rendering
 
             [Header("God View")]
             [Tooltip("God view camera height (Y position)")]
-            public float godPositionY = 100f;
+            public float godPositionY = 51f;
 
             [Tooltip("God view distance (Z position, further back)")]
-            public float godPositionZ = 100f;
+            public float godPositionZ = 107f;
 
             [Tooltip("God view pitch (X-axis rotation, looking down)")]
-            [Range(-90, 90)] public float godRotationX = 55f;
+            [Range(-90, 90)] public float godRotationX = -1f;
 
             [Header("Camera Clipping")]
             [Tooltip("Near clipping plane distance")]
             public float nearClipPlane = 0.3f;
 
             [Tooltip("Far clipping plane distance (match to fog visibility for performance)")]
-            public float farClipPlane = 250f;
+            public float farClipPlane = 3600f;
         }
 
         [System.Serializable]
@@ -255,6 +255,9 @@ namespace KiloWorld.Rendering
             [Header("Directional Light")]
             [Range(0, 256)] public float lightDiffusionPower = 120;
             [Range(0, 2)] public float lightDiffusionIntensity = 1.2f;
+            [Range(0, 1)] public float lightDiffusionBackScatter = 0.3f;
+            [Tooltip("Base fog lighting independent of sun direction. Lower values add directional contrast.")]
+            [Range(0, 1)] public float diffusionFloor = 0.72f;
             public bool receiveShadows = false;
             [Range(0, 1)] public float shadowIntensity = 0.5f;
 
@@ -297,6 +300,12 @@ namespace KiloWorld.Rendering
             [Range(0, 2)] public float distantFogDiffusionIntensity = 1.5f;
             public float distantFogBaseAltitude = 0f;
             public bool distantFogSymmetrical = false;
+            [Tooltip("Large-scale animated breakup for the efficient distant fog layer.")]
+            public bool distantFogNoise = true;
+            public float distantFogDistanceNoiseScale = 0.18f;
+            [Range(0, 1)] public float distantFogDistanceNoiseStrength = 0.28f;
+            public float distantFogDistanceNoiseMaxDistance = 420f;
+            public Vector3 distantFogNoiseWindDirection = new Vector3(-0.0008f, 0.00015f, -0.0004f);
         }
 
         [System.Serializable]

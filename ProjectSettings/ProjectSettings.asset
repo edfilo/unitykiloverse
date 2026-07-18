@@ -173,7 +173,7 @@ PlayerSettings:
   buildNumber:
     Standalone: 0
     VisionOS: 0
-    iPhone: 0
+    iPhone: 2
     tvOS: 0
   overrideDefaultApplicationIdentifier: 1
   AndroidBundleVersionCode: 1
@@ -182,7 +182,7 @@ PlayerSettings:
   AndroidPreferredInstallLocation: 1
   AndroidPreferredDataLocation: 1
   aotOptions: 
-  stripEngineCode: 0
+  stripEngineCode: 1
   iPhoneStrippingLevel: 0
   iPhoneScriptCallOptimization: 0
   ForceInternetPermission: 0
@@ -614,7 +614,7 @@ PlayerSettings:
   enableInternalProfiler: 0
   logObjCUncaughtExceptions: 1
   enableCrashReportAPI: 1
-  cameraUsageDescription: 
+  cameraUsageDescription: K1L0 lets you take a photo to use in a transmission.
   locationUsageDescription: Kiloverse needs your location to place you on the map.
   microphoneUsageDescription: Recording audio drops.
   bluetoothUsageDescription: 

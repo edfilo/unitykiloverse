@@ -1,16 +1,29 @@
-import AVFoundation
-import AVKit
-import CoreImage
-import CoreLocation
-import Darwin
-import Foundation
-import Metal
-import MetalKit
 import SwiftUI
+import AVFoundation
+import MetalKit
+import CoreMedia
+import Metal
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
 import AppKit
+
+// Small compatibility surface for shared SwiftUI views. These types let the
+// macOS overlay compile the same view hierarchy while iPhone-only services
+// (camera picker and software-keyboard notifications) remain inert on Mac.
+private enum UIImagePickerController {
+    enum SourceType { case camera, photoLibrary }
+    static func isSourceTypeAvailable(_ source: SourceType) -> Bool { source == .photoLibrary }
+}
+private enum UIResponder {
+    static let keyboardWillChangeFrameNotification = Notification.Name("K1L0MacKeyboardWillChangeFrame")
+    static let keyboardWillHideNotification = Notification.Name("K1L0MacKeyboardWillHide")
+    static let keyboardFrameEndUserInfoKey = "K1L0MacKeyboardFrameEnd"
+}
+private struct UIScreen {
+    static let main = UIScreen()
+    var bounds: CGRect { NSScreen.main?.frame ?? .zero }
+}
 #endif
 #if os(iOS)
 import CoreMotion
@@ -42,23 +55,22 @@ private enum K1L0NativeSettingsDefaults {
     static let values: [String: Any] = [
         // "Dystopian daylight" grade: drained color, cold temp, sickly green
         // tint, harsher contrast — the sky stays daytime but reads bleak.
-        "k1lo_native_saturation": -28.0,
-        "k1lo_native_contrast": 14.0,
-        "k1lo_native_mapBrightness": -0.12,
-        "k1lo_native_hueShift": -4.0,
-        "k1lo_native_temperature": -12.0,
-        "k1lo_native_tint": -6.0,
+        "k1lo_native_saturation": 0.0,
+        "k1lo_native_contrast": 0.0,
+        "k1lo_native_mapBrightness": 0.0,
+        "k1lo_native_hueShift": 0.0,
+        "k1lo_native_temperature": 0.0,
+        "k1lo_native_tint": 0.0,
         "k1lo_native_bloomEnabled": true,
-        "k1lo_native_bloomIntensity": 2.4,
-        "k1lo_native_bloomThreshold": 1.2,
-        "k1lo_native_bloomScatter": 0.43,
+        "k1lo_native_bloomIntensity": 1.10,
+        "k1lo_native_dayBloomIntensity": 2.0,
+        "k1lo_native_bloomThreshold": 1.06,
+        "k1lo_native_bloomScatter": 0.24,
         "k1lo_native_vignetteEnabled": true,
         "k1lo_native_vignetteIntensity": 0.45,
         "k1lo_native_vignetteSmoothness": 1.0,
         "k1lo_native_chromaticEnabled": true,
         "k1lo_native_chromaticIntensity": 0.16,
-        "k1lo_native_lensDistEnabled": true,
-        "k1lo_native_lensDistIntensity": -0.5,
         "k1lo_native_dofEnabled": false,
         "k1lo_native_focusDistance": 18.1,
         "k1lo_native_aperture": 8.25,
@@ -67,26 +79,26 @@ private enum K1L0NativeSettingsDefaults {
         "k1lo_native_motionBlurIntensity": 0.02,
         "k1lo_native_filmGrainEnabled": true,
         "k1lo_native_filmGrainIntensity": 0.4,
-        "k1lo_native_godPositionY": 51.0,
+        "k1lo_native_godPositionY": 49.0,
         "k1lo_native_godPositionZ": 107.0,
-        "k1lo_native_godRotationX": -1.0,
+        "k1lo_native_godRotationX": -2.0,
         "k1lo_native_farClipPlane": 3600.0,
         "k1lo_native_moonlightEnabled": true,
         "k1lo_native_moonlightManualOverride": false,
-        "k1lo_native_moonlightIntensity": 1.0,
+        "k1lo_native_moonlightIntensity": 0.55,
         "k1lo_native_moonlightRed": 0.7,
         "k1lo_native_moonlightGreen": 0.8,
         "k1lo_native_moonlightBlue": 1.0,
         "k1lo_native_moonlightPitch": 90.0,
         "k1lo_native_moonlightYaw": 0.0,
         "k1lo_native_moonlightRoll": 0.0,
-        "k1lo_native_ambientEnabled": true,
+        "k1lo_native_ambientEnabled": false,
         // Dusty skylight so terrain reads as grey wasteland instead of void.
         // 1.15 keeps grass/roads readable at night without washing out the grade.
-        "k1lo_native_ambientIntensity": 1.55,
+        "k1lo_native_ambientIntensity": 0.0,
         "k1lo_native_spotlightEnabled": true,
         "k1lo_native_spotlightIntensity": 3.0,
-        "k1lo_native_zossEmissiveIntensity": 1.9,
+        "k1lo_native_zossEmissiveIntensity": 19.0,
         "k1lo_native_zossEmissiveSmoothness": 0.34,
         "k1lo_native_zossEmissiveMetallic": 0.0,
         // Window glow: vaporwave magenta-pink (hue 0.90 ≈ 324°) to match the
@@ -94,13 +106,26 @@ private enum K1L0NativeSettingsDefaults {
         // reads as ash, not paper-white.
         "k1lo_native_zossEmissiveHue": 0.90,
         "k1lo_native_zossEmissiveSaturation": 0.62,
+        // Vaporwave city: near-black wall bodies, most windows lit with the
+        // full per-window palette, day sky blushed pink.
+        "k1lo_native_zossWallValue": 0.10,
+        "k1lo_native_zossWallSaturation": 0.30,
+        "k1lo_native_zossLitFraction": 1.0,
+        "k1lo_native_zossPaletteMix": 1.0,
+        "k1lo_native_zossPaletteSaturation": 1.35,
+        "k1lo_native_zossPaletteSaturation_night": 1.22,
+        "k1lo_native_zossWarmth": 1.0,
+        "k1lo_native_zossAccentFraction": 0.08,
+        "k1lo_native_zossWindowBrightness": 1.0,
+        "k1lo_native_vaporDayPink": 0.65,
         "k1lo_native_zossNightEmissiveHue": 0.115,
         "k1lo_native_zossNightEmissiveSaturation": 0.82,
         // Green grass (hue 0.33) with real saturation — the old ash-olive
         // (0.23/0.12) read as black under the pink skies.
         "k1lo_native_groundHue": 0.33,
         "k1lo_native_groundSaturation": 0.42,
-        "k1lo_native_beamDistanceLabels": false,
+        "k1lo_native_beamDistanceLabels": true,
+        "k1lo_native_projectorLaserBeams": true,
         "k1lo_native_beamDebug": false,
         "k1lo_native_perfOverlay": true,
         "k1lo_native_showStoryStrip": false,
@@ -111,7 +136,7 @@ private enum K1L0NativeSettingsDefaults {
         // Manual weather is only a fallback for when live weather is missing —
         // it must stay Clear so a sunny day never shows the overcast sky video.
         "k1lo_native_manualWeather": 0,
-        "k1lo_native_ambientMinStepsToSpawn": 110.0,
+        "k1lo_native_ambientMinStepsToSpawn": 0.0,
         "k1lo_native_receiveStepsRequired": 200.0,
         "k1lo_native_transmissionWaitSteps": 500.0,
         "k1lo_native_momentumSessionGraceMinutes": 20.0,
@@ -124,20 +149,20 @@ private enum K1L0NativeSettingsDefaults {
         "k1lo_native_transmissionFizzyEdges": false,
         "k1lo_native_musicRadioEnabled": true,
         "k1lo_native_musicRadioVolume": 0.5415074229240417,
-        "k1lo_native_musicRadioMode": "final",
+        "k1lo_native_musicRadioMode": "instrumental",
         "k1lo_native_fogConstantDensity": false,
-        "k1lo_native_fogDensity": 0.37,
-        "k1lo_native_fogNoiseStrength": 1.67,
-        "k1lo_native_fogNoiseScale": 17.4,
+        "k1lo_native_fogDensity": 0.01,
+        "k1lo_native_fogNoiseStrength": 1.8,
+        "k1lo_native_fogNoiseScale": 21.0,
         // Brighter fog = pale radioactive dust instead of black smog.
-        "k1lo_native_fogBrightness": 0.34,
-        "k1lo_native_fogScatteringIntensity": 1.15,
-        "k1lo_native_fogHeight": 77.0,
+        "k1lo_native_fogBrightness": 0.81,
+        "k1lo_native_fogScatteringIntensity": 0.85,
+        "k1lo_native_fogHeight": 120.0,
         "k1lo_native_fogDistantFog": true,
         // Horizon haze: soften the hard sky/city seam so daylight reads
         // polluted rather than postcard-clear.
-        "k1lo_native_fogDistantDensity": 0.0,
-        "k1lo_native_fogDistantStart": 0.0,
+        "k1lo_native_fogDistantDensity": 0.0045,
+        "k1lo_native_fogDistantStart": 200.0,
         "k1lo_native_fogNativeLights": false,
         "k1lo_native_fogNativeLightsMultiplier": 0.0,
         "k1lo_native_skyTargetFps": 30.0,
@@ -146,26 +171,27 @@ private enum K1L0NativeSettingsDefaults {
         "k1lo_native_layeredSkyEffect": 0,
         "k1lo_native_layeredRain": 0.0,
         "k1lo_native_layeredAurora": 0.0,
-        "k1lo_native_layeredSkyTopHue": 0.62,
-        "k1lo_native_layeredSkyMidHue": 0.76,
-        "k1lo_native_layeredNightBlackness": 0.72,
-        "k1lo_native_layeredSkyHorizonHue": 0.94,
-        "k1lo_native_layeredCloudOpacity": 0.35,
+        "k1lo_native_layeredSkyTopHue": 0.80,
+        "k1lo_native_layeredSkyMidHue": 0.62,
+        "k1lo_native_layeredNightBlackness": 0.60,
+        "k1lo_native_layeredSkyHorizonHue": 0.73,
+        "k1lo_native_layeredHorizonHeight": 0.0,
+        "k1lo_native_layeredCloudOpacity": 0.58,
         "k1lo_native_layeredCloudSpeed": 0.07,
         "k1lo_native_liveCloudCover": 35.0,
-        "k1lo_native_layeredCloudScale": 1.35,
-        "k1lo_native_layeredCloudContrast": 1.1,
+        "k1lo_native_layeredCloudScale": 2.6,
+        "k1lo_native_layeredCloudContrast": 0.95,
         "k1lo_native_solarWorldOverride": false,
         "k1lo_native_liveSolarAltitude": 12.0,
         "k1lo_native_liveSolarAzimuth": 180.0,
-        "k1lo_native_fogDensity_night": 0.37,
-        "k1lo_native_fogNoiseStrength_night": 1.67,
+        "k1lo_native_fogDensity_night": 0.025,
+        "k1lo_native_fogNoiseStrength_night": 0.22,
         "k1lo_native_fogNoiseScale_night": 17.4,
-        "k1lo_native_fogBrightness_night": 0.34,
-        "k1lo_native_fogScatteringIntensity_night": 1.15,
-        "k1lo_native_fogHeight_night": 77.0,
-        "k1lo_native_fogDistantDensity_night": 0.0,
-        "k1lo_native_fogDistantStart_night": 0.0,
+        "k1lo_native_fogBrightness_night": 0.24,
+        "k1lo_native_fogScatteringIntensity_night": 0.55,
+        "k1lo_native_fogHeight_night": 48.0,
+        "k1lo_native_fogDistantDensity_night": 0.0025,
+        "k1lo_native_fogDistantStart_night": 100.0,
         "k1lo_native_groundHue_night": 0.30,
         "k1lo_native_groundSaturation_night": 0.0
     ]
@@ -178,10 +204,54 @@ private enum K1L0NativeSettingsDefaults {
         applyGroundLiftOnce()
         applyPinkWindowGlowOnce()
         applyGreenGrassOnce()
+        applyVaporCityOnce()
+        applyWindowSaturationSplitOnce()
+        applyZeroSpawnGateOnce()
+        mergeWeatherOverrideTogglesOnce()
         applyGrassVisibilityLightOnce()
         applyHudCameraDefaultsOnce()
         disableThermalHeavyTransmissionEdgesOnce()
         resetLiveAstronomySkyOnce()
+        applyLowerFogOnce()
+        applyVeryLightDayFogOnce()
+        applyAmbientZeroOnce()
+        applyMoonlight055Once()
+        resetOverridesOnLaunch()
+    }
+
+    private static func applyMoonlight055Once() {
+        let d = UserDefaults.standard
+        let flag = "k1lo_native_moonlight055_v1"
+        guard !d.bool(forKey: flag) else { return }
+        d.set(0.55, forKey: "k1lo_native_moonlightIntensity")
+        d.set(true, forKey: flag)
+    }
+
+    // Overrides are debug/test toggles — reset every launch so they never
+    // persist across sessions accidentally.
+    private static func resetOverridesOnLaunch() {
+        let d = UserDefaults.standard
+        d.set(false, forKey: "k1lo_native_testSkyOverride")
+        d.set(false, forKey: "k1lo_native_moonlightManualOverride")
+        d.set(false, forKey: "k1lo_native_solarWorldOverride")
+        d.set(false, forKey: "k1lo_native_layeredBypassWeather")
+    }
+
+    private static func applyLowerFogOnce() {
+        let d = UserDefaults.standard
+        let flag = "k1lo_native_lowerFog_v1"
+        guard !d.bool(forKey: flag) else { return }
+        d.set(0.18, forKey: "k1lo_native_fogDensity")
+        d.set(0.025, forKey: "k1lo_native_fogDensity_night")
+        d.set(true, forKey: flag)
+    }
+
+    private static func applyVeryLightDayFogOnce() {
+        let d = UserDefaults.standard
+        let flag = "k1lo_native_veryLightDayFog_v1"
+        guard !d.bool(forKey: flag) else { return }
+        d.set(0.01, forKey: "k1lo_native_fogDensity")
+        d.set(true, forKey: flag)
     }
 
     private static func resetLiveAstronomySkyOnce() {
@@ -204,8 +274,8 @@ private enum K1L0NativeSettingsDefaults {
             "k1lo_native_manualHour": 13.25,
             "k1lo_native_solarWorldOverride": false,
             "k1lo_native_moonlightManualOverride": false,
-            "k1lo_native_ambientEnabled": true,
-            "k1lo_native_ambientIntensity": 1.85,
+            "k1lo_native_ambientEnabled": false,
+            "k1lo_native_ambientIntensity": 0.0,
             "k1lo_native_groundHue": 0.28,
             "k1lo_native_groundSaturation": 0.28,
             "k1lo_native_fogBrightness": 0.55,
@@ -229,18 +299,18 @@ private enum K1L0NativeSettingsDefaults {
         let flag = "k1lo_native_hudCameraDefaults_v8"
         guard !defaults.bool(forKey: flag) else { return }
         let tuned: [String: Any] = [
-            "k1lo_native_godPositionY": 51.0,
+            "k1lo_native_godPositionY": 49.0,
             "k1lo_native_godPositionZ": 107.0,
-            "k1lo_native_godRotationX": -1.0,
+            "k1lo_native_godRotationX": -2.0,
             "k1lo_native_farClipPlane": 3600.0,
             "k1lo_native_bottomMenuLayout": "tabs",
-            "k1lo_native_fogBrightness": 0.34,
+            "k1lo_native_fogBrightness": 0.55,
             "k1lo_native_fogDistantDensity": 0.0,
             "k1lo_native_fogDistantStart": 0.0,
             "k1lo_native_zossEmissiveSaturation": 0.62,
-            "k1lo_godPositionY": 51.0,
+            "k1lo_godPositionY": 49.0,
             "k1lo_godPositionZ": 107.0,
-            "k1lo_godRotationX": -1.0,
+            "k1lo_godRotationX": -2.0,
             "k1lo_farClipPlane": 3600.0,
             "k1lo_fogBrightness": 0.34,
             "k1lo_fogDistantDensity": 0.0,
@@ -259,7 +329,7 @@ private enum K1L0NativeSettingsDefaults {
         guard !defaults.bool(forKey: flag) else { return }
         defaults.set(true, forKey: "k1lo_native_ambientEnabled")
         defaults.set(1.55, forKey: "k1lo_native_ambientIntensity")
-        defaults.set(false, forKey: "k1lo_native_beamDistanceLabels")
+        defaults.set(true, forKey: "k1lo_native_beamDistanceLabels")
         defaults.set(true, forKey: flag)
     }
 
@@ -282,6 +352,53 @@ private enum K1L0NativeSettingsDefaults {
         guard !defaults.bool(forKey: flag) else { return }
         defaults.set(0.33, forKey: "k1lo_native_groundHue")
         defaults.set(0.42, forKey: "k1lo_native_groundSaturation")
+        defaults.set(true, forKey: flag)
+    }
+
+    /// v9 stamp: Test Weather Override merged into Bypass Live Weather — the
+    /// legacy flag now mirrors the Sky Lab master; clear any stale solo state.
+    private static func mergeWeatherOverrideTogglesOnce() {
+        let defaults = UserDefaults.standard
+        let flag = "k1lo_native_weatherOverrideMerge_v9"
+        guard !defaults.bool(forKey: flag) else { return }
+        let bypass = defaults.bool(forKey: "k1lo_native_layeredBypassWeather")
+        defaults.set(bypass, forKey: "k1lo_native_testSkyOverride")
+        defaults.set(true, forKey: flag)
+    }
+
+    /// v10 stamp: ambient spawn gate to zero — beams appear without a step
+    /// quota. Spawn spacing is enforced server-side (150 m minimum from the
+    /// player), so nothing can pop uncomfortably close.
+    private static func applyZeroSpawnGateOnce() {
+        let defaults = UserDefaults.standard
+        let flag = "k1lo_native_zeroSpawnGate_v10"
+        guard !defaults.bool(forKey: flag) else { return }
+        defaults.set(0.0, forKey: "k1lo_native_ambientMinStepsToSpawn")
+        defaults.set(true, forKey: flag)
+    }
+
+    /// v8 stamp: window saturation day/night split — juiced neon palette in
+    /// daylight, monochrome glow after dark. One-shot so users can re-tune.
+    private static func applyWindowSaturationSplitOnce() {
+        let defaults = UserDefaults.standard
+        let flag = "k1lo_native_windowSaturationSplit_v8"
+        guard !defaults.bool(forKey: flag) else { return }
+        defaults.set(1.35, forKey: "k1lo_native_zossPaletteSaturation")
+        defaults.set(1.22, forKey: "k1lo_native_zossPaletteSaturation_night")
+        defaults.set(true, forKey: flag)
+    }
+
+    /// v7 stamp: vaporwave city — crushed dark building walls, per-window
+    /// palette variety, pink-blushed day sky. One-shot so users can re-tune.
+    private static func applyVaporCityOnce() {
+        let defaults = UserDefaults.standard
+        let flag = "k1lo_native_vaporCity_v7"
+        guard !defaults.bool(forKey: flag) else { return }
+        defaults.set(0.10, forKey: "k1lo_native_zossWallValue")
+        defaults.set(0.30, forKey: "k1lo_native_zossWallSaturation")
+        defaults.set(1.0, forKey: "k1lo_native_zossLitFraction")
+        defaults.set(1.0, forKey: "k1lo_native_zossPaletteMix")
+        defaults.set(0.65, forKey: "k1lo_native_vaporDayPink")
         defaults.set(true, forKey: flag)
     }
 
@@ -310,18 +427,19 @@ private enum K1L0NativeSettingsDefaults {
     }
 
     /// One-shot migration: existing installs have stored slider values that
-    /// shadow the registered defaults, so stamp the new "dystopian daylight"
-    /// grade over them once. Users can still re-tune afterward.
+    /// shadow the registered defaults, so stamp the new grade over them once.
+    /// Users can still re-tune afterward.
     private static func applyDystopianGradeOnce() {
         let defaults = UserDefaults.standard
-        let flag = "k1lo_native_dystopianGrade_v1"
+        let flag = "k1lo_native_dystopianGrade_v2"
         guard !defaults.bool(forKey: flag) else { return }
         let grade: [String: Any] = [
-            "k1lo_native_saturation": -28.0,
-            "k1lo_native_contrast": 14.0,
-            "k1lo_native_mapBrightness": -0.12,
-            "k1lo_native_temperature": -12.0,
-            "k1lo_native_tint": -6.0,
+            "k1lo_native_saturation": 0.0,
+            "k1lo_native_contrast": 0.0,
+            "k1lo_native_mapBrightness": 0.0,
+            "k1lo_native_temperature": 0.0,
+            "k1lo_native_tint": 0.0,
+            "k1lo_native_hueShift": 0.0,
             "k1lo_native_vignetteIntensity": 0.45,
             "k1lo_native_chromaticIntensity": 0.16,
             "k1lo_native_filmGrainEnabled": true,
@@ -349,6 +467,16 @@ private enum K1L0NativeSettingsDefaults {
             "k1lo_native_groundSaturation": 0.12,
         ]
         for (key, value) in fix { defaults.set(value, forKey: key) }
+        defaults.set(true, forKey: flag)
+    }
+
+    /// v10 stamp: set ambient light default to 0.0.
+    private static func applyAmbientZeroOnce() {
+        let defaults = UserDefaults.standard
+        let flag = "k1lo_native_ambientZero_v10"
+        guard !defaults.bool(forKey: flag) else { return }
+        defaults.set(false, forKey: "k1lo_native_ambientEnabled")
+        defaults.set(0.0, forKey: "k1lo_native_ambientIntensity")
         defaults.set(true, forKey: flag)
     }
 }
@@ -456,11 +584,11 @@ private enum K1L0WindowGlowResolver {
         let hue: Double
         let saturation: Double
         if isDay {
-            hue = defaults.object(forKey: "k1lo_native_zossEmissiveHue") as? Double ?? 0.90
-            saturation = defaults.object(forKey: "k1lo_native_zossEmissiveSaturation") as? Double ?? 0.62
+            hue = K1L0WeatherLook.double("k1lo_native_zossEmissiveHue", 0.90)
+            saturation = K1L0WeatherLook.double("k1lo_native_zossEmissiveSaturation", 0.62)
         } else {
-            hue = defaults.object(forKey: "k1lo_native_zossNightEmissiveHue") as? Double ?? 0.115
-            saturation = defaults.object(forKey: "k1lo_native_zossNightEmissiveSaturation") as? Double ?? 0.82
+            hue = K1L0WeatherLook.double("k1lo_native_zossNightEmissiveHue", 0.115)
+            saturation = K1L0WeatherLook.double("k1lo_native_zossNightEmissiveSaturation", 0.82)
         }
         K1L0WeatherOverlayInstaller.setUnitySetting("zossEmissiveHue", String(format: "%.3f", hue))
         K1L0WeatherOverlayInstaller.setUnitySetting("zossEmissiveSaturation", String(format: "%.3f", saturation))
@@ -651,6 +779,24 @@ public func K1L0InstallWeatherOverlay() {
     }
 }
 
+private extension Notification.Name {
+    static let k1l0RemoteWeatherLook = Notification.Name("K1L0RemoteWeatherLook")
+}
+
+// The live render-tuning bridge calls this with the same identifiers used by
+// the weather action sheet.
+// Posting into SwiftUI deliberately exercises the same selectWeatherLook path as the
+// weather action sheet instead of maintaining a second remote-only preset path.
+@_cdecl("K1L0SetWeatherLookMode")
+public func K1L0SetWeatherLookMode(_ modePtr: UnsafePointer<CChar>?) {
+    guard let modePtr else { return }
+    let mode = String(cString: modePtr)
+    guard ["auto", "midnight", "radioactive", "pink_haze", "haze_lab", "coral_haze", "deep_orange", "boring"].contains(mode) else { return }
+    DispatchQueue.main.async {
+        NotificationCenter.default.post(name: .k1l0RemoteWeatherLook, object: mode)
+    }
+}
+
 @_cdecl("K1L0CurrentNativeLocationModeJson")
 public func K1L0CurrentNativeLocationModeJson() -> UnsafeMutablePointer<CChar>? {
     let mode = UserDefaults.standard.string(forKey: NativeLocationPreset.storageKey) ?? NativeLocationPreset.liveId
@@ -728,6 +874,7 @@ private final class K1L0PerfStatsStore: NSObject, ObservableObject {
 
     @Published private(set) var fps: Double = 0
     @Published private(set) var frameMs: Double = 0
+    @Published private(set) var nativeFps: Double = 0
     @Published private(set) var allocMB: Int = 0
     @Published private(set) var reservedMB: Int = 0
     @Published private(set) var thermal: String = "..."
@@ -737,6 +884,7 @@ private final class K1L0PerfStatsStore: NSObject, ObservableObject {
     @Published private(set) var videoPlaybackActive = false
     @Published private(set) var renderDebug: [String: Any] = [:]
     @Published private(set) var updatedAt: Date?
+    private var lastRemoteMetricsUpload = Date.distantPast
 
 #if canImport(UIKit)
     private var displayLink: CADisplayLink?
@@ -788,12 +936,23 @@ private final class K1L0PerfStatsStore: NSObject, ObservableObject {
         nativeLastSampleTime = CACurrentMediaTime()
         nativeFrameCount = 0
         let link = CADisplayLink(target: self, selector: #selector(nativeDisplayTick(_:)))
+        if #available(iOS 15.0, *) {
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 1, maximum: 10, preferred: 10)
+        } else {
+            link.preferredFramesPerSecond = 10
+        }
         link.add(to: .main, forMode: .common)
         displayLink = link
 #endif
     }
 
     func handle(_ json: String) {
+#if canImport(UIKit)
+        // Perf stats arrive even when the settings sheet has never been opened.
+        // Start native CPU/thermal sampling here so remote diagnostics do not
+        // depend on presenting that UI.
+        startNativeSampling()
+#endif
         guard let data = json.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return
@@ -825,9 +984,7 @@ private final class K1L0PerfStatsStore: NSObject, ObservableObject {
         let elapsed = now - nativeLastSampleTime
         guard elapsed >= 1.0 else { return }
 
-        let sampledFps = Double(nativeFrameCount) / elapsed
-        fps = sampledFps
-        frameMs = sampledFps > 0 ? 1000.0 / sampledFps : 0
+        nativeFps = Double(nativeFrameCount) / elapsed
         allocMB = Self.currentResidentMemoryMB()
         reservedMB = allocMB
         thermal = Self.currentThermalLabel()
@@ -850,8 +1007,36 @@ private final class K1L0PerfStatsStore: NSObject, ObservableObject {
         }
 
         updatedAt = Date()
+        uploadRemoteMetricsIfNeeded()
         nativeFrameCount = 0
         nativeLastSampleTime = now
+    }
+
+    private func uploadRemoteMetricsIfNeeded() {
+        let now = Date()
+        guard now.timeIntervalSince(lastRemoteMetricsUpload) >= 5 else { return }
+        lastRemoteMetricsUpload = now
+        guard let url = URL(string: "https://api-tunnel.kilo.gallery/api/k1l0/render-metrics") else { return }
+        var payload: [String: Any] = [
+            "fps": fps,
+            "frameMs": frameMs,
+            "nativeFps": nativeFps,
+            "allocMB": allocMB,
+            "reservedMB": reservedMB,
+            "thermal": thermal,
+            "batteryPct": batteryPct,
+            "batteryDrainPctPerHour": batteryDrainPctPerHour,
+            "processCpuPct": processCpuPct,
+            "videoPlaybackActive": videoPlaybackActive
+        ]
+        if !renderDebug.isEmpty { payload["render"] = renderDebug }
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        request.timeoutInterval = 4
+        URLSession.shared.dataTask(with: request).resume()
     }
 
     private static func currentThermalLabel() -> String {
@@ -900,6 +1085,85 @@ struct K1L0TransmissionClip: Identifiable {
     var sourceUserId: String = ""
     var sourceName: String = ""
     var allowsResponse: Bool = false
+}
+
+private final class K1L0ActiveChainObserver: ObservableObject {
+    // Polls the server thread endpoint. The earlier Firebase-SDK observer was
+    // silently dead: the app bundles no GoogleService-Info.plist, so
+    // Database.database() had no configuration to resolve.
+    @Published private(set) var clips: [K1L0TransmissionClip] = []
+    private var timer: Timer?
+    private var rootJobId = ""
+    private var inFlight = false
+
+    func start(rootJobId: String) {
+        let root = rootJobId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !root.isEmpty else { return }
+        if self.rootJobId == root, timer != nil { return }
+        stop()
+        self.rootJobId = root
+        fetchThread()
+        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.fetchThread()
+        }
+    }
+
+    private func fetchThread() {
+        guard !inFlight, !rootJobId.isEmpty else { return }
+        guard let userId = K1L0NativeAPI.currentUserId(), !userId.isEmpty else { return }
+        inFlight = true
+        let root = rootJobId
+        K1L0NativeAPI.resolve { [weak self] apiBase in
+            guard let self else { return }
+            let encoded = userId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? userId
+            guard let url = URL(string: "\(apiBase)/api/k1l0/v2/transmit/\(root)/thread?userId=\(encoded)") else {
+                self.inFlight = false
+                return
+            }
+            URLSession.shared.dataTask(with: URLRequest(url: url, timeoutInterval: 15)) { [weak self] data, _, _ in
+                defer { self?.inFlight = false }
+                guard let self, self.rootJobId == root,
+                      let data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      (json["ok"] as? Bool) == true,
+                      let items = json["items"] as? [[String: Any]] else { return }
+                var rows: [K1L0TransmissionClip] = []
+                for item in items {
+                    func str(_ key: String) -> String { (item[key] as? String) ?? "" }
+                    let clip = K1L0TransmissionClip(
+                        videoURL: str("videoUrl").isEmpty ? nil : URL(string: str("videoUrl")),
+                        imageURL: str("stillUrl").isEmpty ? nil : URL(string: str("stillUrl")),
+                        audioURL: str("audioUrl").isEmpty ? nil : URL(string: str("audioUrl")),
+                        responsePlot: str("responsePlot"),
+                        responseOptions: (item["responseOptions"] as? [String]) ?? [],
+                        selectedResponse: str("selectedResponse"),
+                        sourceJobId: str("jobId"),
+                        sourceUserId: str("userId"),
+                        sourceName: str("sourceName"),
+                        allowsResponse: false
+                    )
+                    if clip.videoURL != nil || clip.imageURL != nil { rows.append(clip) }
+                }
+                DispatchQueue.main.async {
+                    guard self.rootJobId == root else { return }
+                    let old = self.clips.map(\.sourceJobId)
+                    if old != rows.map(\.sourceJobId) || self.clips.count != rows.count {
+                        self.clips = rows
+                    }
+                }
+            }.resume()
+        }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        rootJobId = ""
+        inFlight = false
+        clips = []
+    }
+
+    deinit { timer?.invalidate() }
 }
 
 struct K1L0TransmissionResult: Identifiable {
@@ -1460,7 +1724,7 @@ private final class K1L0RadioPlayer: ObservableObject {
     private var apiBase: String?
     private var loading = false
     private var volume: Float = 0.55
-    private var mode = "final"
+    private var mode = "instrumental"
 
     func setEnabled(_ value: Bool, apiBase: String?) {
         enabled = value
@@ -1574,6 +1838,64 @@ private final class K1L0RadioPlayer: ObservableObject {
         }.resume()
     }
 
+    // Returns a bulleted diagnostic string explaining why audio might not
+    // be playing right now (or empty string if nothing looks wrong). Called
+    // from the Music settings tab so the user isn't guessing.
+    func diagnose() -> String {
+        var lines: [String] = []
+        if !enabled { lines.append("• Radio toggle is OFF (enable it above).") }
+        if suppressed { lines.append("• Paused because a transmission is playing.") }
+        if volume <= 0.001 { lines.append("• Radio volume slider is 0%.") }
+        if enabled && !suppressed {
+            if loading { lines.append("• Still loading track from the server…") }
+            if apiBase == nil { lines.append("• No API base — waiting for connection.") }
+            if let p = player {
+                if let item = p.currentItem {
+                    switch item.status {
+                    case .failed:
+                        let msg = item.error?.localizedDescription ?? "unknown"
+                        lines.append("• Track failed to load: \(msg)")
+                    case .unknown:
+                        lines.append("• Track has not finished loading yet.")
+                    case .readyToPlay:
+                        if p.rate == 0 && p.timeControlStatus != .playing {
+                            switch p.timeControlStatus {
+                            case .paused:
+                                lines.append("• Player is paused (nothing pressing it forward).")
+                            case .waitingToPlayAtSpecifiedRate:
+                                if let reason = p.reasonForWaitingToPlay {
+                                    lines.append("• Waiting to play: \(reason.rawValue).")
+                                } else {
+                                    lines.append("• Waiting to play — likely buffering.")
+                                }
+                            default: break
+                            }
+                        }
+                    @unknown default: break
+                    }
+                } else {
+                    lines.append("• Player has no track item yet.")
+                }
+                if p.volume <= 0.001 { lines.append("• Player volume is 0.") }
+            } else {
+                lines.append("• No AVPlayer instance — track never got constructed.")
+            }
+        }
+#if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        if session.outputVolume <= 0.001 {
+            lines.append("• Device output volume is 0.")
+        }
+        if session.secondaryAudioShouldBeSilencedHint {
+            lines.append("• Another app is playing audio; iOS is asking us to stay silent.")
+        }
+        if !session.isOtherAudioPlaying && !enabled {
+            // just informational — already covered above.
+        }
+#endif
+        return lines.joined(separator: "\n")
+    }
+
     private func configureAudioSession() {
 #if os(iOS)
         do {
@@ -1595,7 +1917,31 @@ func K1L0ApplyEnvironmentSnapshot(_ payload: [String: Any]) {
     K1L0WeatherOverlayInstaller.applyEnvironmentSnapshot(payload)
 }
 
-private final class K1L0WeatherOverlayInstaller {
+@_cdecl("K1L0DeliverRenderReadiness")
+public func K1L0DeliverRenderReadiness(_ jsonPtr: UnsafePointer<CChar>?) {
+    guard let jsonPtr else { return }
+    let json = String(cString: jsonPtr)
+    guard let data = json.data(using: .utf8),
+          let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+    DispatchQueue.main.async {
+        let model = K1L0OverlayDataModel.activeModel
+        model?.renderReady = payload["ready"] as? Bool ?? false
+        let buildings = payload["buildings"] as? Int ?? 0
+        let roads = payload["roads"] as? Int ?? 0
+        let beamsReady = payload["beamsReady"] as? Bool ?? false
+        model?.renderLoadingDetail = "buildings \(buildings) · roads \(roads) · beams \(beamsReady ? "ready" : "loading")"
+        // The native map path does not currently call Unity's legacy road-tile
+        // completion hook. Keep the useful readiness message during startup,
+        // but never let that stale counter pin it onscreen indefinitely.
+        if model?.renderReady == false {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak model] in
+                if model?.renderReady == false { model?.renderReady = true }
+            }
+        }
+    }
+}
+
+final class K1L0WeatherOverlayInstaller {
     private static var unityPlaybackPaused = false
 
     static func setUnityPlaybackPaused(_ paused: Bool) {
@@ -1694,6 +2040,12 @@ private final class K1L0WeatherOverlayInstaller {
 #endif
     }
 #elseif canImport(AppKit)
+    static func setVideoBackdropActive(_ active: Bool) {
+        // Unity remains the backdrop of the transparent child window on macOS.
+        // Ordering the overlay forward is sufficient when video state changes.
+        if active { keepOverlayInFront() }
+    }
+
     // Host the SwiftUI overlay in a transparent child NSWindow ordered ABOVE the Unity
     // game window. A plain NSHostingView added as a sibling of Unity's CAMetalLayer-backed
     // content view gets composited UNDER the game render, so a child window is the reliable
@@ -1710,7 +2062,7 @@ private final class K1L0WeatherOverlayInstaller {
         if let button = item.button {
             button.image = NSImage(systemSymbolName: "antenna.radiowaves.left.and.right", accessibilityDescription: "K1L0")
         }
-        
+
         let menu = NSMenu()
         menu.addItem(withTitle: "Show K1L0", action: #selector(K1L0StatusTarget.showApp), keyEquivalent: "s").target = K1L0StatusTarget.shared
         menu.addItem(withTitle: "Hide K1L0", action: #selector(K1L0StatusTarget.hideApp), keyEquivalent: "h").target = K1L0StatusTarget.shared
@@ -1731,6 +2083,12 @@ private final class K1L0WeatherOverlayInstaller {
 
     static func install() {
         K1L0NativeSettingsDefaults.register()
+        if let iconURL = Bundle.main.url(forResource: "PlayerIcon", withExtension: "icns"),
+           let icon = NSImage(contentsOf: iconURL) {
+            // Unity assigns its generic cube at runtime, overriding Info.plist.
+            // Reassert K1L0's shared application art for the Dock and app switcher.
+            NSApp.applicationIconImage = icon
+        }
         guard !installed else { keepOverlayInFront(); return }
         guard let parent = gameWindow() else {
             NSLog("[K1L0Overlay] install: no Unity window yet, retrying")
@@ -1756,6 +2114,8 @@ private final class K1L0WeatherOverlayInstaller {
         clampOverlayFrame(panel, to: parent)
 
         parent.addChildWindow(panel, ordered: .above)
+        NSApp.activate(ignoringOtherApps: true)
+        parent.makeKeyAndOrderFront(nil)
         panel.makeKeyAndOrderFront(nil)
 
         overlayWindow = panel
@@ -1851,7 +2211,9 @@ private final class K1L0WeatherOverlayInstaller {
     static func applyNativeWorldNearby(_ json: String) {
         guard !json.isEmpty else { return }
         let wasPaused = unityPlaybackPaused
+#if os(iOS)
         if wasPaused { K1L0UnityPause(0) }
+#endif
         DispatchQueue.main.async {
             "K1L0HUD".withCString { objectName in
                 "ApplyNativeWorldNearby".withCString { methodName in
@@ -1865,7 +2227,9 @@ private final class K1L0WeatherOverlayInstaller {
                 // the refreshed static place/beam frame, then sleep again.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                     guard unityPlaybackPaused else { return }
+#if os(iOS)
                     K1L0UnityPause(1)
+#endif
                 }
             }
         }
@@ -1993,6 +2357,16 @@ private final class K1L0WeatherOverlayInstaller {
         }
     }
 
+    static func setSettingsPanelOpen(_ open: Bool) {
+        "K1L0HUD".withCString { objectName in
+            "SetSettingsPanelOpen".withCString { methodName in
+                (open ? "1" : "0").withCString { message in
+                    UnitySendMessage(objectName, methodName, message)
+                }
+            }
+        }
+    }
+
     static func applyEnvironmentSnapshot(_ payload: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -2055,22 +2429,44 @@ private final class K1L0WeatherOverlayInstaller {
 }
 
 
-private enum NativeUnityLightingSync {
+// Weather-automated look: unless Test Weather Override or Bypass Live Weather
+// is on, the hand-tuned look sliders are ignored (and hidden in settings) —
+// the curated defaults drive lighting/fog/buildings/ground/windows and the
+// weather + sun system animates on top of them.
+private enum K1L0WeatherLook {
+    static var manualLookActive: Bool {
+        let defaults = UserDefaults.standard
+        return (defaults.object(forKey: "k1lo_native_testSkyOverride") as? Bool ?? false)
+            || defaults.bool(forKey: "k1lo_native_layeredBypassWeather")
+    }
+
+    static func double(_ key: String, _ fallback: Double) -> Double {
+        if manualLookActive, let value = UserDefaults.standard.object(forKey: key) as? Double { return value }
+        return (K1L0NativeSettingsDefaults.values[key] as? Double) ?? fallback
+    }
+
+    static func bool(_ key: String, _ fallback: Bool) -> Bool {
+        if manualLookActive, let value = UserDefaults.standard.object(forKey: key) as? Bool { return value }
+        return (K1L0NativeSettingsDefaults.values[key] as? Bool) ?? fallback
+    }
+}
+
+enum NativeUnityLightingSync {
     static func sync() {
         let defaults = UserDefaults.standard
-        let moonlightEnabled = defaults.object(forKey: "k1lo_native_moonlightEnabled") as? Bool ?? true
-        let moonlightManualOverride = defaults.object(forKey: "k1lo_native_moonlightManualOverride") as? Bool ?? false
-        let moonlightIntensity = defaults.object(forKey: "k1lo_native_moonlightIntensity") as? Double ?? 1.0
-        let moonlightRed = defaults.object(forKey: "k1lo_native_moonlightRed") as? Double ?? 0.7
-        let moonlightGreen = defaults.object(forKey: "k1lo_native_moonlightGreen") as? Double ?? 0.8
-        let moonlightBlue = defaults.object(forKey: "k1lo_native_moonlightBlue") as? Double ?? 1.0
-        let moonlightPitch = defaults.object(forKey: "k1lo_native_moonlightPitch") as? Double ?? 90.0
-        let moonlightYaw = defaults.object(forKey: "k1lo_native_moonlightYaw") as? Double ?? 0.0
-        let moonlightRoll = defaults.object(forKey: "k1lo_native_moonlightRoll") as? Double ?? 0.0
-        let ambientEnabled = defaults.object(forKey: "k1lo_native_ambientEnabled") as? Bool ?? true
-        let ambientIntensity = defaults.object(forKey: "k1lo_native_ambientIntensity") as? Double ?? 1.55
-        var spotlightEnabled = defaults.object(forKey: "k1lo_native_spotlightEnabled") as? Bool ?? true
-        var spotlightIntensity = defaults.object(forKey: "k1lo_native_spotlightIntensity") as? Double ?? 3.0
+        let moonlightEnabled = K1L0WeatherLook.bool("k1lo_native_moonlightEnabled", true)
+        let moonlightManualOverride = K1L0WeatherLook.bool("k1lo_native_moonlightManualOverride", false)
+        let moonlightIntensity = K1L0WeatherLook.double("k1lo_native_moonlightIntensity", 0.55)
+        let moonlightRed = K1L0WeatherLook.double("k1lo_native_moonlightRed", 0.7)
+        let moonlightGreen = K1L0WeatherLook.double("k1lo_native_moonlightGreen", 0.8)
+        let moonlightBlue = K1L0WeatherLook.double("k1lo_native_moonlightBlue", 1.0)
+        let moonlightPitch = K1L0WeatherLook.double("k1lo_native_moonlightPitch", 90.0)
+        let moonlightYaw = K1L0WeatherLook.double("k1lo_native_moonlightYaw", 0.0)
+        let moonlightRoll = K1L0WeatherLook.double("k1lo_native_moonlightRoll", 0.0)
+        let ambientEnabled = K1L0WeatherLook.bool("k1lo_native_ambientEnabled", false)
+        let ambientIntensity = K1L0WeatherLook.double("k1lo_native_ambientIntensity", 0.0)
+        var spotlightEnabled = K1L0WeatherLook.bool("k1lo_native_spotlightEnabled", true)
+        var spotlightIntensity = K1L0WeatherLook.double("k1lo_native_spotlightIntensity", 3.0)
 
         if spotlightEnabled && spotlightIntensity <= 0.01 {
             spotlightIntensity = 1.0
@@ -2096,8 +2492,8 @@ private enum NativeUnityLightingSync {
 
         // Window glow is time-aware: saved sliders tune the daytime pink, while
         // nighttime gets a fixed warm gold so windows read like traditional light.
-        let groundHueVal = defaults.object(forKey: "k1lo_native_groundHue") as? Double ?? 0.33
-        let groundSatVal = defaults.object(forKey: "k1lo_native_groundSaturation") as? Double ?? 0.42
+        let groundHueVal = K1L0WeatherLook.double("k1lo_native_groundHue", 0.33)
+        let groundSatVal = K1L0WeatherLook.double("k1lo_native_groundSaturation", 0.42)
         K1L0WindowGlowResolver.apply()
         K1L0WeatherOverlayInstaller.setUnitySetting("groundHue", String(format: "%.3f", groundHueVal))
         K1L0WeatherOverlayInstaller.setUnitySetting("groundSaturation", String(format: "%.3f", groundSatVal))
@@ -2106,27 +2502,64 @@ private enum NativeUnityLightingSync {
         // "dystopian daylight") values so Unity's PlayerPrefs copy can't keep
         // an older look alive across app updates.
         let gradeKeys: [(unity: String, store: String, fallback: Double)] = [
-            ("saturation", "k1lo_native_saturation", -28.0),
-            ("contrast", "k1lo_native_contrast", 14.0),
-            ("mapBrightness", "k1lo_native_mapBrightness", -0.12),
-            ("hueShift", "k1lo_native_hueShift", -4.0),
-            ("temperature", "k1lo_native_temperature", -12.0),
-            ("tint", "k1lo_native_tint", -6.0),
+            ("saturation", "k1lo_native_saturation", 0.0),
+            ("contrast", "k1lo_native_contrast", 0.0),
+            ("mapBrightness", "k1lo_native_mapBrightness", 0.0),
+            ("hueShift", "k1lo_native_hueShift", 0.0),
+            ("temperature", "k1lo_native_temperature", 0.0),
+            ("tint", "k1lo_native_tint", 0.0),
             ("vignetteIntensity", "k1lo_native_vignetteIntensity", 0.45),
             ("chromaticIntensity", "k1lo_native_chromaticIntensity", 0.16),
             ("filmGrainIntensity", "k1lo_native_filmGrainIntensity", 0.4),
-            ("fogDistantDensity", "k1lo_native_fogDistantDensity", 0.3),
-            ("fogDistantStart", "k1lo_native_fogDistantStart", 400.0),
-            ("fogBrightness", "k1lo_native_fogBrightness", 0.55),
+            ("dayBloomIntensity", "k1lo_native_dayBloomIntensity", 2.0),
         ]
         for entry in gradeKeys {
             let value = defaults.object(forKey: entry.store) as? Double ?? entry.fallback
             K1L0WeatherOverlayInstaller.setUnitySetting(entry.unity, String(format: "%.3f", value))
         }
+
+        // Weather-look keys: hand-tuned values apply only in Test Override /
+        // Bypass mode; automated mode force-pushes the curated defaults so a
+        // previously saved manual look can't linger in Unity's PlayerPrefs.
+        let lookKeys: [(unity: String, store: String, fallback: Double)] = [
+            ("fogDensity", "k1lo_native_fogDensity", 0.01),
+            ("fogNoiseStrength", "k1lo_native_fogNoiseStrength", 1.8),
+            ("fogNoiseScale", "k1lo_native_fogNoiseScale", 21.0),
+            ("fogScatteringIntensity", "k1lo_native_fogScatteringIntensity", 1.25),
+            ("fogHeight", "k1lo_native_fogHeight", 86.0),
+            ("fogDistantDensity", "k1lo_native_fogDistantDensity", 0.0045),
+            ("fogDistantStart", "k1lo_native_fogDistantStart", 200.0),
+            ("fogBrightness", "k1lo_native_fogBrightness", 0.81),
+            ("fogNativeLightsMultiplier", "k1lo_native_fogNativeLightsMultiplier", 0.0),
+            ("zossEmissiveIntensity", "k1lo_native_zossEmissiveIntensity", 19.0),
+            ("zossEmissiveSmoothness", "k1lo_native_zossEmissiveSmoothness", 0.34),
+            ("zossEmissiveMetallic", "k1lo_native_zossEmissiveMetallic", 0.0),
+            ("zossWallValue", "k1lo_native_zossWallValue", 0.10),
+            ("zossWallSaturation", "k1lo_native_zossWallSaturation", 0.30),
+            ("zossLitFraction", "k1lo_native_zossLitFraction", 1.0),
+            ("zossPaletteMix", "k1lo_native_zossPaletteMix", 1.0),
+            ("zossPaletteSaturation", "k1lo_native_zossPaletteSaturation", 1.35),
+            ("zossPaletteSaturation_night", "k1lo_native_zossPaletteSaturation_night", 1.22),
+            ("zossWarmth", "k1lo_native_zossWarmth", 1.0),
+            ("zossAccentFraction", "k1lo_native_zossAccentFraction", 0.08),
+            ("zossWindowBrightness", "k1lo_native_zossWindowBrightness", 1.0),
+            ("zossBrightnessJitter", "k1lo_native_zossBrightnessJitter", 0.5),
+            ("zossBrightnessJitterRate", "k1lo_native_zossBrightnessJitterRate", 0.6),
+            ("zossWallDaylightLift", "k1lo_native_zossWallDaylightLift", 0.55),
+            ("zossWallVariance", "k1lo_native_zossWallVariance", 0.6),
+            ("roadValue", "k1lo_native_roadValue", 0.88),
+            ("vaporDayPink", "k1lo_native_vaporDayPink", 0.65),
+            ("layeredNightBlackness", "k1lo_native_layeredNightBlackness", 0.60),
+            ("layeredHorizonHeight", "k1lo_native_layeredHorizonHeight", 0.0),
+        ]
+        for entry in lookKeys {
+            let value = K1L0WeatherLook.double(entry.store, entry.fallback)
+            K1L0WeatherOverlayInstaller.setUnitySetting(entry.unity, String(format: "%.3f", value))
+        }
         let grainOn = defaults.object(forKey: "k1lo_native_filmGrainEnabled") as? Bool ?? true
-        let distantFogOn = defaults.object(forKey: "k1lo_native_fogDistantFog") as? Bool ?? true
         K1L0WeatherOverlayInstaller.setUnitySetting("filmGrainEnabled", grainOn ? "1" : "0")
-        K1L0WeatherOverlayInstaller.setUnitySetting("fogDistantFog", distantFogOn ? "1" : "0")
+        K1L0WeatherOverlayInstaller.setUnitySetting("fogDistantFog", K1L0WeatherLook.bool("k1lo_native_fogDistantFog", true) ? "1" : "0")
+        K1L0WeatherOverlayInstaller.setUnitySetting("fogNativeLights", K1L0WeatherLook.bool("k1lo_native_fogNativeLights", false) ? "1" : "0")
 
         // Sky Target FPS
         let skyTargetFps = defaults.object(forKey: "k1lo_native_skyTargetFps") as? Double ?? 30.0
@@ -2137,16 +2570,16 @@ private enum NativeUnityLightingSync {
         K1L0WeatherOverlayInstaller.setUnitySetting("transmissionFizzyEdges", transmissionFizzyEdgesVal ? "1" : "0")
 
         // Night Fog & Ground values
-        let fogDensityNight = defaults.object(forKey: "k1lo_native_fogDensity_night") as? Double ?? 0.37
-        let fogNoiseStrengthNight = defaults.object(forKey: "k1lo_native_fogNoiseStrength_night") as? Double ?? 1.67
-        let fogNoiseScaleNight = defaults.object(forKey: "k1lo_native_fogNoiseScale_night") as? Double ?? 17.4
-        let fogBrightnessNight = defaults.object(forKey: "k1lo_native_fogBrightness_night") as? Double ?? 0.34
-        let fogScatteringIntensityNight = defaults.object(forKey: "k1lo_native_fogScatteringIntensity_night") as? Double ?? 1.15
-        let fogHeightNight = defaults.object(forKey: "k1lo_native_fogHeight_night") as? Double ?? 77.0
-        let fogDistantDensityNight = defaults.object(forKey: "k1lo_native_fogDistantDensity_night") as? Double ?? 0.0
-        let fogDistantStartNight = defaults.object(forKey: "k1lo_native_fogDistantStart_night") as? Double ?? 0.0
-        let groundHueNight = defaults.object(forKey: "k1lo_native_groundHue_night") as? Double ?? 0.30
-        let groundSaturationNight = defaults.object(forKey: "k1lo_native_groundSaturation_night") as? Double ?? 0.0
+        let fogDensityNight = K1L0WeatherLook.double("k1lo_native_fogDensity_night", 0.025)
+        let fogNoiseStrengthNight = K1L0WeatherLook.double("k1lo_native_fogNoiseStrength_night", 0.22)
+        let fogNoiseScaleNight = K1L0WeatherLook.double("k1lo_native_fogNoiseScale_night", 17.4)
+        let fogBrightnessNight = K1L0WeatherLook.double("k1lo_native_fogBrightness_night", 0.24)
+        let fogScatteringIntensityNight = K1L0WeatherLook.double("k1lo_native_fogScatteringIntensity_night", 0.55)
+        let fogHeightNight = K1L0WeatherLook.double("k1lo_native_fogHeight_night", 48.0)
+        let fogDistantDensityNight = K1L0WeatherLook.double("k1lo_native_fogDistantDensity_night", 0.0025)
+        let fogDistantStartNight = K1L0WeatherLook.double("k1lo_native_fogDistantStart_night", 100.0)
+        let groundHueNight = K1L0WeatherLook.double("k1lo_native_groundHue_night", 0.30)
+        let groundSaturationNight = K1L0WeatherLook.double("k1lo_native_groundSaturation_night", 0.0)
 
         K1L0WeatherOverlayInstaller.setUnitySetting("fogDensity_night", String(format: "%.3f", fogDensityNight))
         K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseStrength_night", String(format: "%.3f", fogNoiseStrengthNight))
@@ -2168,7 +2601,7 @@ private enum NativeUnityLightingSync {
 
 /* Moved to K1L0SolarEnvironmentSync.swift to keep astronomy/sky iteration
    out of this large UI compilation unit.
-private enum NativeUnitySolarSync {
+enum NativeUnitySolarSync {
     private static var timer: Timer?
 
     static func start() {
@@ -2201,13 +2634,14 @@ private enum NativeUnitySolarSync {
             "bypassWeather": defaults.bool(forKey: "k1lo_native_layeredBypassWeather"),
             "effect": defaults.integer(forKey: "k1lo_native_layeredSkyEffect"),
             "cloudOpacity": defaults.object(forKey: "k1lo_native_layeredCloudOpacity") as? Double ?? 0.72,
+            "cloudCoverage": defaults.object(forKey: "k1lo_native_layeredCloudCoverage") as? Double ?? 0.35,
             "cloudSpeed": defaults.object(forKey: "k1lo_native_layeredCloudSpeed") as? Double ?? 0.07,
             "cloudScale": defaults.object(forKey: "k1lo_native_layeredCloudScale") as? Double ?? 1.35,
             "cloudContrast": defaults.object(forKey: "k1lo_native_layeredCloudContrast") as? Double ?? 1.1,
-            "topHue": defaults.object(forKey: "k1lo_native_layeredSkyTopHue") as? Double ?? 0.62,
-            "midHue": defaults.object(forKey: "k1lo_native_layeredSkyMidHue") as? Double ?? 0.76,
-            "horizonHue": defaults.object(forKey: "k1lo_native_layeredSkyHorizonHue") as? Double ?? 0.94,
-            "nightBlackness": defaults.object(forKey: "k1lo_native_layeredNightBlackness") as? Double ?? 0.72,
+            "topHue": defaults.object(forKey: "k1lo_native_layeredSkyTopHue") as? Double ?? 0.80,
+            "midHue": defaults.object(forKey: "k1lo_native_layeredSkyMidHue") as? Double ?? 0.62,
+            "horizonHue": defaults.object(forKey: "k1lo_native_layeredSkyHorizonHue") as? Double ?? 0.73,
+            "nightBlackness": defaults.object(forKey: "k1lo_native_layeredNightBlackness") as? Double ?? 0.60,
             "rain": defaults.object(forKey: "k1lo_native_layeredRain") as? Double ?? 0,
             "aurora": defaults.object(forKey: "k1lo_native_layeredAurora") as? Double ?? 0
         ])
@@ -2345,6 +2779,74 @@ private struct K1L0LoginPermissionGate: View {
     }
 }
 
+private extension View {
+    /// Break very long SwiftUI generic chains at feature boundaries. Besides
+    /// making the shared overlay compile reliably as a standalone Mac module,
+    /// this keeps later modifiers from re-type-checking the entire HUD tree.
+    func k1l0TypeErased() -> AnyView { AnyView(self) }
+}
+
+private struct K1L0WeatherPresetPickerModifier: ViewModifier {
+    @Binding var isPresented: Bool
+    let presets: [K1L0WeatherPresetDescriptor]
+    let onSelect: (String) -> Void
+    let onSettings: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content.overlay {
+            if isPresented {
+                ZStack {
+                    Color.black.opacity(0.38)
+                        .ignoresSafeArea()
+                        .onTapGesture { isPresented = false }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Weather Look")
+                            .font(.system(size: 21, weight: .black))
+                            .foregroundStyle(.white)
+                        ScrollView {
+                            VStack(spacing: 7) {
+                                ForEach(presets) { preset in
+                                    Button {
+                                        isPresented = false
+                                        onSelect(preset.id)
+                                    } label: {
+                                        HStack {
+                                            Text(preset.label)
+                                            Spacer()
+                                            Image(systemName: "chevron.right")
+                                                .opacity(0.45)
+                                        }
+                                        .font(.system(size: 16, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 14)
+                                        .frame(height: 42)
+                                        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 310)
+                        Button("Settings") {
+                            isPresented = false
+                            onSettings()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .padding(18)
+                    .frame(width: 300)
+                    .background(Color(red: 0.035, green: 0.055, blue: 0.10).opacity(0.97),
+                                in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.16)))
+                    .shadow(color: .black.opacity(0.55), radius: 24, y: 10)
+                }
+                .zIndex(10000)
+            }
+        }
+    }
+}
+
 private struct K1L0WeatherOverlayRoot: View {
     @StateObject private var data = K1L0OverlayDataModel()
     @ObservedObject private var authGate = K1L0AuthGateStore.shared
@@ -2371,13 +2873,29 @@ private struct K1L0WeatherOverlayRoot: View {
 #endif
     @AppStorage("k1lo_native_musicRadioEnabled") private var musicRadioEnabled = true
     @AppStorage("k1lo_native_musicRadioVolume") private var musicRadioVolume = 0.5415074229240417
-    @AppStorage("k1lo_native_musicRadioMode") private var musicRadioMode = "final"
+    @AppStorage("k1lo_native_musicRadioMode") private var musicRadioMode = "instrumental"
     @AppStorage("k1lo_native_bottomMenuLayout") private var bottomMenuLayout = "tabs"
+    @AppStorage("k1lo_native_statusHUD") private var statusHUD = false
+    @AppStorage("k1lo_native_weatherLookMode") private var weatherLookMode = "pink_haze"
+    @State private var showingWeatherLookPicker = false
+    @State private var weatherPresetCatalog = K1L0WeatherModeController.bundledDescriptors
+    @State private var showingContactRequest = false
+    @State private var acceptedContactSignalId = ""
+    @State private var showingLocationDwellDetail = false
     @Environment(\.scenePhase) private var scenePhase
 
     private var isVideoTransmissionPlaying: Bool {
         guard let result = transmissionResults.current else { return false }
         return result.videoURL != nil || !result.clips.filter { $0.videoURL != nil }.isEmpty
+    }
+
+    // Mirrors TransmitterPanel's fullscreen condition: the live transmission
+    // player owns the whole screen, so the bottom menu must yield to its
+    // respond composer exactly like the other players.
+    private var transmitterFullscreenPlaying: Bool {
+        showingTransmission
+            && activeTransmission.snapshot.active
+            && !activeTransmission.snapshot.videoUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var anyPanelOpen: Bool {
@@ -2538,6 +3056,20 @@ private struct K1L0WeatherOverlayRoot: View {
         K1L0WeatherOverlayInstaller.setNativePanelOpen(false)
     }
 
+    private func toggleWeatherLook() {
+        K1L0WeatherOverlayInstaller.keepOverlayInFront()
+        K1L0WeatherModeController.refreshCatalog { catalog in
+            weatherPresetCatalog = catalog
+            showingWeatherLookPicker = true
+        }
+    }
+
+    private func selectWeatherLook(_ mode: String) {
+        weatherLookMode = mode
+        K1L0WeatherModeController.apply(mode)
+    }
+
+
     private func showHomeHud() {
         K1L0WeatherOverlayInstaller.keepOverlayInFront()
         withAnimation(bottomMenuLayout == "tabs" ? .easeOut(duration: 0.12) : .easeInOut(duration: 0.24)) {
@@ -2627,7 +3159,8 @@ private struct K1L0WeatherOverlayRoot: View {
             // geometry and its layout collapses.
             Color.clear.ignoresSafeArea()
 
-            if appHudReady && !skyModePanelOpen {
+            if appHudReady && !skyModePanelOpen,
+               data.incomingTransmission?.id == acceptedContactSignalId {
                 IncomingSignalSkyOverlay(data: data)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
@@ -2635,11 +3168,9 @@ private struct K1L0WeatherOverlayRoot: View {
             }
             if appHudReady && !skyModePanelOpen && !showingSettings && data.incomingTransmission == nil {
                 WalkingSkyAlert(
-                    text: data.walkingSkyAlertText,
-                    stableText: data.walkingSkyAlertStableText,
-                    distanceText: data.walkingSkyAlertBeam.map { data.distanceText(to: $0) },
-                    relativeBearing: data.walkingSkyAlertBeam.map { data.relativeBearingDegrees(to: $0) },
-                    dotPhase: data.searchDotPhase
+                    items: data.mapMarqueeItems(),
+                    dotPhase: data.searchDotPhase,
+                    statusHUD: statusHUD
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
@@ -2649,11 +3180,12 @@ private struct K1L0WeatherOverlayRoot: View {
             if appHudReady {
                 VStack(spacing: 8) {
                     if !showingMessages && !showingTransmission && !showingUserEditor {
-                        FixedTopStatusHUD(data: data, settingsActive: showingSettings, hideSteps: hudVisible, onSettingsTapped: toggleSettings)
+                        FixedTopStatusHUD(data: data, settingsActive: false, hideSteps: hudVisible, weatherLookMode: weatherLookMode, onSettingsTapped: toggleWeatherLook)
                             .padding(.horizontal, 18)
                             .padding(.top, topStatusPadding)
                     }
-                    if !skyModePanelOpen && !showingSettings {
+                    if !skyModePanelOpen && !showingSettings,
+                       data.incomingTransmission?.id == acceptedContactSignalId {
                         IncomingSignalHUD(data: data)
                             .padding(.horizontal, 18)
                     }
@@ -2675,6 +3207,8 @@ private struct K1L0WeatherOverlayRoot: View {
                                 if !tabMenuMode {
                                     PullToDismissTopAnchor(panelCoordinateSpace: "news-panel", onDismiss: closeAllHuds, threshold: 90)
                                 }
+                                WorldMarqueeCard(items: data.homeMarqueeItems())
+
                                 WeatherGlassCard {
                                     VStack(alignment: .leading, spacing: 8) {
                                         Text("Steps")
@@ -2695,8 +3229,6 @@ private struct K1L0WeatherOverlayRoot: View {
                                     }
                                 }
 
-                                WorldMarqueeCard(items: data.homeMarqueeItems())
-
                                 WeatherGlassCard {
                                     VStack(alignment: .leading, spacing: 12) {
                                         Text("Live Drops")
@@ -2711,22 +3243,11 @@ private struct K1L0WeatherOverlayRoot: View {
                                                     distance: data.distanceText(to: place),
                                                     relativeBearing: data.relativeBearingDegrees(to: place)
                                                 )
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    Text("\(data.emoji(for: place)) \(place.name)")
-                                                        .font(.system(size: 16, weight: .semibold))
-                                                        .lineLimit(1)
-                                                    if let teaser = place.bylineTeaser {
-                                                        Text(teaser)
-                                                            .font(.system(size: 12, weight: .semibold))
-                                                            .foregroundStyle(.white.opacity(0.64))
-                                                            .lineLimit(1)
-                                                    }
-                                                }
+                                                Text("\(data.emoji(for: place)) \(place.name)")
+                                                    .font(.system(size: 16, weight: .semibold))
+                                                    .lineLimit(1)
                                                 Spacer()
-                                                Image(systemName: "questionmark.diamond.fill")
-                                                    .font(.system(size: 15, weight: .bold))
-                                                    .foregroundStyle(.white.opacity(0.86))
-                                                    .frame(minWidth: 32, alignment: .trailing)
+                                                NearbyItemThumbnail(imageUrl: place.imageUrl)
                                             }
                                             .padding(.top, 2)
                                         }
@@ -2763,7 +3284,7 @@ private struct K1L0WeatherOverlayRoot: View {
                                                 } label: {
                                                     HStack(spacing: 10) {
                                                         K1L0UserAvatar(urlString: user.avatarDisplayUrl, size: 34, userId: user.userId)
-                                                        Text(user.nameAndCallsign)
+                                                        Text(user.displayName)
                                                             .font(.system(size: 15, weight: .semibold))
                                                             .lineLimit(1)
                                                             .minimumScaleFactor(0.72)
@@ -2824,9 +3345,11 @@ private struct K1L0WeatherOverlayRoot: View {
                                             Text("Walking Leaderboard")
                                                 .font(.system(size: 25, weight: .bold))
                                             Spacer()
-                                            Text(data.stepLeaderboardStatus)
-                                                .font(.system(size: 10, weight: .bold))
-                                                .foregroundStyle(.white.opacity(0.55))
+                                            if !data.stepLeaderboardStatus.hasSuffix(" walkers") {
+                                                Text(data.stepLeaderboardStatus)
+                                                    .font(.system(size: 10, weight: .bold))
+                                                    .foregroundStyle(.white.opacity(0.55))
+                                            }
                                         }
 
                                         StepLeaderboardSection(title: "PAST 24 HOURS", leaders: data.stepLeaders24h, useWeeklyTotal: false) { user in
@@ -2893,7 +3416,7 @@ private struct K1L0WeatherOverlayRoot: View {
             }
 
             if showingUserEditor && !isVideoTransmissionPlaying {
-                NativeUserEditorPanel(tabsMode: bottomMenuLayout == "tabs") {
+                NativeUserEditorPanel(data: data, tabsMode: bottomMenuLayout == "tabs") {
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.88)) {
                         showingUserEditor = false
                     }
@@ -2951,15 +3474,31 @@ private struct K1L0WeatherOverlayRoot: View {
                transmissionResults.current == nil,
                data.collectCandidateBeam == nil,
                let place = data.collectCandidatePlace {
+                LocationDwellStatusChip(
+                    place: place,
+                    elapsedSeconds: data.locationDwellElapsedSeconds(for: place),
+                    progress: data.locationDwellProgress(for: place)
+                ) {
+                    showingLocationDwellDetail = true
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(36)
+            }
+
+            if appHudReady,
+               showingLocationDwellDetail,
+               let place = data.collectCandidatePlace {
                 LocationItemCollectPrompt(
                     place: place,
                     distanceText: data.distanceText(to: place),
                     relativeBearing: data.relativeBearingDegrees(to: place),
-                    onCollect: { data.confirmCollectPlace(place) },
-                    onDismiss: { data.dismissLocationCollectPrompt() }
+                    secondsRemaining: data.locationDwellRemainingSeconds(for: place),
+                    elapsedSeconds: data.locationDwellElapsedSeconds(for: place),
+                    progress: data.locationDwellProgress(for: place),
+                    onDismiss: { showingLocationDwellDetail = false }
                 )
                 .transition(.scale(scale: 0.96).combined(with: .opacity))
-                .zIndex(36)
+                .zIndex(82)
             }
 
             if appHudReady, let selectedUser = selectedNearbyUser {
@@ -2998,7 +3537,7 @@ private struct K1L0WeatherOverlayRoot: View {
             // Hide the whole bar while a transmission/chain video is playing
             // (e.g. opened from Messages or the user screen) so it never
             // overlaps the playback panel.
-            if appHudReady && !isVideoTransmissionPlaying {
+            if appHudReady && !isVideoTransmissionPlaying && !transmitterFullscreenPlaying {
                 VStack {
                     Spacer()
                     Group {
@@ -3052,7 +3591,7 @@ private struct K1L0WeatherOverlayRoot: View {
                                 if !isVideoTransmissionPlaying {
                                     Button(action: showUserEditor) {
                                         Image(systemName: "person.crop.circle.fill")
-                                            .font(.system(size: 21, weight: .bold))
+                                            .font(.system(size: 28, weight: .bold))
                                             .foregroundStyle(.white)
                                             .frame(width: 58, height: 58)
                                             .modifier(LiquidGlassCircle())
@@ -3076,6 +3615,13 @@ private struct K1L0WeatherOverlayRoot: View {
             }
         }
         .onAppear {
+            #if os(iOS)
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.white.withAlphaComponent(0.60)], for: .normal)
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.black], for: .selected)
+            #endif
+            if selectedDropFilter == "snack" {
+                selectedDropFilter = "all"
+            }
             authGate.loadCached()
             if UserDefaults.standard.object(forKey: "k1lo_native_musicRadioDefaultedV2") == nil {
                 musicRadioEnabled = true
@@ -3093,6 +3639,9 @@ private struct K1L0WeatherOverlayRoot: View {
             }
             NativeUnityLightingSync.sync()
             NativeUnitySolarSync.start()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                K1L0WeatherModeController.apply(weatherLookMode)
+            }
             // Sync sky mode with whichever modal is up at launch (news HUD is
             // visible by default). The .onChange(skyModePanelOpen) below won't
             // fire for the initial value, so we have to drive it explicitly here.
@@ -3101,7 +3650,7 @@ private struct K1L0WeatherOverlayRoot: View {
                 panelOpen: skyModePanelOpen || requiresLoginGate,
                 videoPlaying: isVideoTransmissionPlaying
             )
-            
+
             // Sync custom character textures (cloak, helmet) on startup
             K1L0WeatherOverlayInstaller.loadNativeUserMetadata()
         }
@@ -3118,8 +3667,8 @@ private struct K1L0WeatherOverlayRoot: View {
             homeLocationsExpanded = false
             data.applyLocationFilter(selectedDropFilter)
         }
-        .onChange(of: scenePhase) { phase in
-            if phase == .active {
+        .k1l0TypeErased()
+        .modifier(K1L0SceneActivationModifier(scenePhase: scenePhase) {
                 data.refreshPermissionGateState()
                 data.refreshTransmissionState(clearStaleCache: true)
                 loadNewsWalkHistory()
@@ -3129,7 +3678,10 @@ private struct K1L0WeatherOverlayRoot: View {
                 }
                 NativeUnityLightingSync.sync()
                 NativeUnitySolarSync.sync()
-            }
+        })
+        .onReceive(NotificationCenter.default.publisher(for: .k1l0RemoteWeatherLook)) { note in
+            guard let mode = note.object as? String else { return }
+            selectWeatherLook(mode)
         }
         .onChange(of: musicRadioEnabled) { enabled in
             K1L0RadioPlayer.shared.setEnabled(enabled, apiBase: data.activeAPIBase)
@@ -3170,6 +3722,7 @@ private struct K1L0WeatherOverlayRoot: View {
         .onChange(of: showingTransmission) { open in
             K1L0RadioPlayer.shared.setSuppressed(radioSuppressed)
         }
+        .k1l0TypeErased()
         .onChange(of: transmissionResults.current?.id) { _ in
             K1L0RadioPlayer.shared.setSuppressed(radioSuppressed)
             K1L0WeatherOverlayInstaller.setVideoBackdropActive(transmissionResults.current != nil)
@@ -3183,20 +3736,28 @@ private struct K1L0WeatherOverlayRoot: View {
             data.setVideoPlaybackActive(playing)
             if playing { K1L0WeatherOverlayInstaller.keepOverlayInFront() }
         }
-        .onChange(of: data.incomingTransmission?.id) { id in
-            if id != nil {
-                K1L0WeatherOverlayInstaller.playBeamCollectSound()
-            }
-        }
+        .modifier(K1L0ContactRequestModifier(
+            incoming: data.incomingTransmission,
+            isPresented: $showingContactRequest,
+            acceptedSignalId: $acceptedContactSignalId,
+            onAccept: showTransmitter,
+            onDecline: data.declineIncomingTransmission
+        ))
         .animation((bottomMenuLayout == "tabs") ? .easeOut(duration: 0.12) : .spring(response: 0.34, dampingFraction: 0.88), value: showingTransmission)
         .animation((bottomMenuLayout == "tabs") ? .easeOut(duration: 0.12) : .spring(response: 0.34, dampingFraction: 0.88), value: showingUserEditor)
         .animation((bottomMenuLayout == "tabs") ? .easeOut(duration: 0.12) : .spring(response: 0.34, dampingFraction: 0.88), value: showingMessages)
+        .modifier(K1L0WeatherPresetPickerModifier(
+            isPresented: $showingWeatherLookPicker,
+            presets: weatherPresetCatalog,
+            onSelect: selectWeatherLook,
+            onSettings: toggleSettings
+        ))
         .overlay(alignment: .bottom) {
             if let result = transmissionResults.current {
                 ZStack {
                     Color.black.ignoresSafeArea()
-                    TransmissionResultPanel(result: result, onSelectOption: { option in
-                        data.respondToTransmission(result, option: option)
+                    TransmissionResultPanel(result: result, onSelectOption: { option, photoPath in
+                        data.respondToTransmission(result, option: option, photoPath: photoPath)
                     }) {
                         transmissionResults.dismiss()
                     }
@@ -3212,10 +3773,166 @@ private struct K1L0WeatherOverlayRoot: View {
     }
 }
 
+private struct K1L0ContactRequestModifier: ViewModifier {
+    let incoming: OverlayIncomingTransmission?
+    @Binding var isPresented: Bool
+    @Binding var acceptedSignalId: String
+    let onAccept: () -> Void
+    let onDecline: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: incoming?.id) { id in
+                if id != nil {
+                    K1L0WeatherOverlayInstaller.playBeamCollectSound()
+                    acceptedSignalId = ""
+                    isPresented = true
+                } else {
+                    acceptedSignalId = ""
+                    isPresented = false
+                }
+            }
+            .alert(
+                "\(incoming?.senderLabel ?? "Someone") is trying to make contact",
+                isPresented: $isPresented
+            ) {
+                Button("Accept") {
+                    guard let incoming else { return }
+                    acceptedSignalId = incoming.id
+                    onAccept()
+                }
+                Button("Decline", role: .destructive, action: onDecline)
+            } message: {
+                Text("Accept to open the transmitter and tune into the player while you walk.")
+            }
+    }
+}
+
+private struct K1L0SceneActivationModifier: ViewModifier {
+    let scenePhase: ScenePhase
+    let onActive: () -> Void
+
+    func body(content: Content) -> some View {
+        content.onChange(of: scenePhase) { phase in
+            if phase == .active { onActive() }
+        }
+    }
+}
+
+private struct TransmissionPhotoAttachmentButton: View {
+    @Binding var photoPath: String?
+    @Binding var showingSourceDialog: Bool
+    @Binding var pickerRequest: PhotoPickerRequest?
+
+    var body: some View {
+        Button {
+            if photoPath != nil {
+                photoPath = nil
+            } else {
+                showingSourceDialog = true
+            }
+        } label: {
+            Image(systemName: photoPath == nil ? "camera" : "camera.fill")
+                .font(.system(size: 15, weight: .black))
+                .foregroundStyle(photoPath == nil ? .white : Color(red: 1.0, green: 0.19, blue: 0.58))
+                .frame(width: 42, height: 42)
+                .background(Color.black.opacity(0.70), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(photoPath == nil ? Color.white.opacity(0.25) : Color(red: 1.0, green: 0.19, blue: 0.58).opacity(0.9), lineWidth: 1.2))
+        }
+        .buttonStyle(.plain)
+        .confirmationDialog("Response photo", isPresented: $showingSourceDialog, titleVisibility: .visible) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Take Photo") { pickerRequest = PhotoPickerRequest(source: .camera) }
+            }
+            Button("Photo Library") { pickerRequest = PhotoPickerRequest(source: .photoLibrary) }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+}
+
+private struct TransmissionResponseTextField: View {
+    @Binding var text: String
+    let sending: Bool
+
+    var body: some View {
+        Group {
+#if canImport(UIKit)
+            TextField(sending ? "sending..." : "RESPOND", text: $text)
+            .textInputAutocapitalization(.never)
+            .disableAutocorrection(true)
+#else
+            TextField(sending ? "sending..." : "RESPOND", text: $text)
+#endif
+        }
+            .font(.system(size: 15, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .frame(height: 42)
+            .background(Color.black.opacity(0.70), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color(red: 1.0, green: 0.19, blue: 0.58).opacity(0.9), lineWidth: 1.5))
+            .disabled(sending)
+    }
+}
+
+private struct TransmissionResponseChoiceButton: View {
+    let option: String
+    let disabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(option.uppercased())
+                .font(.system(size: 12, weight: .black, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .padding(.horizontal, 8)
+                .background(Color.black.opacity(0.50), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.45 : 1.0)
+    }
+}
+
+private struct TransmissionResponderIdentityButton: View {
+    let responder: OverlayUser
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                K1L0UserAvatar(
+                    urlString: responder.avatarDisplayUrl,
+                    size: 36,
+                    userId: responder.userId
+                )
+                Text(responder.displayName.uppercased())
+                    .font(.system(size: 13, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            .padding(.leading, 6)
+            .padding(.trailing, 11)
+            .padding(.vertical, 5)
+            .background(Color.black.opacity(0.58), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.24), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct TransmissionResultPanel: View {
     let result: K1L0TransmissionResult
-    let onSelectOption: (String) -> Void
+    let onSelectOption: (String, String?) -> Void
+    var composerBottomObstruction: CGFloat = 0
     let onClose: () -> Void
+    var onNewTransmission: (() -> Void)? = nil
     @State private var currentClipIndex = 0
     @State private var currentClipProgress = 0.0
     @State private var textTransform = TransmissionTextTransformStore.load()
@@ -3224,7 +3941,20 @@ private struct TransmissionResultPanel: View {
     @State private var showingSettings = false
     @State private var responseDraft = ""
     @State private var isSendingResponse = false
+    // Panel-scope keyboard height — used to lift the response composer row
+    // and its adjoining buttons above the iOS keyboard when the text field
+    // is focused. The panel's outer .ignoresSafeArea() defeats SwiftUI's
+    // built-in keyboard avoidance, so we do it explicitly.
+    @State private var keyboardHeight: CGFloat = 0
     @State private var showResponderCard = false
+    @State private var responsePhotoPath: String? = nil
+    @State private var responsePhotoPickerRequest: PhotoPickerRequest? = nil
+    @State private var showResponsePhotoSourceDialog = false
+    @State private var editingPlot = false
+    @State private var plotEditDraft = ""
+    @State private var editedPlots: [String: String] = [:]
+    @FocusState private var plotEditorFocused: Bool
+    @ObservedObject private var keyboard = K1L0KeyboardObserver.shared
 
     private var currentClipSenderName: String {
         guard currentClipIndex >= 0, currentClipIndex < playableClips.count else { return "" }
@@ -3291,9 +4021,57 @@ private struct TransmissionResultPanel: View {
         if !playableClips.isEmpty {
             let safeIndex = min(max(0, currentClipIndex), playableClips.count - 1)
             let clip = playableClips[safeIndex]
+            if let edited = editedPlots[clip.sourceJobId] { return edited }
             return overlayTextForClip(plot: clip.responsePlot, selectedResponse: clip.selectedResponse, isResponseClip: safeIndex > 0)
         }
+        if let jobId = result.jobId, let edited = editedPlots[jobId] { return edited }
         return overlayTextForClip(plot: result.responsePlot, selectedResponse: result.selectedResponse ?? "", isResponseClip: false)
+    }
+
+    private var currentEditableIdentity: (jobId: String, ownerUserId: String)? {
+        guard !playableClips.isEmpty,
+              currentClipIndex >= 0,
+              currentClipIndex < playableClips.count else { return nil }
+        let clip = playableClips[currentClipIndex]
+        let jobId = clip.sourceJobId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let owner = clip.sourceUserId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let aliases = currentK1L0UserIds
+        guard !jobId.isEmpty, !owner.isEmpty,
+              aliases.contains(where: { owner.caseInsensitiveCompare($0) == .orderedSame }) else { return nil }
+        return (jobId, owner)
+    }
+
+    private var currentNativeUserId: String {
+        let defaults = UserDefaults.standard
+        return (defaults.string(forKey: "K1L0UserId") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var playbackStatusText: String? {
+        guard !playableClips.isEmpty else { return nil }
+        let latestClip = playableClips.last!
+        let latestOwner = latestClip.sourceUserId.lowercased()
+        let ownKey = currentNativeUserId.lowercased()
+        let aliases = currentK1L0UserIds.map { $0.lowercased() }
+        let latestIsFromMe = !latestOwner.isEmpty && (latestOwner == ownKey || aliases.contains(latestOwner))
+        if latestIsFromMe {
+            // 5 slides = full story (depths 0-4); the author just had the
+            // final word, so nothing further is coming.
+            return playableClips.count >= 5 ? "Story complete." : "Awaiting response…"
+        } else {
+            let isFinalSlide = (currentClipIndex == playableClips.count - 1)
+            if result.allowsTextResponse && !isFinalSlide {
+                return "Please respond…"
+            }
+        }
+        return nil
+    }
+
+    private var currentK1L0UserIds: [String] {
+        let defaults = UserDefaults.standard
+        return ["K1L0UserId", "FirebaseUserId", "DeviceID", "deviceID"].compactMap { key in
+            let value = (defaults.string(forKey: key) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
     }
 
     private var responseClipIndex: Int? {
@@ -3350,8 +4128,8 @@ private struct TransmissionResultPanel: View {
             // area, then the settings + close buttons in a right-aligned row
             // directly beneath it. The video starts below that row.
             let progressBarY = topSafe + 5
-            let buttonRowY = topSafe + 24
-            let topReserve = topSafe + 50
+            let buttonRowY = topSafe + 32
+            let topReserve = topSafe + 64
             let responseChoices = responseChoicesForCurrentClip
             let canRespond = result.allowsTextResponse && isShowingResponseClip
             let availWidth = geometry.size.width
@@ -3374,7 +4152,7 @@ private struct TransmissionResultPanel: View {
             let composerHeight: CGFloat = canRespond
                 ? CGFloat(composerRows) * 28 + CGFloat(max(0, composerRows - 1)) * 6 + 8 + 42 + 24
                 : 0
-            let composerTopY = screenH - bottomSafe - composerHeight
+            let composerTopY = screenH - bottomSafe - composerBottomObstruction - composerHeight
             let plotBottomInset: CGFloat = canRespond
                 ? max(18, videoRect.maxY - composerTopY + 12)
                 : 66
@@ -3386,7 +4164,7 @@ private struct TransmissionResultPanel: View {
                         Color.clear
 
                         if !playableClips.isEmpty {
-                            InlineTransmissionVideoPlayer(clips: playableClips, currentClipIndex: $currentClipIndex, currentClipProgress: $currentClipProgress, isVideoReady: $videoReadyForText, holdAtEndIndex: responseClipIndex)
+                            InlineTransmissionVideoPlayer(clips: playableClips, currentClipIndex: $currentClipIndex, currentClipProgress: $currentClipProgress, isVideoReady: $videoReadyForText, holdAtEndIndex: responseClipIndex, freezeCurrent: $editingPlot)
                                 .frame(width: videoWidth, height: videoHeight)
                                 .mask(TatteredEdgeMaskCanvas())
                         } else if let url = result.videoURL {
@@ -3447,30 +4225,11 @@ private struct TransmissionResultPanel: View {
                 // ribbon. Use the same helmet resolver/avatar renderer as
                 // Nearby and leaderboards, pinned inside the video's top-left.
                 if canRespond, let responder = responderCardUser {
-                    Button {
+                    TransmissionResponderIdentityButton(responder: responder) {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
                             showResponderCard = true
                         }
-                    } label: {
-                        HStack(spacing: 8) {
-                            K1L0UserAvatar(
-                                urlString: responder.avatarDisplayUrl,
-                                size: 36,
-                                userId: responder.userId
-                            )
-                            Text(responder.displayName.uppercased())
-                                .font(.system(size: 13, weight: .black, design: .rounded))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.72)
-                        }
-                        .padding(.leading, 6)
-                        .padding(.trailing, 11)
-                        .padding(.vertical, 5)
-                        .background(Color.black.opacity(0.58), in: Capsule())
-                        .overlay(Capsule().stroke(Color.white.opacity(0.24), lineWidth: 1))
                     }
-                    .buttonStyle(.plain)
                     .frame(width: videoRect.width, height: videoRect.height, alignment: .topLeading)
                     .padding(.leading, 12)
                     .padding(.top, 12)
@@ -3494,13 +4253,13 @@ private struct TransmissionResultPanel: View {
                 // the progress bar.
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .black))
+                        .font(.system(size: 22, weight: .black))
                         .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
+                        .frame(width: 54, height: 54)
                         .background(Color.black.opacity(0.38), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .position(x: geometry.size.width - 34, y: buttonRowY)
+                .position(x: geometry.size.width - 38, y: buttonRowY)
 
                 Button(action: {
                     withAnimation {
@@ -3508,64 +4267,66 @@ private struct TransmissionResultPanel: View {
                     }
                 }) {
                     Image(systemName: "gearshape")
-                        .font(.system(size: 16, weight: .black))
+                        .font(.system(size: 22, weight: .black))
                         .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
+                        .frame(width: 54, height: 54)
                         .background(Color.black.opacity(0.38), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .position(x: geometry.size.width - 84, y: buttonRowY)
+                .position(x: geometry.size.width - 100, y: buttonRowY)
 
 #if canImport(UIKit)
                 if !saveMediaItems.isEmpty {
                     CameraRollSaveButton(mediaItems: saveMediaItems, iconOnly: true)
-                        .position(x: geometry.size.width - 134, y: buttonRowY)
+                        .position(x: geometry.size.width - 162, y: buttonRowY)
                 }
 #endif
 
+                if let statusText = playbackStatusText {
+                    HStack(spacing: 8) {
+                        EchoSignalView()
+                        Text(statusText)
+                            .font(.system(size: 14, weight: .black, design: .rounded))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.85), radius: 3, x: 0, y: 1.5)
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(maxWidth: geometry.size.width - 170, alignment: .leading)
+                    .position(x: (geometry.size.width - 170) / 2 + 16, y: buttonRowY)
+                }
+
                 if canRespond {
                     VStack(spacing: 8) {
-                        Text(isSendingResponse ? "Response sent…" : "please respond.")
+                        Text(isSendingResponse ? "Response sent…" : "Please respond ASAP")
                             .font(.system(size: 13, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.78))
+                            .foregroundStyle(isSendingResponse ? Color.white.opacity(0.78) : Color(red: 0.90, green: 0.35, blue: 0.98))
                             .frame(maxWidth: .infinity)
                         if !isSendingResponse && !responseChoices.isEmpty {
                             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
                                 ForEach(responseChoices, id: \.self) { option in
-                                    Button {
-                                        guard !isSendingResponse else { return }
+                                    TransmissionResponseChoiceButton(
+                                        option: option,
+                                        disabled: isSendingResponse
+                                    ) {
                                         responseDraft = option
                                         K1L0WeatherOverlayInstaller.playBeamCollectSound()
-                                    } label: {
-                                        Text(option.uppercased())
-                                            .font(.system(size: 12, weight: .black, design: .rounded))
-                                            .foregroundStyle(.white)
-                                            .lineLimit(1)
-                                            .minimumScaleFactor(0.72)
-                                            .frame(maxWidth: .infinity, minHeight: 28)
-                                            .padding(.horizontal, 8)
-                                            .background(Color.black.opacity(0.50), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                                            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).stroke(Color.white.opacity(0.18), lineWidth: 1))
                                     }
-                                    .buttonStyle(.plain)
-                                    .disabled(isSendingResponse)
-                                    .opacity(isSendingResponse ? 0.45 : 1.0)
                                 }
                             }
                         }
 
                         if !isSendingResponse {
                         HStack(spacing: 8) {
-                            TextField(isSendingResponse ? "sending..." : "RESPOND", text: $responseDraft)
-                                .textInputAutocapitalization(.never)
-                                .disableAutocorrection(true)
-                                .font(.system(size: 15, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 12)
-                                .frame(height: 42)
-                                .background(Color.black.opacity(0.70), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color(red: 1.0, green: 0.19, blue: 0.58).opacity(0.9), lineWidth: 1.5))
-                                .disabled(isSendingResponse)
+                            TransmissionPhotoAttachmentButton(
+                                photoPath: $responsePhotoPath,
+                                showingSourceDialog: $showResponsePhotoSourceDialog,
+                                pickerRequest: $responsePhotoPickerRequest
+                            )
+
+                            TransmissionResponseTextField(
+                                text: $responseDraft,
+                                sending: isSendingResponse
+                            )
 
                             Button {
                                 let text = responseDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3573,7 +4334,8 @@ private struct TransmissionResultPanel: View {
                                 isSendingResponse = true
                                 responseDraft = ""
                                 K1L0WeatherOverlayInstaller.playBeamCollectSound()
-                                onSelectOption(text)
+                                onSelectOption(text, responsePhotoPath)
+                                responsePhotoPath = nil
                             } label: {
                                 Text(isSendingResponse ? "Sending…" : "Send")
                                     .font(.system(size: 15, weight: .black, design: .rounded))
@@ -3589,8 +4351,87 @@ private struct TransmissionResultPanel: View {
                         }
                     }
                     .padding(.horizontal, 12)
-                    .padding(.bottom, bottomSafe)
+                    .padding(.bottom, max(bottomSafe + composerBottomObstruction, keyboardHeight))
                     .frame(width: geometry.size.width, height: screenH, alignment: .bottom)
+                    .animation(.easeOut(duration: 0.24), value: keyboardHeight)
+                    .sheet(item: $responsePhotoPickerRequest) { request in
+                        NativePhotoPicker(sourceType: request.source) { image, path in
+                            if image != nil, let path {
+                                responsePhotoPath = path
+                            }
+                            responsePhotoPickerRequest = nil
+                        }
+                        .ignoresSafeArea()
+                    }
+                }
+
+                if currentEditableIdentity != nil && !editingPlot {
+                    HStack(spacing: 10) {
+                        Button(action: beginPlotEditing) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 18, weight: .black))
+                                .foregroundStyle(.white)
+                                .frame(width: 50, height: 50)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .overlay(Circle().stroke(Color.white.opacity(0.28), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+
+                        if let onNewTransmission {
+                            Button(action: onNewTransmission) {
+                                Text("NEW TRANSMISSION")
+                                    .font(.system(size: 16, weight: .black, design: .rounded))
+                                    .foregroundStyle(.black.opacity(0.88))
+                                    .frame(maxWidth: .infinity, minHeight: 50)
+                                    .background(Color.green, in: Capsule())
+                                    .overlay(Capsule().stroke(Color.white.opacity(0.48), lineWidth: 1.2))
+                                    .shadow(color: Color.green.opacity(0.35), radius: 12, y: 3)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.bottom, bottomSafe + 13)
+                    .frame(width: geometry.size.width, height: screenH, alignment: .bottomLeading)
+                    .zIndex(44)
+                }
+
+                if editingPlot {
+                    Color.black.opacity(0.28)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { savePlotEditing() }
+                        .zIndex(45)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("EDIT TRANSMISSION")
+                                .font(.system(size: 13, weight: .black, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.76))
+                            Spacer()
+                            Button("Done") { savePlotEditing() }
+                                .font(.system(size: 17, weight: .black))
+                                .foregroundStyle(Color(red: 0.45, green: 0.88, blue: 1.0))
+                        }
+                        TextEditor(text: $plotEditDraft)
+                            .focused($plotEditorFocused)
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .tint(.white)
+                            .scrollContentBackgroundCompatHidden()
+                            .colorScheme(.dark)
+                            .frame(minHeight: 120, maxHeight: 180)
+                            .padding(8)
+                            .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.18), lineWidth: 1))
+                    }
+                    .padding(16)
+                    .background(Color.black.opacity(0.96), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.white.opacity(0.20), lineWidth: 1))
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, max(bottomSafe + 10, keyboard.height + 10))
+                    .frame(width: geometry.size.width, height: screenH, alignment: .bottom)
+                    .zIndex(46)
                 }
 
                 if showingSettings {
@@ -3680,6 +4521,17 @@ private struct TransmissionResultPanel: View {
             .onDisappear {
                 K1L0WeatherOverlayInstaller.setVideoBackdropActive(false)
             }
+            // SwiftUI-native keyboard tracking so the composer row + adjoining
+            // buttons rise above the keyboard when RESPOND is focused. The
+            // panel's outer .ignoresSafeArea() defeats built-in avoidance.
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notif in
+                guard let frame = notif.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+                let screen = UIScreen.main.bounds
+                keyboardHeight = max(0, screen.maxY - frame.minY)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                keyboardHeight = 0
+            }
             .onChange(of: transmissionFizzyEdges) { val in
                 K1L0WeatherOverlayInstaller.setUnitySetting("transmissionFizzyEdges", val ? "1" : "0")
             }
@@ -3689,7 +4541,33 @@ private struct TransmissionResultPanel: View {
             .onChange(of: transmissionFXIntensity) { val in
                 K1L0WeatherOverlayInstaller.setUnitySetting("transmissionFXIntensity", String(format: "%.2f", val))
             }
+            .onChange(of: currentClipIndex) { _ in
+                if editingPlot { savePlotEditing() }
+            }
         }
+    }
+
+    private func beginPlotEditing() {
+        guard currentEditableIdentity != nil else { return }
+        plotEditDraft = visiblePlotText
+        editingPlot = true
+        DispatchQueue.main.async { plotEditorFocused = true }
+    }
+
+    private func savePlotEditing() {
+        guard let identity = currentEditableIdentity else {
+            editingPlot = false
+            plotEditorFocused = false
+            return
+        }
+        let clean = plotEditDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        editedPlots[identity.jobId] = clean
+        if K1L0ActiveTransmissionStore.shared.snapshot.jobId == identity.jobId {
+            K1L0ActiveTransmissionStore.shared.updateResponsePlot(clean)
+        }
+        editingPlot = false
+        plotEditorFocused = false
+        k1l0PersistTransmissionPlot(jobId: identity.jobId, userId: identity.ownerUserId, responsePlot: clean)
     }
 }
 
@@ -3933,8 +4811,8 @@ private struct IncomingSignalHUD: View {
     var body: some View {
         if let incoming = data.incomingTransmission {
             VStack(alignment: .center, spacing: 6) {
-                Text("\(incoming.senderLabel.uppercased()) IS TRYING TO CONTACT SOMEONE")
-                    .font(.system(size: 12, weight: .black, design: .monospaced))
+                Text("TUNING INTO \(incoming.senderLabel.uppercased())")
+                    .font(.system(size: 15, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
@@ -3957,14 +4835,15 @@ private struct IncomingSignalHUD: View {
                     .frame(width: 150, height: 150)
                     .clipped()
                 }
-                HStack(alignment: .bottom, spacing: 8) {
-                    TenBarSignalMeter(strength: progress)
-                    Text("WALK")
-                        .font(.system(size: 10, weight: .black, design: .monospaced))
+                VStack(spacing: 5) {
+                    Text("WALK TO TUNE THE SIGNAL")
+                        .font(.system(size: 17, weight: .black, design: .rounded))
                         .foregroundStyle(.white)
-                        .padding(.bottom, 2)
+                    TenBarSignalMeter(strength: progress)
+                        .scaleEffect(x: 1.75, y: 1.55)
+                        .frame(height: 32)
                     Text(percentText)
-                        .font(.system(size: 14, weight: .black, design: .monospaced))
+                        .font(.system(size: 16, weight: .black, design: .rounded))
                         .foregroundStyle(.white)
                 }
             }
@@ -4213,60 +5092,131 @@ private struct IncomingSignalSkyOverlay: View {
 }
 
 private struct WalkingSkyAlert: View {
-    let text: String
-    var stableText: String? = nil
-    var distanceText: String? = nil
-    var relativeBearing: Double? = nil
-    // 0...2 — how many trailing dots are lit. All three dots are ALWAYS
-    // rendered (constant width, symmetric centering); animation is opacity
-    // only, so the centered line never shifts or looks lopsided.
-    var dotPhase: Int = 2
+    let items: [K1L0MarqueeItem]
+    let dotPhase: Int
+    let statusHUD: Bool
+
+    @State private var currentIndex = 0
+    private let timer = Timer.publish(every: 4.0, on: .main, in: .common).autoconnect()
 
     var body: some View {
         GeometryReader { geometry in
-            HStack(spacing: 8) {
-                if let dist = distanceText, let bearing = relativeBearing {
-                    DirectionCell(distance: dist, relativeBearing: bearing)
+            Group {
+                if !items.isEmpty {
+                    if statusHUD {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(items) { item in
+                                alertRow(item)
+                                    .frame(maxWidth: geometry.size.width - 36, alignment: .leading)
+                            }
+                        }
+                        .padding(.leading, 18)
+                        // Clear the complete weather block, including a wrapped
+                        // two-line city name, before beginning the status stack.
+                        .padding(.top, geometry.safeAreaInsets.top + 128)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    } else {
+                        let activeItem = items[currentIndex % items.count]
+                        alertRow(activeItem)
+                            .frame(maxWidth: geometry.size.width * 0.82)
+                            .position(x: geometry.size.width * 0.5, y: geometry.safeAreaInsets.top + 182)
+                            .id(activeItem.id)
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .trailing)),
+                                removal: .opacity.combined(with: .move(edge: .leading))
+                            ))
+                    }
                 }
-                renderText()
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .background(Color.black.opacity(0.08))
-            .clipShape(Capsule())
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: geometry.size.width * 0.82)
-            .position(x: geometry.size.width * 0.5, y: geometry.safeAreaInsets.top + 182)
+            .animation(.easeInOut(duration: 0.35), value: currentIndex)
+            .onReceive(timer) { _ in
+                if items.count > 1 {
+                    currentIndex = (currentIndex + 1) % items.count
+                }
+            }
+            .onAppear {
+                if currentIndex >= items.count {
+                    currentIndex = 0
+                }
+            }
+            .onChange(of: items.count) { newCount in
+                if currentIndex >= newCount {
+                    currentIndex = 0
+                }
+            }
         }
+    }
+
+    private func alertRow(_ item: K1L0MarqueeItem) -> some View {
+        HStack(spacing: 8) {
+            if let dist = item.distanceText, let bearing = item.relativeBearing {
+                DirectionCell(distance: dist, relativeBearing: bearing)
+            } else {
+                let isIdle = item.id == "walking-status" && (item.line1 == "Walk" || item.line2.contains("Idle"))
+                let sysImg = isIdle ? "exclamationmark.triangle.fill" : (item.kind == "incomingTransmission" ? "antenna.radiowaves.left.and.right" : (item.id == "render-loading" ? "circle.dashed" : "figure.walk"))
+                Image(systemName: sysImg)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(isIdle ? Color.red : Color(red: 0.66, green: 1.0, blue: 0.76))
+                    .frame(width: 32)
+            }
+            // One layout for every banner: thumbnail (when there is one) on
+            // the left, text after. The old location-only right-side thumb
+            // made ambient and location rows look like two different systems.
+            if item.kind == "ambientElement" || item.kind == "ambientObject" || item.kind == "location" {
+                NearbyItemThumbnail(imageUrl: item.imageUrl)
+                renderItemText(item)
+            } else {
+                renderItemText(item)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(
+            Color.black.opacity(0.55),
+            in: RoundedRectangle(cornerRadius: statusHUD ? 10 : 22, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: statusHUD ? 10 : 22, style: .continuous)
+                .stroke(Color.white.opacity(0.18), lineWidth: 1)
+        )
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
-    private func renderText() -> some View {
-        let (baseText, hadDots) = splitText(text)
-        if hadDots {
-            (
-                Text(baseText).foregroundColor(.white.opacity(0.88))
-                + Text(".").foregroundColor(.white.opacity(dotPhase >= 0 ? 0.88 : 0.22))
-                + Text(".").foregroundColor(.white.opacity(dotPhase >= 1 ? 0.88 : 0.22))
-                + Text(".").foregroundColor(.white.opacity(dotPhase >= 2 ? 0.88 : 0.22))
-            )
-            .font(.system(size: 17, weight: .semibold))
-            .tracking(0.6)
-            .multilineTextAlignment(distanceText != nil ? .leading : .center)
-            .lineLimit(nil)
-        } else {
-            Text(text)
-                .font(.system(size: 17, weight: .semibold))
+    private func renderItemText(_ item: K1L0MarqueeItem) -> some View {
+        let (baseText, hadDots) = splitText(item.line1)
+        
+        VStack(alignment: item.distanceText != nil ? .leading : .center, spacing: 2) {
+            if hadDots {
+                (
+                    Text(baseText).foregroundColor(.white.opacity(0.88))
+                    + Text(".").foregroundColor(.white.opacity(dotPhase >= 0 ? 0.88 : 0.22))
+                    + Text(".").foregroundColor(.white.opacity(dotPhase >= 1 ? 0.88 : 0.22))
+                    + Text(".").foregroundColor(.white.opacity(dotPhase >= 2 ? 0.88 : 0.22))
+                )
+                .font(.system(size: 15, weight: .bold))
                 .tracking(0.6)
-                .foregroundStyle(.white.opacity(0.88))
-                .multilineTextAlignment(distanceText != nil ? .leading : .center)
-                .lineLimit(nil)
+                .multilineTextAlignment(item.distanceText != nil ? .leading : .center)
+                .lineLimit(1)
+            } else {
+                Text(item.line1)
+                    .font(.system(size: 15, weight: .bold))
+                    .tracking(0.6)
+                    .foregroundStyle(.white.opacity(0.88))
+                    .multilineTextAlignment(item.distanceText != nil ? .leading : .center)
+                    .lineLimit(1)
+            }
+            
+            if !item.line2.isEmpty {
+                Text(item.line2)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .multilineTextAlignment(item.distanceText != nil ? .leading : .center)
+                    .lineLimit(1)
+            }
         }
     }
 
-    // Strips any trailing dot/pad run (periods plus the figure/punctuation
-    // spaces earlier fixes padded with) — the view re-adds exactly three
-    // opacity-animated dots.
     private func splitText(_ fullText: String) -> (base: String, hadDots: Bool) {
         var base = fullText
         var sawDot = false
@@ -4347,22 +5297,45 @@ private struct WorldMarqueeCard: View {
                             }
                             .frame(width: 46, alignment: .leading)
                         } else {
-                            Image(systemName: "figure.walk")
+                            let isIdle = item.id == "walking-status" && (item.line1 == "Walk" || item.line2.contains("Idle"))
+                            let sysImg = isIdle ? "exclamationmark.triangle.fill" : "figure.walk"
+                            Image(systemName: sysImg)
                                 .font(.system(size: 18, weight: .bold))
-                                .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
+                                .foregroundStyle(isIdle ? Color.red : Color(red: 0.66, green: 1.0, blue: 0.76))
                                 .frame(width: 46)
                         }
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.line1)
-                                .font(.system(size: item.kind == "status" ? 19 : 16, weight: .bold))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.66)
-                            Text(item.line2)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.72))
-                                .lineLimit(2)
-                                .minimumScaleFactor(0.64)
+                        if item.kind == "ambientElement" || item.kind == "ambientObject" {
+                            NearbyItemThumbnail(imageUrl: item.imageUrl)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Nearby item")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                if !item.line2.isEmpty {
+                                    Text(item.line2)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(.white.opacity(0.72))
+                                        .lineLimit(2)
+                                }
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.line1)
+                                    .font(.system(size: item.kind == "status" ? 19 : 16, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.66)
+                                if !item.line2.isEmpty {
+                                    Text(item.line2)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(.white.opacity(0.72))
+                                        .lineLimit(2)
+                                        .minimumScaleFactor(0.64)
+                                }
+                            }
+                            if item.kind == "location" {
+                                NearbyItemThumbnail(imageUrl: item.imageUrl)
+                            }
                         }
                         Spacer()
                     }
@@ -4405,7 +5378,7 @@ private struct K1L0TabbedBottomMenu: View {
         let active = activeTab == "user"
         let helmetUrl = saveStore.savedHelmetURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return Button(action: onUser) {
-            K1L0UserAvatar(urlString: helmetUrl.isEmpty ? nil : helmetUrl, size: 28)
+            K1L0UserAvatar(urlString: helmetUrl.isEmpty ? nil : helmetUrl, size: 34)
                 .overlay(active ? Circle().stroke(Color.white.opacity(0.72), lineWidth: 1.5) : nil)
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
@@ -4484,23 +5457,21 @@ private struct NativeSettingsPanel: View {
     @ObservedObject private var radio = K1L0RadioPlayer.shared
     @ObservedObject private var perfStats = K1L0PerfStatsStore.shared
 
-    @AppStorage("k1lo_native_saturation") private var saturation = 2.0
-    @AppStorage("k1lo_native_contrast") private var contrast = 4.0
-    @AppStorage("k1lo_native_mapBrightness") private var mapBrightness = -0.05
-    @AppStorage("k1lo_native_hueShift") private var hueShift = -4.0
-    @AppStorage("k1lo_native_temperature") private var temperature = 2.0
-    @AppStorage("k1lo_native_tint") private var tint = 1.0
+    @AppStorage("k1lo_native_saturation") private var saturation = 0.0
+    @AppStorage("k1lo_native_contrast") private var contrast = 0.0
+    @AppStorage("k1lo_native_mapBrightness") private var mapBrightness = 0.0
+    @AppStorage("k1lo_native_hueShift") private var hueShift = 0.0
+    @AppStorage("k1lo_native_temperature") private var temperature = 0.0
+    @AppStorage("k1lo_native_tint") private var tint = 0.0
     @AppStorage("k1lo_native_bloomEnabled") private var bloomEnabled = true
-    @AppStorage("k1lo_native_bloomIntensity") private var bloomIntensity = 2.4
-    @AppStorage("k1lo_native_bloomThreshold") private var bloomThreshold = 1.2
-    @AppStorage("k1lo_native_bloomScatter") private var bloomScatter = 0.43
+    @AppStorage("k1lo_native_bloomIntensity") private var bloomIntensity = 1.10
+    @AppStorage("k1lo_native_bloomThreshold") private var bloomThreshold = 1.06
+    @AppStorage("k1lo_native_bloomScatter") private var bloomScatter = 0.24
     @AppStorage("k1lo_native_vignetteEnabled") private var vignetteEnabled = true
     @AppStorage("k1lo_native_vignetteIntensity") private var vignetteIntensity = 0.3
     @AppStorage("k1lo_native_vignetteSmoothness") private var vignetteSmoothness = 1.0
     @AppStorage("k1lo_native_chromaticEnabled") private var chromaticEnabled = true
     @AppStorage("k1lo_native_chromaticIntensity") private var chromaticIntensity = 0.09
-    @AppStorage("k1lo_native_lensDistEnabled") private var lensDistEnabled = true
-    @AppStorage("k1lo_native_lensDistIntensity") private var lensDistIntensity = -0.5
     @AppStorage("k1lo_native_dofEnabled") private var dofEnabled = false
     @AppStorage("k1lo_native_focusDistance") private var focusDistance = 18.1
     @AppStorage("k1lo_native_aperture") private var aperture = 8.25
@@ -4509,13 +5480,13 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_motionBlurIntensity") private var motionBlurIntensity = 0.02
     @AppStorage("k1lo_native_filmGrainEnabled") private var filmGrainEnabled = true
     @AppStorage("k1lo_native_filmGrainIntensity") private var filmGrainIntensity = 0.0
-    @AppStorage("k1lo_native_godPositionY") private var godPositionY = 51.0
+    @AppStorage("k1lo_native_godPositionY") private var godPositionY = 49.0
     @AppStorage("k1lo_native_godPositionZ") private var godPositionZ = 107.0
-    @AppStorage("k1lo_native_godRotationX") private var godRotationX = -1.0
+    @AppStorage("k1lo_native_godRotationX") private var godRotationX = -2.0
     @AppStorage("k1lo_native_farClipPlane") private var farClipPlane = 3600.0
     @AppStorage("k1lo_native_moonlightEnabled") private var moonlightEnabled = true
     @AppStorage("k1lo_native_moonlightManualOverride") private var moonlightManualOverride = false
-    @AppStorage("k1lo_native_moonlightIntensity") private var moonlightIntensity = 1.0
+    @AppStorage("k1lo_native_moonlightIntensity") private var moonlightIntensity = 0.55
     @AppStorage("k1lo_native_moonlightRed") private var moonlightRed = 0.7
     @AppStorage("k1lo_native_moonlightGreen") private var moonlightGreen = 0.8
     @AppStorage("k1lo_native_moonlightBlue") private var moonlightBlue = 1.0
@@ -4526,16 +5497,73 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_ambientIntensity") private var ambientIntensity = 0.0
     @AppStorage("k1lo_native_spotlightEnabled") private var spotlightEnabled = true
     @AppStorage("k1lo_native_spotlightIntensity") private var spotlightIntensity = 3.0
-    @AppStorage("k1lo_native_zossEmissiveIntensity") private var zossEmissiveIntensity = 1.9
+    @AppStorage("k1lo_native_zossEmissiveIntensity") private var zossEmissiveIntensity = 19.0
     @AppStorage("k1lo_native_zossEmissiveSmoothness") private var zossEmissiveSmoothness = 0.34
     @AppStorage("k1lo_native_zossEmissiveMetallic") private var zossEmissiveMetallic = 0.05
     @AppStorage("k1lo_native_zossEmissiveHue") private var zossEmissiveHue = 0.07
     @AppStorage("k1lo_native_zossEmissiveSaturation") private var zossEmissiveSaturation = 0.62
     @AppStorage("k1lo_native_zossNightEmissiveHue") private var zossNightEmissiveHue = 0.115
     @AppStorage("k1lo_native_zossNightEmissiveSaturation") private var zossNightEmissiveSaturation = 0.82
+    @AppStorage("k1lo_native_zossWallValue") private var zossWallValue = 0.10
+    @AppStorage("k1lo_native_zossWallSaturation") private var zossWallSaturation = 0.30
+    @AppStorage("k1lo_native_zossLitFraction") private var zossLitFraction = 1.0
+    @AppStorage("k1lo_native_zossPaletteMix") private var zossPaletteMix = 1.0
+    @AppStorage("k1lo_native_zossPaletteSaturation") private var zossPaletteSaturation = 1.35
+    @AppStorage("k1lo_native_zossPaletteSaturation_night") private var zossPaletteSaturationNight = 1.22
+    @AppStorage("k1lo_native_zossBrightnessJitter") private var zossBrightnessJitter = 0.5
+    @AppStorage("k1lo_native_zossBrightnessJitterRate") private var zossBrightnessJitterRate = 0.6
+    @AppStorage("k1lo_native_zossWallDaylightLift") private var zossWallDaylightLift = 0.55
+    @AppStorage("k1lo_native_zossWallVariance") private var zossWallVariance = 0.6
+    @AppStorage("k1lo_native_roadValue") private var roadValue = 0.88
+    @State private var musicDiagnostic: String = ""
+    @State private var panelPreviewSnapshot: [String: Any] = [:]
+
+    private func snapshotLookPreview() {
+        let ud = UserDefaults.standard
+        var snap: [String: Any] = [:]
+        for k in Self.previewLookKeys {
+            if let v = ud.object(forKey: "k1lo_native_\(k)") {
+                snap[k] = v
+            } else {
+                snap[k] = NSNull()   // marker: key was unset
+            }
+        }
+        panelPreviewSnapshot = snap
+    }
+
+    private func restoreLookPreview() {
+        guard !panelPreviewSnapshot.isEmpty else { return }
+        let ud = UserDefaults.standard
+        for (unityKey, raw) in panelPreviewSnapshot {
+            let defaultsKey = "k1lo_native_\(unityKey)"
+            if raw is NSNull {
+                ud.removeObject(forKey: defaultsKey)
+                continue
+            }
+            ud.set(raw, forKey: defaultsKey)
+            let payload: String
+            if let b = raw as? Bool {
+                payload = b ? "1" : "0"
+            } else if let d = raw as? Double {
+                payload = String(format: "%.4f", d)
+            } else if let i = raw as? Int {
+                payload = String(i)
+            } else if let f = raw as? Float {
+                payload = String(format: "%.4f", Double(f))
+            } else if let s = raw as? String {
+                payload = s
+            } else {
+                payload = String(describing: raw)
+            }
+            K1L0WeatherOverlayInstaller.setUnitySetting(unityKey, payload)
+        }
+        panelPreviewSnapshot = [:]
+    }
+    @AppStorage("k1lo_native_vaporDayPink") private var vaporDayPink = 0.65
     @AppStorage("k1lo_native_groundHue") private var groundHue = 0.30
     @AppStorage("k1lo_native_groundSaturation") private var groundSaturation = 0.0
     @AppStorage("k1lo_native_beamDistanceLabels") private var beamDistanceLabels = false
+    @AppStorage("k1lo_native_projectorLaserBeams") private var projectorLaserBeams = true
     @AppStorage("k1lo_native_beamDebug") private var beamDebug = false
     @AppStorage("k1lo_native_perfOverlay") private var perfOverlay = true
     @AppStorage("k1lo_native_showStoryStrip") private var showStoryStrip = false
@@ -4546,9 +5574,10 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_transmissionFXIntensity") private var transmissionFXIntensity = 0.5
     @AppStorage("k1lo_native_transmissionFizzyEdges") private var transmissionFizzyEdges = false
     @AppStorage("k1lo_native_bottomMenuLayout") private var bottomMenuLayout = "tabs"
+    @AppStorage("k1lo_native_statusHUD") private var statusHUD = false
     @AppStorage("k1lo_native_manualHour") private var manualHour = 13.25
     @AppStorage("k1lo_native_manualWeather") private var manualWeather = 0
-    @AppStorage("k1lo_native_ambientMinStepsToSpawn") private var ambientMinStepsToSpawn = 110.0
+    @AppStorage("k1lo_native_ambientMinStepsToSpawn") private var ambientMinStepsToSpawn = 0.0
     @AppStorage("k1lo_native_receiveStepsRequired") private var receiveStepsRequired = 200.0
     @AppStorage("k1lo_native_transmissionWaitSteps") private var transmissionWaitSteps = 500.0
     @AppStorage("k1lo_native_momentumSessionGraceMinutes") private var momentumSessionGraceMinutes = 20.0
@@ -4558,14 +5587,14 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_ambientBeamDismissSteps") private var ambientBeamDismissSteps = 80.0
     @AppStorage("k1lo_native_musicRadioEnabled") private var musicRadioEnabled = true
     @AppStorage("k1lo_native_musicRadioVolume") private var musicRadioVolume = 0.5415074229240417
-    @AppStorage("k1lo_native_musicRadioMode") private var musicRadioMode = "final"
+    @AppStorage("k1lo_native_musicRadioMode") private var musicRadioMode = "instrumental"
     @AppStorage("k1lo_native_fogConstantDensity") private var fogConstantDensity = false
-    @AppStorage("k1lo_native_fogDensity") private var fogDensity = 0.37
-    @AppStorage("k1lo_native_fogNoiseStrength") private var fogNoiseStrength = 1.67
-    @AppStorage("k1lo_native_fogNoiseScale") private var fogNoiseScale = 17.4
-    @AppStorage("k1lo_native_fogBrightness") private var fogBrightness = 0.34
-    @AppStorage("k1lo_native_fogScatteringIntensity") private var fogScatteringIntensity = 1.15
-    @AppStorage("k1lo_native_fogHeight") private var fogHeight = 77.0
+    @AppStorage("k1lo_native_fogDensity") private var fogDensity = 0.01
+    @AppStorage("k1lo_native_fogNoiseStrength") private var fogNoiseStrength = 1.8
+    @AppStorage("k1lo_native_fogNoiseScale") private var fogNoiseScale = 21.0
+    @AppStorage("k1lo_native_fogBrightness") private var fogBrightness = 0.81
+    @AppStorage("k1lo_native_fogScatteringIntensity") private var fogScatteringIntensity = 1.25
+    @AppStorage("k1lo_native_fogHeight") private var fogHeight = 86.0
     @AppStorage("k1lo_native_fogDistantFog") private var fogDistantFog = true
     @AppStorage("k1lo_native_fogDistantDensity") private var fogDistantDensity = 0.0
     @AppStorage("k1lo_native_fogDistantStart") private var fogDistantStart = 0.0
@@ -4578,50 +5607,107 @@ private struct NativeSettingsPanel: View {
     @AppStorage("k1lo_native_layeredSkyEffect") private var layeredSkyEffect = 0
     @AppStorage("k1lo_native_layeredRain") private var layeredRain = 0.0
     @AppStorage("k1lo_native_layeredAurora") private var layeredAurora = 0.0
-    @AppStorage("k1lo_native_layeredSkyTopHue") private var layeredSkyTopHue = 0.62
-    @AppStorage("k1lo_native_layeredSkyMidHue") private var layeredSkyMidHue = 0.76
-    @AppStorage("k1lo_native_layeredNightBlackness") private var layeredNightBlackness = 0.72
-    @AppStorage("k1lo_native_layeredSkyHorizonHue") private var layeredSkyHorizonHue = 0.94
+    @AppStorage("k1lo_native_layeredSkyTopHue") private var layeredSkyTopHue = 0.80
+    @AppStorage("k1lo_native_layeredSkyMidHue") private var layeredSkyMidHue = 0.62
+    @AppStorage("k1lo_native_layeredNightBlackness") private var layeredNightBlackness = 0.60
+    @AppStorage("k1lo_native_layeredSkyHorizonHue") private var layeredSkyHorizonHue = 0.73
     @AppStorage("k1lo_native_layeredCloudOpacity") private var layeredCloudOpacity = 0.35
     @AppStorage("k1lo_native_layeredCloudSpeed") private var layeredCloudSpeed = 0.07
     @AppStorage("k1lo_native_layeredCloudScale") private var layeredCloudScale = 1.35
+    @AppStorage("k1lo_native_layeredHorizonHeight") private var layeredHorizonHeight = 0.0
     @AppStorage("k1lo_native_layeredCloudContrast") private var layeredCloudContrast = 1.1
     @AppStorage("k1lo_native_liveCloudCover") private var liveCloudCover = 35.0
     @AppStorage("k1lo_native_solarWorldOverride") private var solarWorldOverride = false
     @AppStorage("k1lo_native_liveSolarAltitude") private var liveSolarAltitude = 12.0
     @AppStorage("k1lo_native_liveSolarAzimuth") private var liveSolarAzimuth = 180.0
-    @AppStorage("k1lo_native_fogDensity_night") private var fogDensityNight = 0.37
-    @AppStorage("k1lo_native_fogNoiseStrength_night") private var fogNoiseStrengthNight = 1.67
+    @AppStorage("k1lo_native_fogDensity_night") private var fogDensityNight = 0.025
+    @AppStorage("k1lo_native_fogNoiseStrength_night") private var fogNoiseStrengthNight = 0.22
     @AppStorage("k1lo_native_fogNoiseScale_night") private var fogNoiseScaleNight = 17.4
-    @AppStorage("k1lo_native_fogBrightness_night") private var fogBrightnessNight = 0.34
-    @AppStorage("k1lo_native_fogScatteringIntensity_night") private var fogScatteringIntensityNight = 1.15
-    @AppStorage("k1lo_native_fogHeight_night") private var fogHeightNight = 77.0
-    @AppStorage("k1lo_native_fogDistantDensity_night") private var fogDistantDensityNight = 0.0
-    @AppStorage("k1lo_native_fogDistantStart_night") private var fogDistantStartNight = 0.0
+    @AppStorage("k1lo_native_fogBrightness_night") private var fogBrightnessNight = 0.24
+    @AppStorage("k1lo_native_fogScatteringIntensity_night") private var fogScatteringIntensityNight = 0.55
+    @AppStorage("k1lo_native_fogHeight_night") private var fogHeightNight = 48.0
+    @AppStorage("k1lo_native_fogDistantDensity_night") private var fogDistantDensityNight = 0.0025
+    @AppStorage("k1lo_native_fogDistantStart_night") private var fogDistantStartNight = 100.0
     @AppStorage("k1lo_native_groundHue_night") private var groundHueNight = 0.30
     @AppStorage("k1lo_native_groundSaturation_night") private var groundSaturationNight = 0.0
     @State private var fogTuningMode = "Day"
     @State private var groundTuningMode = "Day"
     @AppStorage("k1lo_native_selectedSettingsSection") private var selectedSection = "Menu"
 
+    // Look-tuning sections only exist in Test Override / Bypass mode; live
+    // weather mode hides them and runs the curated automated look.
+    private var manualLookActive: Bool { testSkyOverride || layeredBypassWeather }
+    // These sections used to be hidden unless override was on. Now they're
+    // always visible; the panel-scope snapshot below reverts any tuning done
+    // to their sliders when the settings panel is closed.
+    private static let weatherLookSections: Set<String> = []
+    // Keys whose values are temporarily editable while the settings panel is
+    // open, then reverted on close. Sliders write to these normally (live
+    // preview); we snapshot on open and restore on close.
+    private static let previewLookKeys: [String] = [
+        // Lighting
+        "moonlightEnabled", "moonlightManualOverride", "moonlightIntensity",
+        "moonlightRed", "moonlightGreen", "moonlightBlue",
+        "moonlightPitch", "moonlightYaw", "moonlightRoll",
+        "ambientEnabled", "ambientIntensity",
+        "spotlightEnabled", "spotlightIntensity",
+        // Fog (day + night)
+        "fogConstantDensity",
+        "fogDensity", "fogNoiseStrength", "fogNoiseScale", "fogBrightness",
+        "fogScatteringIntensity", "fogHeight",
+        "fogDistantFog", "fogDistantDensity", "fogDistantStart",
+        "fogDensity_night", "fogNoiseStrength_night", "fogNoiseScale_night",
+        "fogBrightness_night", "fogScatteringIntensity_night", "fogHeight_night",
+        "fogDistantDensity_night", "fogDistantStart_night",
+        "fogNativeLights", "fogNativeLightsMultiplier",
+        // Window Glow / walls / road
+        "zossEmissiveIntensity", "zossEmissiveSmoothness", "zossEmissiveMetallic",
+        "zossEmissiveHue", "zossEmissiveSaturation",
+        "zossNightEmissiveHue", "zossNightEmissiveSaturation",
+        "zossLitFraction", "zossPaletteMix",
+        "zossPaletteSaturation", "zossPaletteSaturation_night",
+        "zossBrightnessJitter", "zossBrightnessJitterRate",
+        "zossWallDaylightLift", "zossWallVariance",
+        "roadValue", "zossWallValue", "zossWallSaturation",
+        "vaporDayPink",
+        // Ground / Grass
+        "groundHue", "groundSaturation",
+        "groundHue_night", "groundSaturation_night",
+        // Sky Lab (Layered sky) — reverted on panel close so experimentation
+        // doesn't clobber the persisted look. Bypass itself is reverted by
+        // Unity's settingsPanelOpen flag while the panel is up.
+        "layeredSkyTopHue", "layeredSkyMidHue", "layeredSkyHorizonHue",
+        "layeredCloudOpacity", "layeredCloudSpeed", "layeredCloudScale",
+        "layeredCloudContrast", "layeredNightBlackness",
+        "layeredHorizonHeight",
+        "layeredRain", "layeredAurora", "layeredSkyEffect",
+        "manualHour", "manualWeather",
+    ]
+
+    private func weatherLookModeChanged() {
+        // Bypass Live Weather (Sky Lab) is the single manual switch. The old
+        // testSkyOverride flag lives on internally (Unity reads it in several
+        // places) but always mirrors the master so the two can never disagree.
+        if testSkyOverride != layeredBypassWeather {
+            testSkyOverride = layeredBypassWeather
+        }
+        K1L0WeatherOverlayInstaller.setUnitySetting("testSkyOverride", layeredBypassWeather ? "1" : "0")
+        // Re-push all look values under the new mode (saved sliders vs curated
+        // defaults) and step off a section that just got hidden.
+        NativeUnityLightingSync.sync()
+        if !manualLookActive && Self.weatherLookSections.contains(selectedSection) {
+            selectedSection = "Layered Sky"
+        }
+    }
+
+    // Renderer tuning moved to the remote live-render channel. Keep this
+    // screen focused on controls a player may reasonably change themselves.
     private let sectionsList = [
-        SettingsSectionInfo(id: "Performance", title: "Perf"),
         SettingsSectionInfo(id: "Location", title: "Loc"),
         SettingsSectionInfo(id: "HUD", title: "HUD"),
-        SettingsSectionInfo(id: "God Camera", title: "God Cam"),
-        SettingsSectionInfo(id: "Lighting", title: "Light"),
-        SettingsSectionInfo(id: "Fog", title: "Fog"),
-        SettingsSectionInfo(id: "Window Glow", title: "Windows"),
-        SettingsSectionInfo(id: "Ground / Grass", title: "Ground"),
-        SettingsSectionInfo(id: "Map Color", title: "Map"),
-        SettingsSectionInfo(id: "Bloom", title: "Bloom"),
-        SettingsSectionInfo(id: "Post FX", title: "Post FX"),
-        SettingsSectionInfo(id: "Focus + Motion", title: "Focus"),
         SettingsSectionInfo(id: "Music", title: "Music"),
-        SettingsSectionInfo(id: "Timers", title: "Timers"),
-        SettingsSectionInfo(id: "Weather", title: "Weather"),
-        SettingsSectionInfo(id: "Layered Sky", title: "Sky Lab"),
-        SettingsSectionInfo(id: "Transmission FX", title: "Tx FX")
+        SettingsSectionInfo(id: "Timers", title: "Gameplay"),
+        SettingsSectionInfo(id: "Transmission FX", title: "Effects")
     ]
 
     var body: some View {
@@ -4632,28 +5718,10 @@ private struct NativeSettingsPanel: View {
                     .frame(height: topClearance)
                 
                 VStack(alignment: .leading, spacing: 10) {
-                    Button {
-                        K1L0WeatherOverlayInstaller.captureSnapshotForAnalysis()
-                    } label: {
-                        HStack {
-                            Text("Snapshot")
-                                .font(.system(size: 15, weight: .bold))
-                            Spacer()
-                            Text("analyze")
-                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.68))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.vertical, 10)
-                        .padding(.horizontal, 14)
-                        .background(Color.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-
                     // Multirow Segment Controller
                     let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 4)
                     LazyVGrid(columns: columns, spacing: 4) {
-                        ForEach(sectionsList) { sec in
+                        ForEach(sectionsList.filter { manualLookActive || !Self.weatherLookSections.contains($0.id) }) { sec in
                             let isSelected = selectedSection == sec.id
                             Button {
                                 selectedSection = sec.id
@@ -4672,6 +5740,8 @@ private struct NativeSettingsPanel: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.bottom, 10)
+                .onChange(of: testSkyOverride) { _ in weatherLookModeChanged() }
+                .onChange(of: layeredBypassWeather) { _ in weatherLookModeChanged() }
 
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(alignment: .leading, spacing: 14) {
@@ -4727,6 +5797,7 @@ private struct NativeSettingsPanel: View {
                     if selectedSection == "HUD" {
                         SettingsSection(title: "HUD", resetAction: {
                             bottomMenuLayout = "tabs"
+                            statusHUD = false
                         }) {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("Bottom Menu")
@@ -4740,18 +5811,32 @@ private struct NativeSettingsPanel: View {
                             .padding(.vertical, 7)
                             .padding(.horizontal, 10)
                             .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 10))
+
+                            Toggle(isOn: $statusHUD) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Status HUD")
+                                        .font(.system(size: 14, weight: .medium))
+                                    Text("Compact square alerts below weather, aligned to the top left.")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.white.opacity(0.58))
+                                }
+                            }
+                            .tint(Color(red: 0.66, green: 1.0, blue: 0.76))
+                            .padding(.vertical, 7)
+                            .padding(.horizontal, 10)
+                            .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 10))
                         }
                     }
 
                     if selectedSection == "God Camera" {
                         SettingsSection(title: "God Camera", resetAction: {
-                            godPositionY = 51.0
+                            godPositionY = 49.0
                             godPositionZ = 107.0
-                            godRotationX = -1.0
+                            godRotationX = -2.0
                             farClipPlane = 3600.0
-                            K1L0WeatherOverlayInstaller.setUnitySetting("godPositionY", "51.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("godPositionY", "49.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("godPositionZ", "107.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("godRotationX", "-1.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("godRotationX", "-2.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("farClipPlane", "3600.000")
                         }) {
                             SettingSliderRow(title: "Height", value: $godPositionY, range: 10...500, step: 1, key: "godPositionY")
@@ -4765,30 +5850,30 @@ private struct NativeSettingsPanel: View {
                         SettingsSection(title: "Lighting", resetAction: {
                             moonlightEnabled = true
                             moonlightManualOverride = false
-                            moonlightIntensity = 1.0
+                            moonlightIntensity = 0.55
                             moonlightRed = 0.7
                             moonlightGreen = 0.8
                             moonlightBlue = 1.0
                             moonlightPitch = 90.0
                             moonlightYaw = 0.0
                             moonlightRoll = 0.0
-                            ambientEnabled = true
-                            ambientIntensity = 1.55
+                            ambientEnabled = false
+                            ambientIntensity = 0.0
                             spotlightEnabled = true
                             spotlightIntensity = 3.0
                             solarWorldOverride = false
 
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightEnabled", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightManualOverride", "0")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("moonlightIntensity", "1.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("moonlightIntensity", "0.550")
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightRed", "0.700")
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightGreen", "0.800")
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightBlue", "1.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightPitch", "90.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightYaw", "0.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("moonlightRoll", "0.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("ambientEnabled", "1")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("ambientIntensity", "1.550")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("ambientEnabled", "0")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("ambientIntensity", "0.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("spotlightEnabled", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("spotlightIntensity", "3.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("solarWorldOverride", "0")
@@ -4817,12 +5902,12 @@ private struct NativeSettingsPanel: View {
                     if selectedSection == "Fog" {
                         SettingsSection(title: "Fog", resetAction: {
                             fogConstantDensity = false
-                            fogDensity = 0.37
-                            fogNoiseStrength = 1.67
-                            fogNoiseScale = 17.4
-                            fogBrightness = 0.55
+                            fogDensity = 0.01
+                            fogNoiseStrength = 1.8
+                            fogNoiseScale = 21.0
+                            fogBrightness = 0.81
                             fogScatteringIntensity = 1.25
-                            fogHeight = 77.0
+                            fogHeight = 86.0
                             fogDistantFog = true
                             fogDistantDensity = 0.0
                             fogDistantStart = 0.0
@@ -4838,21 +5923,21 @@ private struct NativeSettingsPanel: View {
                             fogNativeLightsMultiplier = 0.0
 
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogConstantDensity", "0")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogDensity", "0.370")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseStrength", "1.670")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseScale", "17.400")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogBrightness", "0.550")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogDensity", "0.010")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseStrength", "1.800")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseScale", "21.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogBrightness", "0.810")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogScatteringIntensity", "1.250")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogHeight", "77.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogHeight", "86.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogDistantFog", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogDistantDensity", "0.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogDistantStart", "0.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogDensity_night", "0.370")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseStrength_night", "1.670")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogDensity_night", "0.025")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseStrength_night", "0.220")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogNoiseScale_night", "17.400")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogBrightness_night", "0.340")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogScatteringIntensity_night", "1.150")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("fogHeight_night", "77.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogBrightness_night", "0.240")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogScatteringIntensity_night", "0.550")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("fogHeight_night", "48.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogDistantDensity_night", "0.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogDistantStart_night", "0.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("fogNativeLights", "0")
@@ -4875,7 +5960,7 @@ private struct NativeSettingsPanel: View {
                                 SettingSliderRow(title: "Scattering (Day)", value: $fogScatteringIntensity, range: 0...4, step: 0.01, key: "fogScatteringIntensity")
                                 SettingSliderRow(title: "Height (Day)", value: $fogHeight, range: 0...500, step: 1, key: "fogHeight")
                                 SettingToggleRow(title: "Distant Fog", value: $fogDistantFog, key: "fogDistantFog")
-                                SettingSliderRow(title: "Distant Density (Day)", value: $fogDistantDensity, range: 0...2, step: 0.01, key: "fogDistantDensity")
+                                SettingSliderRow(title: "Distant Density (Day)", subtitle: "Per-meter extinction: half-fade ≈ 1/value meters.", value: $fogDistantDensity, range: 0...0.5, step: 0.002, key: "fogDistantDensity")
                                 SettingSliderRow(title: "Distant Start (Day)", value: $fogDistantStart, range: 0...12000, step: 50, key: "fogDistantStart")
                             } else {
                                 SettingSliderRow(title: "Density (Night)", value: $fogDensityNight, range: 0...3, step: 0.01, key: "fogDensity_night")
@@ -4885,7 +5970,7 @@ private struct NativeSettingsPanel: View {
                                 SettingSliderRow(title: "Scattering (Night)", value: $fogScatteringIntensityNight, range: 0...4, step: 0.01, key: "fogScatteringIntensity_night")
                                 SettingSliderRow(title: "Height (Night)", value: $fogHeightNight, range: 0...500, step: 1, key: "fogHeight_night")
                                 SettingToggleRow(title: "Distant Fog", value: $fogDistantFog, key: "fogDistantFog")
-                                SettingSliderRow(title: "Distant Density (Night)", value: $fogDistantDensityNight, range: 0...2, step: 0.01, key: "fogDistantDensity_night")
+                                SettingSliderRow(title: "Distant Density (Night)", subtitle: "Per-meter extinction: half-fade ≈ 1/value meters.", value: $fogDistantDensityNight, range: 0...0.05, step: 0.0005, key: "fogDistantDensity_night")
                                 SettingSliderRow(title: "Distant Start (Night)", value: $fogDistantStartNight, range: 0...12000, step: 50, key: "fogDistantStart_night")
                             }
                             
@@ -4896,21 +5981,39 @@ private struct NativeSettingsPanel: View {
 
                     if selectedSection == "Window Glow" {
                         SettingsSection(title: "Window Glow", resetAction: {
-                            zossEmissiveIntensity = 1.9
+                            zossEmissiveIntensity = 19.0
                             zossEmissiveSmoothness = 0.34
                             zossEmissiveMetallic = 0.0
                             zossEmissiveHue = 0.90
                             zossEmissiveSaturation = 0.62
                             zossNightEmissiveHue = 0.115
                             zossNightEmissiveSaturation = 0.82
+                            zossWallValue = 0.10
+                            zossWallSaturation = 0.30
+                            zossLitFraction = 1.0
+                            zossPaletteMix = 1.0
+                            zossPaletteSaturation = 1.35
+                            zossPaletteSaturationNight = 0.0
+                            zossBrightnessJitter = 0.5
+                            zossBrightnessJitterRate = 0.6
+                            vaporDayPink = 0.65
 
-                            K1L0WeatherOverlayInstaller.setUnitySetting("zossEmissiveIntensity", "1.900")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("zossEmissiveIntensity", "19.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("zossEmissiveSmoothness", "0.340")
                             K1L0WeatherOverlayInstaller.setUnitySetting("zossEmissiveMetallic", "0.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("zossEmissiveHue", "0.900")
                             K1L0WeatherOverlayInstaller.setUnitySetting("zossEmissiveSaturation", "0.620")
                             K1L0WeatherOverlayInstaller.setUnitySetting("zossNightEmissiveHue", "0.115")
                             K1L0WeatherOverlayInstaller.setUnitySetting("zossNightEmissiveSaturation", "0.820")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("zossWallValue", "0.100")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("zossWallSaturation", "0.300")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("zossLitFraction", "1.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("zossPaletteMix", "1.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("zossPaletteSaturation", "1.350")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("zossPaletteSaturation_night", "1.220")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("zossBrightnessJitter", "0.500")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("zossBrightnessJitterRate", "0.600")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("vaporDayPink", "0.650")
                             K1L0WindowGlowResolver.apply()
                         }) {
                             solarLiveReadout(String(format: "Live window intensity %.2f", liveWindowIntensity))
@@ -4921,6 +6024,18 @@ private struct NativeSettingsPanel: View {
                             SettingSliderRow(title: "Day Saturation", value: $zossEmissiveSaturation, range: 0...1, step: 0.01, key: "zossEmissiveSaturation")
                             SettingSliderRow(title: "Night Hue", value: $zossNightEmissiveHue, range: 0...1, step: 0.01, key: "zossNightEmissiveHue")
                             SettingSliderRow(title: "Night Saturation", value: $zossNightEmissiveSaturation, range: 0...1, step: 0.01, key: "zossNightEmissiveSaturation")
+                            SettingSliderRow(title: "Lit Windows", value: $zossLitFraction, range: 0...1, step: 0.01, key: "zossLitFraction")
+                            SettingSliderRow(title: "Window Variety", value: $zossPaletteMix, range: 0...1, step: 0.01, key: "zossPaletteMix")
+                            SettingSliderRow(title: "Window Saturation (Day)", value: $zossPaletteSaturation, range: 0...1.5, step: 0.01, key: "zossPaletteSaturation")
+                            SettingSliderRow(title: "Window Saturation (Night)", value: $zossPaletteSaturationNight, range: 0...1.5, step: 0.01, key: "zossPaletteSaturation_night")
+                            SettingSliderRow(title: "Window Brightness Jitter", value: $zossBrightnessJitter, range: 0...1, step: 0.01, key: "zossBrightnessJitter")
+                            SettingSliderRow(title: "Window Jitter Rate", value: $zossBrightnessJitterRate, range: 0.05...4, step: 0.05, key: "zossBrightnessJitterRate")
+                            SettingSliderRow(title: "Wall Daylight Lift", value: $zossWallDaylightLift, range: 0...1, step: 0.01, key: "zossWallDaylightLift")
+                            SettingSliderRow(title: "Wall Variance (Per Building)", value: $zossWallVariance, range: 0...1, step: 0.01, key: "zossWallVariance")
+                            SettingSliderRow(title: "Road Brightness", value: $roadValue, range: 0...1, step: 0.01, key: "roadValue")
+                            SettingSliderRow(title: "Wall Brightness", value: $zossWallValue, range: 0...1, step: 0.01, key: "zossWallValue")
+                            SettingSliderRow(title: "Wall Saturation", value: $zossWallSaturation, range: 0...1, step: 0.01, key: "zossWallSaturation")
+                            SettingSliderRow(title: "Day Sky Pink", value: $vaporDayPink, range: 0...1, step: 0.01, key: "vaporDayPink")
                         }
                     }
 
@@ -4955,19 +6070,19 @@ private struct NativeSettingsPanel: View {
 
                     if selectedSection == "Map Color" {
                         SettingsSection(title: "Map Color", resetAction: {
-                            saturation = -28.0
-                            contrast = 14.0
-                            mapBrightness = -0.12
-                            hueShift = -4.0
-                            temperature = -12.0
-                            tint = -6.0
+                            saturation = 0.0
+                            contrast = 0.0
+                            mapBrightness = 0.0
+                            hueShift = 0.0
+                            temperature = 0.0
+                            tint = 0.0
 
-                            K1L0WeatherOverlayInstaller.setUnitySetting("saturation", "-28.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("contrast", "14.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("mapBrightness", "-0.120")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("hueShift", "-4.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("temperature", "-12.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("tint", "-6.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("saturation", "0.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("contrast", "0.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("mapBrightness", "0.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("hueShift", "0.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("temperature", "0.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("tint", "0.000")
                         }) {
                             SettingSliderRow(title: "Saturation", value: $saturation, range: -100...100, step: 1, key: "saturation")
                             SettingSliderRow(title: "Contrast", value: $contrast, range: -100...100, step: 1, key: "contrast")
@@ -4981,14 +6096,14 @@ private struct NativeSettingsPanel: View {
                     if selectedSection == "Bloom" {
                         SettingsSection(title: "Bloom", resetAction: {
                             bloomEnabled = true
-                            bloomIntensity = 2.4
-                            bloomThreshold = 1.2
-                            bloomScatter = 0.43
+                            bloomIntensity = 1.10
+                            bloomThreshold = 1.06
+                            bloomScatter = 0.24
 
                             K1L0WeatherOverlayInstaller.setUnitySetting("bloomEnabled", "1")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("bloomIntensity", "2.400")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("bloomThreshold", "1.200")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("bloomScatter", "0.430")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("bloomIntensity", "1.100")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("bloomThreshold", "1.060")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("bloomScatter", "0.240")
                         }) {
                             solarLiveReadout(String(format: "Live bloom intensity %.2f", liveBloomIntensity))
                             SettingToggleRow(title: "Bloom", value: $bloomEnabled, key: "bloomEnabled")
@@ -5005,24 +6120,18 @@ private struct NativeSettingsPanel: View {
                             vignetteSmoothness = 1.0
                             chromaticEnabled = true
                             chromaticIntensity = 0.16
-                            lensDistEnabled = true
-                            lensDistIntensity = -0.5
 
                             K1L0WeatherOverlayInstaller.setUnitySetting("vignetteEnabled", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("vignetteIntensity", "0.450")
                             K1L0WeatherOverlayInstaller.setUnitySetting("vignetteSmoothness", "1.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("chromaticEnabled", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("chromaticIntensity", "0.160")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("lensDistEnabled", "1")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("lensDistIntensity", "-0.500")
                         }) {
                             SettingToggleRow(title: "Vignette", value: $vignetteEnabled, key: "vignetteEnabled")
                             SettingSliderRow(title: "Vignette Intensity", value: $vignetteIntensity, range: 0...1, step: 0.01, key: "vignetteIntensity")
                             SettingSliderRow(title: "Vignette Smoothness", value: $vignetteSmoothness, range: 0.01...1, step: 0.01, key: "vignetteSmoothness")
                             SettingToggleRow(title: "Chromatic", value: $chromaticEnabled, key: "chromaticEnabled")
                             SettingSliderRow(title: "Chromatic Intensity", value: $chromaticIntensity, range: 0...1, step: 0.01, key: "chromaticIntensity")
-                            SettingToggleRow(title: "Lens Distortion", value: $lensDistEnabled, key: "lensDistEnabled")
-                            SettingSliderRow(title: "Lens Distortion", value: $lensDistIntensity, range: -1...1, step: 0.01, key: "lensDistIntensity")
                         }
                     }
 
@@ -5060,12 +6169,12 @@ private struct NativeSettingsPanel: View {
                     if selectedSection == "Music" {
                         SettingsSection(title: "Music", resetAction: {
                             musicRadioEnabled = true
-                            musicRadioMode = "final"
+                            musicRadioMode = "instrumental"
                             musicRadioVolume = 0.5415074229240417
 
                             K1L0WeatherOverlayInstaller.setUnitySetting("musicRadioEnabled", "1")
                             K1L0RadioPlayer.shared.setEnabled(true, apiBase: apiBase)
-                            K1L0RadioPlayer.shared.setMode("final")
+                            K1L0RadioPlayer.shared.setMode("instrumental")
                             K1L0RadioPlayer.shared.setVolume(0.5415074229240417)
                         }) {
                             SettingToggleRow(title: "Radio", value: $musicRadioEnabled, key: "musicRadioEnabled")
@@ -5126,16 +6235,38 @@ private struct NativeSettingsPanel: View {
                                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                                         .foregroundStyle(.white.opacity(0.55))
                                 }
+                                if !musicDiagnostic.isEmpty {
+                                    Divider().background(Color.white.opacity(0.15))
+                                    Text("Why isn't audio playing?")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(Color(red: 1.0, green: 0.72, blue: 0.36))
+                                    Text(musicDiagnostic)
+                                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(Color(red: 1.0, green: 0.84, blue: 0.62))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .textSelection(.enabled)
+                                }
+                                Button(action: { musicDiagnostic = K1L0RadioPlayer.shared.diagnose() }) {
+                                    Text("Re-check playback")
+                                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                        .padding(.horizontal, 10).padding(.vertical, 5)
+                                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                                        .foregroundStyle(.white.opacity(0.82))
+                                }
+                                .buttonStyle(.plain)
                             }
                             .padding(.vertical, 7)
                             .padding(.horizontal, 10)
                             .background(Color.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 10))
+                            .onAppear {
+                                musicDiagnostic = K1L0RadioPlayer.shared.diagnose()
+                            }
                         }
                     }
 
                     if selectedSection == "Timers" {
                         SettingsSection(title: "Timers", resetAction: {
-                            ambientMinStepsToSpawn = 110.0
+                            ambientMinStepsToSpawn = 0.0
                             receiveStepsRequired = 200.0
                             transmissionWaitSteps = 500.0
                             momentumSessionGraceMinutes = 20.0
@@ -5143,13 +6274,14 @@ private struct NativeSettingsPanel: View {
                             ambientCollectRadiusMeters = 16.0
                             locationCollectRadiusFeet = 50.0
                             ambientBeamDismissSteps = 80.0
-                            beamDistanceLabels = false
+                            beamDistanceLabels = true
+                            projectorLaserBeams = true
                             beamDebug = false
                             perfOverlay = true
                             showStoryStrip = false
                             panelMapBrightness = 0.34
 
-                            K1L0WeatherOverlayInstaller.setUnitySetting("ambientMinStepsToSpawn", "110.000")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("ambientMinStepsToSpawn", "0.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("receiveStepsRequired", "200.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("transmissionWaitSteps", "500.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("momentumSessionGraceMinutes", "20.000")
@@ -5157,7 +6289,8 @@ private struct NativeSettingsPanel: View {
                             K1L0WeatherOverlayInstaller.setUnitySetting("ambientCollectRadiusMeters", "16.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("locationCollectRadiusFeet", "50.000")
                             K1L0WeatherOverlayInstaller.setUnitySetting("ambientBeamDismissSteps", "80.000")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("beamDistanceLabels", "0")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("beamDistanceLabels", "1")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("projectorLaserBeams", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("beamDebug", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("perfOverlay", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("showStoryStrip", "0")
@@ -5172,36 +6305,11 @@ private struct NativeSettingsPanel: View {
                             SettingSliderRow(title: "Location Collect Radius", subtitle: "Feet from a place item needed to collect it.", value: $locationCollectRadiusFeet, range: 10...300, step: 5, key: "locationCollectRadiusFeet")
                             SettingSliderRow(title: "Walk-Away Dismiss", subtitle: "Steps away from a pursued object before the alert is dismissed.", value: $ambientBeamDismissSteps, range: 0...1000, step: 10, key: "ambientBeamDismissSteps")
                             SettingToggleRow(title: "Beam Labels", value: $beamDistanceLabels, key: "beamDistanceLabels")
+                            SettingToggleRow(title: "Projector Laser Beams", value: $projectorLaserBeams, key: "projectorLaserBeams")
                             SettingToggleRow(title: "Beam Debug", value: $beamDebug, key: "beamDebug")
                             SettingToggleRow(title: "Perf Overlay", value: $perfOverlay, key: "perfOverlay")
                             SettingToggleRow(title: "Story Strip", value: $showStoryStrip, key: "showStoryStrip")
                             SettingSliderRow(title: "Panel Map Bright", value: $panelMapBrightness, range: 0...1, step: 0.01, key: "panelMapBrightness")
-                        }
-                    }
-
-                    if selectedSection == "Weather" {
-                        SettingsSection(title: "Weather", resetAction: {
-                            weatherOpenMeteo = true
-                            testSkyOverride = false
-                            manualHour = 13.25
-                            manualWeather = 0
-                            skyTargetFps = 30.0
-
-                            K1L0WeatherOverlayInstaller.setUnitySetting("weatherOpenMeteo", "1")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("testSkyOverride", "0")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("manualHour", "13.250")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("manualWeather", "0")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("skyTargetFps", "30.000")
-                            K1L0WindowGlowResolver.applyManualHour(13.25)
-                        }) {
-                            SettingToggleRow(title: "Open-Meteo Source", value: $weatherOpenMeteo, key: "weatherOpenMeteo")
-                            // Test override: beats live server weather AND the real
-                            // clock even with GPS on — the time preset + weather
-                            // picker below become the sole source of truth.
-                            SettingToggleRow(title: "Test Weather Override", value: $testSkyOverride, key: "testSkyOverride")
-                            SettingSkyTimeRow(manualHour: $manualHour)
-                            SettingWeatherSegmentRow(selection: $manualWeather)
-                            SettingSliderRow(title: "Sky Speed (FPS)", value: $skyTargetFps, range: 1...60, step: 1, key: "skyTargetFps")
                         }
                     }
 
@@ -5225,61 +6333,93 @@ private struct NativeSettingsPanel: View {
                         SettingsSection(title: "Experimental Layered Sky", resetAction: {
                             experimentalLayeredSky = true
                             layeredBypassWeather = false
+                            testSkyOverride = false
+                            weatherOpenMeteo = true
+                            manualHour = 13.25
+                            manualWeather = 0
+                            skyTargetFps = 30.0
                             layeredSkyEffect = 0
                             layeredRain = 0
                             layeredAurora = 0
-                            layeredSkyTopHue = 0.62
-                            layeredSkyMidHue = 0.76
-                            layeredNightBlackness = 0.72
-                            layeredSkyHorizonHue = 0.94
+                            layeredSkyTopHue = 0.80
+                            layeredSkyMidHue = 0.62
+                            layeredNightBlackness = 0.60
+                            layeredSkyHorizonHue = 0.73
                             layeredCloudOpacity = 0.35
                             layeredCloudSpeed = 0.07
                             layeredCloudScale = 1.35
                             layeredCloudContrast = 1.1
+                            layeredHorizonHeight = 0.0
                             solarWorldOverride = false
                             K1L0WeatherOverlayInstaller.setUnitySetting("experimentalLayeredSky", "1")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredBypassWeather", "0")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("testSkyOverride", "0")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("weatherOpenMeteo", "1")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("manualHour", "13.250")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("manualWeather", "0")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("skyTargetFps", "30.000")
+                            K1L0WindowGlowResolver.applyManualHour(13.25)
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyEffect", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredRain", "0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredAurora", "0")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyTopHue", "0.620")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyMidHue", "0.760")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredNightBlackness", "0.720")
-                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyHorizonHue", "0.940")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyTopHue", "0.800")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyMidHue", "0.620")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredNightBlackness", "0.600")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyHorizonHue", "0.730")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudOpacity", "0.350")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudSpeed", "0.070")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudScale", "1.350")
                             K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudContrast", "1.100")
+                            K1L0WeatherOverlayInstaller.setUnitySetting("layeredHorizonHeight", "0.0")
                             K1L0WeatherOverlayInstaller.setUnitySetting("solarWorldOverride", "0")
                         }) {
                             solarLiveReadout("Sun, moon, palette and world lighting follow GPS + UTC")
                             Text("Layered Metal Sky · production renderer")
                                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.58))
+                            SettingToggleRow(title: "Open-Meteo Source", value: $weatherOpenMeteo, key: "weatherOpenMeteo")
+                            SettingSliderRow(title: "Sky Speed (FPS)", value: $skyTargetFps, range: 1...60, step: 1, key: "skyTargetFps")
                             SettingToggleRow(title: "Bypass Live Weather", value: $layeredBypassWeather, key: "layeredBypassWeather")
-                            if layeredBypassWeather {
-                                SettingSkyTimeRow(manualHour: $manualHour)
-                                SettingLayeredSkyEffectRow(selection: $layeredSkyEffect)
-                                if layeredSkyEffect == 1 || layeredSkyEffect == 4 {
-                                    SettingSliderRow(title: "Rain Intensity", value: $layeredRain, range: 0...1, step: 0.05, key: "layeredRain")
-                                }
-                                if layeredSkyEffect == 3 {
-                                    SettingSliderRow(title: "Aurora Intensity", value: $layeredAurora, range: 0...1, step: 0.05, key: "layeredAurora")
-                                }
-                                SettingSliderRow(title: "Zenith Hue", value: $layeredSkyTopHue, range: 0...1, step: 0.01, key: "layeredSkyTopHue")
-                                SettingSliderRow(title: "Mid-Sky Hue", value: $layeredSkyMidHue, range: 0...1, step: 0.01, key: "layeredSkyMidHue")
-                                SettingSliderRow(title: "Horizon Hue", value: $layeredSkyHorizonHue, range: 0...1, step: 0.01, key: "layeredSkyHorizonHue")
-                                SettingSliderRow(title: "Night Blackness", value: $layeredNightBlackness, range: 0...1, step: 0.02, key: "layeredNightBlackness")
-                                SettingSliderRow(title: "Cloud Opacity", value: $layeredCloudOpacity, range: 0...1, step: 0.02, key: "layeredCloudOpacity")
-                                SettingSliderRow(title: "Cloud Speed", value: $layeredCloudSpeed, range: -0.5...0.5, step: 0.01, key: "layeredCloudSpeed")
-                                SettingSliderRow(title: "Cloud Scale", value: $layeredCloudScale, range: 0.5...6, step: 0.1, key: "layeredCloudScale")
-                                SettingSliderRow(title: "Cloud Contrast", value: $layeredCloudContrast, range: 0.2...4, step: 0.1, key: "layeredCloudContrast")
-                            } else {
+                            Text(manualLookActive
+                                 ? "manual mode — sliders are live and persist."
+                                 : "auto-preview: bypass turned on while this panel is open so you can tune. Closing the section restores live weather.")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.55))
+                            if !layeredBypassWeather {
                                 Text(String(format: "Live cloud cover %.0f%% · opacity %.2f", liveCloudCover, min(0.88, max(0.08, liveCloudCover / 100))))
                                     .font(.system(size: 12, weight: .bold, design: .monospaced))
                                     .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
                             }
+                            SettingSkyTimeRow(manualHour: $manualHour)
+                            SettingWeatherSegmentRow(selection: $manualWeather)
+                            SettingLayeredSkyEffectRow(selection: $layeredSkyEffect)
+                            if layeredSkyEffect == 1 || layeredSkyEffect == 4 {
+                                SettingSliderRow(title: "Rain Intensity", value: $layeredRain, range: 0...1, step: 0.05, key: "layeredRain")
+                            }
+                            if layeredSkyEffect == 3 {
+                                SettingSliderRow(title: "Aurora Intensity", value: $layeredAurora, range: 0...1, step: 0.05, key: "layeredAurora")
+                            }
+                            SettingSliderRow(title: "Zenith Hue", value: $layeredSkyTopHue, range: 0...1, step: 0.01, key: "layeredSkyTopHue")
+                            SettingSliderRow(title: "Mid-Sky Hue", value: $layeredSkyMidHue, range: 0...1, step: 0.01, key: "layeredSkyMidHue")
+                            SettingSliderRow(title: "Horizon Hue", value: $layeredSkyHorizonHue, range: 0...1, step: 0.01, key: "layeredSkyHorizonHue")
+                            // Horizon Height slider removed — pinned to 0 so
+                            // horizon color never covers cloud bodies.
+                            SettingSliderRow(title: "Night Blackness", value: $layeredNightBlackness, range: 0...1, step: 0.02, key: "layeredNightBlackness")
+                            SettingSliderRow(title: "Cloud Opacity", value: $layeredCloudOpacity, range: 0...1, step: 0.02, key: "layeredCloudOpacity")
+                            SettingSliderRow(title: "Cloud Speed", value: $layeredCloudSpeed, range: -0.5...0.5, step: 0.01, key: "layeredCloudSpeed")
+                            SettingSliderRow(title: "Cloud Scale", value: $layeredCloudScale, range: 0.5...6, step: 0.1, key: "layeredCloudScale")
+                            SettingSliderRow(title: "Cloud Contrast", value: $layeredCloudContrast, range: 0.2...4, step: 0.1, key: "layeredCloudContrast")
+                            SettingSliderRow(title: "Window Brightness Jitter", value: $zossBrightnessJitter, range: 0...1, step: 0.01, key: "zossBrightnessJitter")
+                            SettingSliderRow(title: "Window Jitter Rate", value: $zossBrightnessJitterRate, range: 0.05...4, step: 0.05, key: "zossBrightnessJitterRate")
+                            SettingSliderRow(title: "Wall Daylight Lift", value: $zossWallDaylightLift, range: 0...1, step: 0.01, key: "zossWallDaylightLift")
+                            SettingSliderRow(title: "Wall Variance (Per Building)", value: $zossWallVariance, range: 0...1, step: 0.01, key: "zossWallVariance")
+                            SettingSliderRow(title: "Road Brightness", value: $roadValue, range: 0...1, step: 0.01, key: "roadValue")
                         }
+                        // Bypass no longer toggles when Sky Lab appears —
+                        // Unity's settingsPanelOpen flag freezes the live
+                        // palette so slider tweaks take effect directly.
+                        // Seeding of hues/cloud opacity/manual hour happens
+                        // in the panel-scope .onAppear below.
                     }
                     }
                     .foregroundStyle(.white)
@@ -5290,13 +6430,40 @@ private struct NativeSettingsPanel: View {
         }
         .onAppear {
             if selectedSection == "Menu" || selectedSection.isEmpty {
-                selectedSection = "Performance"
+                selectedSection = "Location"
             }
             perfStats.startNativeSampling()
-            resetNativeFogDefaultsOnce()
-            syncLightingSettings()
-            syncLayeredSkySettings()
         }
+    }
+
+    // Populate Sky Lab sliders with the sky's current live-computed values
+    // (Unity writes these each frame from ApplyLiveSolarPalette) plus cloud
+    // opacity from live cloud cover and manualHour from the wall clock.
+    // Called on panel open so the sliders reflect current state as their
+    // starting point.
+    private func seedSkyLabFromLive() {
+        let ud = UserDefaults.standard
+        if let live = ud.object(forKey: "k1lo_liveSkyTopHue") as? Double {
+            layeredSkyTopHue = live
+            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyTopHue", String(format: "%.4f", live))
+        }
+        if let live = ud.object(forKey: "k1lo_liveSkyMidHue") as? Double {
+            layeredSkyMidHue = live
+            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyMidHue", String(format: "%.4f", live))
+        }
+        if let live = ud.object(forKey: "k1lo_liveSkyHorizonHue") as? Double {
+            layeredSkyHorizonHue = live
+            K1L0WeatherOverlayInstaller.setUnitySetting("layeredSkyHorizonHue", String(format: "%.4f", live))
+        }
+        let liveOpacity = min(0.88, max(0.08, liveCloudCover / 100))
+        layeredCloudOpacity = liveOpacity
+        K1L0WeatherOverlayInstaller.setUnitySetting("layeredCloudOpacity", String(format: "%.4f", liveOpacity))
+        let cal = Calendar.current
+        let comps = cal.dateComponents([.hour, .minute, .second], from: Date())
+        let hourNow = Double(comps.hour ?? 12) + Double(comps.minute ?? 0) / 60.0 + Double(comps.second ?? 0) / 3600.0
+        manualHour = hourNow
+        K1L0WeatherOverlayInstaller.setUnitySetting("manualHour", String(format: "%.3f", hourNow))
+        K1L0WindowGlowResolver.applyManualHour(hourNow)
     }
 
     private var solarDayness: Double {
@@ -5347,7 +6514,7 @@ private struct NativeSettingsPanel: View {
         guard !defaults.bool(forKey: key) else { return }
 
         fogConstantDensity = false
-        fogDensity = 0.37
+        fogDensity = 0.01
         fogNoiseStrength = 1.67
         fogNoiseScale = 17.4
         fogBrightness = 0.34
@@ -5810,6 +6977,7 @@ private struct TransmissionGridView: View {
                         .onTapGesture { onOpen(group) }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
     }
@@ -5819,54 +6987,52 @@ private struct TransmissionGridCell: View {
     let item: NativeUserTransmissionItem
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .bottomLeading) {
-                // Thumb image
-                if let raw = item.thumbUrl, let url = URL(string: raw) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let img):
-                            img.resizable().scaledToFill()
-                        default:
-                            Color.white.opacity(0.06)
-                        }
+        ZStack(alignment: .bottomLeading) {
+            Color.white.opacity(0.06)
+
+            if let raw = item.thumbUrl, let url = URL(string: raw) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let img):
+                        img.resizable()
+                            .scaledToFill()
+                    default:
+                        Color.clear
                     }
-                } else {
-                    Color.white.opacity(0.06)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+            }
 
-                // Gradient scrim
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.52)],
-                    startPoint: .center, endPoint: .bottom
-                )
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.52)],
+                startPoint: .center, endPoint: .bottom
+            )
 
-                // Play icon (only for items with video)
-                if item.playbackVideoUrl != nil {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 11, weight: .black))
-                        .foregroundStyle(.white.opacity(0.82))
+            if item.playbackVideoUrl != nil {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .padding(6)
+            }
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Circle()
+                        .fill((item.direction ?? "sent").lowercased() == "sent"
+                            ? Color(red: 0.66, green: 1.0, blue: 0.76)
+                            : Color(red: 1.0, green: 0.84, blue: 0.38))
+                        .frame(width: 6, height: 6)
                         .padding(6)
                 }
-
-                // Sent/received dot top-right
-                VStack {
-                    HStack {
-                        Spacer()
-                        Circle()
-                            .fill((item.direction ?? "sent").lowercased() == "sent"
-                                ? Color(red: 0.66, green: 1.0, blue: 0.76)
-                                : Color(red: 1.0, green: 0.84, blue: 0.38))
-                            .frame(width: 6, height: 6)
-                            .padding(6)
-                    }
-                    Spacer()
-                }
+                Spacer()
             }
-            .frame(width: geo.size.width, height: geo.size.width)
-            .clipped()
         }
+        .frame(maxWidth: .infinity)
         .aspectRatio(1, contentMode: .fit)
+        .contentShape(Rectangle())
+        .clipped()
     }
 }
 
@@ -6131,6 +7297,7 @@ private struct NativeWalkFillPath: Shape {
 }
 
 private struct NativeUserEditorPanel: View {
+    @ObservedObject var data: K1L0OverlayDataModel
     var tabsMode: Bool = false
     let onClose: () -> Void
 
@@ -6138,6 +7305,8 @@ private struct NativeUserEditorPanel: View {
     @State private var draft = NativeUserEditorStore.load()
     @State private var transmissions: [NativeUserTransmissionItem] = []
     @State private var transmissionsStatus = "loading transmissions…"
+    @State private var userPanelTab: String = "transmissions"
+    @State private var selectedInventoryItem: OverlayInventoryItem? = nil
     @State private var isEditingProfile = false
     @State private var showingIdentityDetail = false
 #if canImport(UIKit)
@@ -6163,6 +7332,17 @@ private struct NativeUserEditorPanel: View {
         return draft.cloakDesign != original.cloakDesign ||
                draft.helmetDesign != original.helmetDesign ||
                draft.selfiePath != original.selfiePath
+    }
+
+    private var cleanIgHandle: String {
+        let raw = draft.url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return "" }
+        if raw.contains("instagram.com/") {
+            if let lastPart = raw.split(separator: "/").last {
+                return String(lastPart).replacingOccurrences(of: "@", with: "")
+            }
+        }
+        return raw.replacingOccurrences(of: "@", with: "")
     }
 
     var body: some View {
@@ -6213,6 +7393,19 @@ private struct NativeUserEditorPanel: View {
                             }
                         } : nil
                     )
+
+                    if let selectedItem = selectedInventoryItem {
+                        InventoryItemDetailCard(
+                            item: selectedItem,
+                            onDismiss: {
+                                withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                                    selectedInventoryItem = nil
+                                }
+                            }
+                        )
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(90)
+                    }
                 }
                 .coordinateSpace(name: "user-panel")
                 .frame(width: geometry.size.width)
@@ -6323,26 +7516,39 @@ private struct NativeUserEditorPanel: View {
                         HStack(alignment: .top, spacing: 14) {
                             renderedHero
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(profileDisplayName)
+                                Text(draft.callsign.isEmpty ? "no callsign" : "@\(draft.callsign)")
                                     .font(.system(size: 24, weight: .black))
                                     .foregroundStyle(.white)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.68)
-                                Text(profileSecondaryLine)
+
+                                if !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text(draft.name.trimmingCharacters(in: .whitespacesAndNewlines))
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(.white.opacity(0.90))
+                                        .lineLimit(1)
+                                }
+
+                                let cleanIg = cleanIgHandle
+                                if !cleanIg.isEmpty {
+                                    HStack(spacing: 0) {
+                                        Text("ig:")
+                                            .foregroundStyle(.white.opacity(0.68))
+                                        Link("@\(cleanIg)", destination: URL(string: "https://www.instagram.com/\(cleanIg)/")!)
+                                            .foregroundStyle(Color(red: 0.45, green: 0.88, blue: 1.0))
+                                    }
                                     .font(.system(size: 13, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.68))
-                                    .lineLimit(2)
-                                    .minimumScaleFactor(0.72)
+                                }
+
+                                if !draft.bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text(draft.bio.trimmingCharacters(in: .whitespacesAndNewlines))
+                                        .font(.system(size: 13, weight: .regular))
+                                        .foregroundStyle(.white.opacity(0.82))
+                                        .lineLimit(5)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-
-                        if !draft.bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(draft.bio.trimmingCharacters(in: .whitespacesAndNewlines))
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.82))
-                                .lineLimit(4)
-                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
 
                         Button {
@@ -6351,7 +7557,7 @@ private struct NativeUserEditorPanel: View {
                                 originalProfileDraft = draft
                             }
                         } label: {
-                            Text("[ EDIT PROFILE ]")
+                            Text("EDIT PROFILE")
                                 .font(.system(size: 14, weight: .black, design: .monospaced))
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity, minHeight: 46)
@@ -6361,20 +7567,48 @@ private struct NativeUserEditorPanel: View {
                     }
                 }
 
-                if !saveStore.status.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(saveStore.status)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76).opacity(0.88))
+                // Transmissions | Items tabs (defaults to Transmissions)
+                Picker("", selection: $userPanelTab) {
+                    Text("Transmissions").tag("transmissions")
+                    Text("Items").tag("items")
                 }
+                .pickerStyle(.segmented)
+                .zIndex(1)
 
-                // Transmission grid
-                if !transmissions.isEmpty {
-                    TransmissionGridView(groups: transmissionGroups, onOpen: openTransmissionChain)
+                if userPanelTab == "items" {
+                    if data.inventoryItems.isEmpty {
+                        Text(data.elementsStatus.isEmpty ? "no collected items" : data.elementsStatus)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.40))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        LazyVGrid(columns: [
+                            GridItem(.adaptive(minimum: 72, maximum: 86), spacing: 10)
+                        ], alignment: .leading, spacing: 10) {
+                            ForEach(data.inventoryItems) { item in
+                                InventoryTile(item: item)
+                                    .onTapGesture {
+                                        withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                                            selectedInventoryItem = item
+                                        }
+                                    }
+                            }
+                        }
+                    }
                 } else {
-                    Text(transmissionsStatus)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.40))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // Transmission grid
+                    VStack(alignment: .leading, spacing: 0) {
+                        if !transmissions.isEmpty {
+                            TransmissionGridView(groups: transmissionGroups, onOpen: openTransmissionChain)
+                        } else {
+                            Text(transmissionsStatus)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.40))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
                 }
 
                 Button {
@@ -6435,10 +7669,6 @@ private struct NativeUserEditorPanel: View {
                     }
                 }
 
-                Text(saveStore.status)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76).opacity(0.88))
-
                 Button {
                     K1L0WeatherOverlayInstaller.logoutNativeSession()
                     onClose()
@@ -6457,17 +7687,6 @@ private struct NativeUserEditorPanel: View {
         .scrollDismissesKeyboardCompat()
     }
 
-    private var profileDisplayName: String {
-        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? "K1L0 User" : name
-    }
-
-    private var profileSecondaryLine: String {
-        let callsign = draft.callsign.trimmingCharacters(in: .whitespacesAndNewlines)
-        let instagram = draft.url.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pieces = [callsign.isEmpty ? "" : "@\(callsign)", instagram].filter { !$0.isEmpty }
-        return pieces.isEmpty ? "profile" : pieces.joined(separator: "  ")
-    }
 
     private var identityDetailScroll: some View {
         ScrollView(.vertical, showsIndicators: true) {
@@ -6537,10 +7756,6 @@ private struct NativeUserEditorPanel: View {
                         }
                     }
                 }
-
-                Text(saveStore.status)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76).opacity(0.88))
             }
             .padding(.horizontal, 20)
             .padding(.top, 24)
@@ -6717,7 +7932,7 @@ private struct NativeUserEditorPanel: View {
             return cleanedTransmissionTitle(plot, item: item)
         }
         let status = item.status?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return status.isEmpty ? "Transmission" : status
+        return status.isEmpty ? "Transmission" : (status.lowercased() == "planning" ? "transmitting..." : status)
     }
 
     private func cleanedTransmissionTitle(_ raw: String, item: NativeUserTransmissionItem) -> String {
@@ -6867,7 +8082,7 @@ private struct NativeUserEditorPanel: View {
 
     private func currentNativeUserId() -> String? {
         let defaults = UserDefaults.standard
-        for key in ["FirebaseUserId", "K1L0UserId", "DeviceID", "deviceID"] {
+        for key in ["K1L0UserId", "FirebaseUserId", "DeviceID", "deviceID"] {
             let value = defaults.string(forKey: key) ?? ""
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { return trimmed }
@@ -7414,7 +8629,7 @@ private struct NativeMessagesPanel: View {
         let plot = item.responsePlot?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !plot.isEmpty { return cleanedTransmissionTitle(plot, item: item) }
         let status = item.status?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return status.isEmpty ? "Transmission" : status
+        return status.isEmpty ? "Transmission" : (status.lowercased() == "planning" ? "transmitting..." : status)
     }
 
     private func cleanedTransmissionTitle(_ raw: String, item: NativeUserTransmissionItem) -> String {
@@ -7599,6 +8814,44 @@ private struct MessagesPanelHeader: View {
     }
 }
 
+private struct SweepingGreenBackground: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            let offset = CGFloat(sin(time * 2.5)) * 0.5 + 0.5
+            LinearGradient(
+                colors: [
+                    Color(red: 0.05, green: 0.70, blue: 0.20),
+                    Color(red: 0.45, green: 0.98, blue: 0.55),
+                    Color(red: 0.05, green: 0.70, blue: 0.20)
+                ],
+                startPoint: UnitPoint(x: offset - 0.5, y: 0.0),
+                endPoint: UnitPoint(x: offset + 0.5, y: 1.0)
+            )
+        }
+    }
+}
+
+private struct EchoSignalView: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            ZStack {
+                ForEach(0..<3, id: \.self) { i in
+                    let progress = (time * 0.65 + Double(i) * 0.33).truncatingRemainder(dividingBy: 1.0)
+                    Circle()
+                        .stroke(Color.white.opacity(0.85 * (1.0 - progress)), lineWidth: 1.5)
+                        .frame(width: 8 + progress * 24, height: 8 + progress * 24)
+                }
+                Circle()
+                    .fill(Color(red: 0.2, green: 0.95, blue: 0.4))
+                    .frame(width: 8, height: 8)
+            }
+            .frame(width: 32, height: 32)
+        }
+    }
+}
+
 private struct NativeTransmissionPanel: View {
     @ObservedObject var data: K1L0OverlayDataModel
     let elements: [OverlayElement]
@@ -7624,6 +8877,10 @@ private struct NativeTransmissionPanel: View {
         return "BUILDING TRANSMISSION"
     }
 
+    private var isUnderway: Bool {
+        activeTransmission.snapshot.active && activeTransmission.snapshot.videoUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let panelTop = geometry.safeAreaInsets.top
@@ -7638,9 +8895,11 @@ private struct NativeTransmissionPanel: View {
                     Color.black.ignoresSafeArea()
                     ActiveTransmissionTerminal(
                         snapshot: activeTransmission.snapshot,
+                        walkSteps: data.liveSteps,
                         availableHeight: geometry.size.height,
                         onStop: { activeTransmission.stop() },
                         onFailureReset: { restoreFailedDraft(activeTransmission.snapshot) },
+                        onNewTransmission: createNewTransmission,
                         fullscreenPlayer: true,
                         onClose: onClose
                     )
@@ -7657,30 +8916,61 @@ private struct NativeTransmissionPanel: View {
                         VStack(alignment: .leading, spacing: 10) {
                             TransmitterPanelHeader(
                                 state: transmitterStateText,
-                                isActive: activeTransmission.snapshot.active,
+                                isTransmitting: isUnderway,
                                 tabsMode: tabsMode,
                                 onStop: { activeTransmission.stop() },
                                 onClose: onClose
                             )
 
                             if activeTransmission.snapshot.active {
+                                Button(action: createNewTransmission) {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "plus.circle.fill")
+                                            .font(.system(size: 20, weight: .black))
+                                        Text(isUnderway ? "Creating Transmission" : "Create New Transmission")
+                                            .font(.system(size: 17, weight: .black))
+                                    }
+                                    .foregroundStyle(.black.opacity(0.88))
+                                    .frame(maxWidth: .infinity, minHeight: 58)
+                                    .background {
+                                        Group {
+                                            if isUnderway {
+                                                SweepingGreenBackground()
+                                            } else {
+                                                Color.green
+                                            }
+                                        }
+                                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    }
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                            .stroke(Color.white.opacity(0.48), lineWidth: 1.2)
+                                    )
+                                    .shadow(color: Color.green.opacity(0.38), radius: 14, y: 4)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 20)
+                            }
+
+                            if activeTransmission.snapshot.active {
                                 ActiveTransmissionTerminal(
                                     snapshot: activeTransmission.snapshot,
+                                    walkSteps: data.liveSteps,
                                     availableHeight: max(360, panelHeight - 62),
                                     onStop: { activeTransmission.stop() },
-                                    onFailureReset: { restoreFailedDraft(activeTransmission.snapshot) }
+                                    onFailureReset: { restoreFailedDraft(activeTransmission.snapshot) },
+                                    onNewTransmission: createNewTransmission
                                 )
                             } else {
                                 WeatherGlassCard {
                                     VStack(alignment: .leading, spacing: 8) {
-                                        Text("Add an image to transmit")
+                                        Text("Take a photo to transmit")
                                             .font(.system(size: 17, weight: .bold))
                                             .frame(maxWidth: .infinity, alignment: .center)
 #if canImport(UIKit)
-                                        HStack(alignment: .center, spacing: 10) {
-                                            transmitterPhotoButton("Camera", systemImage: "camera.fill", source: .camera)
-                                            transmitterPhotoButton("Photo", systemImage: "photo.on.rectangle.angled", source: .photoLibrary)
-                                        }
+                                        // Live shots only — a transmission starts
+                                        // from what you're looking at right now.
+                                        transmitterPhotoButton("Camera", systemImage: "camera.fill", source: .camera)
                                         if let selectedPhoto {
                                             Image(uiImage: selectedPhoto)
                                                 .resizable()
@@ -7888,6 +9178,14 @@ private struct NativeTransmissionPanel: View {
         }
     }
 
+    private func createNewTransmission() {
+        activeTransmission.stop()
+        selectedPhotoPath = ""
+        selectedPhoto = nil
+        message = ""
+        status = "take a new photo to begin."
+    }
+
     private func restoreFailedDraft(_ snapshot: K1L0ActiveTransmissionSnapshot) {
         message = snapshot.message
         selectedPhotoPath = snapshot.photoPath
@@ -7907,7 +9205,7 @@ private struct NativeTransmissionPanel: View {
 
 private struct TransmitterPanelHeader: View {
     let state: String
-    let isActive: Bool
+    let isTransmitting: Bool
     var tabsMode: Bool = false
     let onStop: () -> Void
     let onClose: () -> Void
@@ -7934,9 +9232,9 @@ private struct TransmitterPanelHeader: View {
                 .frame(maxWidth: .infinity, alignment: .center)
 
                 HStack {
-                    if isActive {
+                    if isTransmitting {
                         Button(action: onStop) {
-                            Text("STOP")
+                            Text("CANCEL")
                                 .font(.system(size: 12, weight: .black, design: .rounded))
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 13)
@@ -7980,7 +9278,19 @@ private struct TransmitterPanelHeader: View {
 
 private struct TransmissionBuildingArtwork: View {
     let imageUrl: String
-    @State private var revealProgress = 0.0
+    let photoPath: String
+    let signalStrength: Double
+
+    // SSTV-style build: the outgoing frame arrives one coarse pixel at a time
+    // in scan order, with static below the scan line, row shears, and chroma
+    // ghosts. Pixels sample the real image — when the NanoBanana still lands,
+    // the buffer re-samples and traces of the generated frame appear mid-scan.
+    private static let gridCols = 27
+    private static let gridRows = 48
+    private static let scanSeconds = 20.0
+
+    @State private var cellColors: [Color] = []
+    @State private var scanStart = Date()
 
     private var resolvedURL: URL? {
         let value = imageUrl.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -7989,40 +9299,175 @@ private struct TransmissionBuildingArtwork: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack {
-                CyberBuildingPixels()
-                if let url = resolvedURL {
-                    AsyncImage(url: url) { phase in
-                        if case .success(let image) = phase {
-                            image
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: geometry.size.width, height: geometry.size.height)
-                                .mask(PixelDiffusionMask(progress: revealProgress))
-                                .onAppear {
-                                    revealProgress = 0
-                                    withAnimation(.linear(duration: 1.65)) { revealProgress = 1 }
-                                }
-                        }
+            TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { timeline in
+                let time = timeline.date.timeIntervalSinceReferenceDate
+                let elapsed = timeline.date.timeIntervalSince(scanStart)
+                ZStack {
+                    Color.black
+                    Canvas { context, size in
+                        drawScan(context: context, size: size, time: time, elapsed: elapsed)
                     }
+                    VStack(spacing: 14) {
+                        Spacer()
+                        Text("ESTABLISHING OUTGOING SIGNAL")
+                            .font(.system(size: 18, weight: .black, design: .rounded))
+                            .foregroundStyle(.white)
+                        Text("WALK TO STRENGTHEN SIGNAL")
+                            .font(.system(size: 24, weight: .black, design: .rounded))
+                            .foregroundStyle(Color.green)
+                            .multilineTextAlignment(.center)
+                        TenBarSignalMeter(strength: signalStrength)
+                            .scaleEffect(x: 2.25, y: 2.0)
+                            .frame(height: 44)
+                        Text("\(Int((signalStrength * 100).rounded()))%")
+                            .font(.system(size: 18, weight: .black, design: .rounded))
+                            .foregroundStyle(.white)
+                        Spacer().frame(height: 44)
+                    }
+                    .padding(.horizontal, 28)
                 }
-                VStack(spacing: 7) {
-                    Text(revealProgress > 0 ? "TUNING TRANSMISSION" : "BUILDING TRANSMISSION")
-                        .font(.system(size: 20, weight: .black, design: .monospaced))
-                    Text("PLEASE STANDBY")
-                        .font(.system(size: 12, weight: .black, design: .monospaced))
-                        .tracking(3)
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 22)
-                .padding(.vertical, 16)
-                .background(Color.black.opacity(0.46), in: RoundedRectangle(cornerRadius: 5))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.28), lineWidth: 1))
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .clipped()
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
-            .clipped()
         }
-        .id(imageUrl)
+        .task(id: "\(imageUrl)|\(photoPath)") { await loadPixels() }
+    }
+
+    private func cellHash(_ a: Int, _ b: Int) -> Double {
+        var h = UInt64(bitPattern: Int64(a &* 374761393 &+ b &* 668265263))
+        h = (h ^ (h >> 13)) &* 1274126177
+        return Double(h % 1000) / 1000.0
+    }
+
+    private func drawScan(context: GraphicsContext, size: CGSize, time: Double, elapsed: Double) {
+        let cols = Self.gridCols, rows = Self.gridRows
+        let cw = size.width / CGFloat(cols)
+        let ch = size.height / CGFloat(rows)
+        let total = cols * rows
+        let revealed = cellColors.isEmpty
+            ? 0
+            : min(total, Int(max(0, elapsed) * Double(total) / Self.scanSeconds))
+        let frameTick = Int(time * 3)
+        let flicker = 0.94 + 0.06 * sin(time * 13.7)
+
+        for index in 0..<revealed {
+            let row = index / cols
+            let col = index % cols
+            var x = CGFloat(col) * cw
+            let y = CGFloat(row) * ch
+            // Vintage transmission shear: occasional rows slip sideways.
+            let g = cellHash(row, frameTick)
+            let sheared = g > 0.93
+            if sheared {
+                x += cw * CGFloat((g - 0.93) * 40.0) * (cellHash(row, frameTick + 7) > 0.5 ? 1 : -1)
+            }
+            let color = cellColors.indices.contains(index) ? cellColors[index] : Color(white: 0.08)
+            let cellFlicker = flicker * (0.90 + 0.10 * cellHash(index, frameTick))
+            let rect = CGRect(x: x, y: y, width: cw + 0.5, height: ch + 0.5)
+            context.fill(Path(rect), with: .color(color.opacity(cellFlicker)))
+            if sheared, col == 0 {
+                // Chroma ghosts hug sheared rows.
+                let rowRect = CGRect(x: x + 3, y: y, width: size.width, height: ch)
+                context.fill(Path(rowRect), with: .color(Color.red.opacity(0.10)))
+                let rowRect2 = CGRect(x: x - 3, y: y, width: size.width, height: ch)
+                context.fill(Path(rowRect2), with: .color(Color.cyan.opacity(0.10)))
+            }
+        }
+
+        if revealed < total {
+            let headRow = revealed / cols
+            let headCol = revealed % cols
+            // Glowing scan line + hot leading cell.
+            context.fill(Path(CGRect(x: 0, y: CGFloat(headRow) * ch, width: size.width, height: ch)),
+                         with: .color(Color.green.opacity(0.10)))
+            context.fill(Path(CGRect(x: CGFloat(headCol) * cw - cw * 0.5, y: CGFloat(headRow) * ch, width: cw * 1.8, height: ch)),
+                         with: .color(Color.white.opacity(0.85)))
+            // Static in the not-yet-received region.
+            let noiseRows = rows - headRow - 1
+            if noiseRows > 0 {
+                for n in 0..<130 {
+                    let nx = cellHash(n, frameTick) * Double(cols)
+                    let ny = Double(headRow + 1) + cellHash(n, frameTick + 31) * Double(noiseRows)
+                    let v = cellHash(n, frameTick + 77)
+                    let c = v > 0.86 ? Color.green.opacity(0.35) : Color(white: v * 0.30)
+                    context.fill(Path(CGRect(x: nx * cw, y: ny * ch, width: cw * 0.7, height: ch * 0.7)),
+                                 with: .color(c))
+                }
+            }
+        }
+
+        // CRT scanlines.
+        var line = 0
+        while line < rows {
+            context.fill(Path(CGRect(x: 0, y: CGFloat(line) * ch, width: size.width, height: 1)),
+                         with: .color(.black.opacity(0.22)))
+            line += 2
+        }
+    }
+
+    private func loadPixels() async {
+        var cg: CGImage? = nil
+#if canImport(UIKit)
+        if let url = resolvedURL, let (data, _) = try? await URLSession.shared.data(from: url) {
+            cg = UIImage(data: data)?.cgImage
+        }
+        if cg == nil, !photoPath.isEmpty {
+            cg = UIImage(contentsOfFile: photoPath)?.cgImage
+        }
+#elseif canImport(AppKit)
+        if let url = resolvedURL, let (data, _) = try? await URLSession.shared.data(from: url),
+           let ns = NSImage(data: data) {
+            cg = ns.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
+        if cg == nil, !photoPath.isEmpty, let ns = NSImage(contentsOfFile: photoPath) {
+            cg = ns.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
+#endif
+        guard let cgImage = cg else { return }
+        let cols = Self.gridCols, rows = Self.gridRows
+        var pixels = [UInt8](repeating: 0, count: cols * rows * 4)
+        let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
+            guard let ctx = CGContext(
+                data: buffer.baseAddress, width: cols, height: rows,
+                bitsPerComponent: 8, bytesPerRow: cols * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return false }
+            ctx.interpolationQuality = .low
+            let iw = CGFloat(cgImage.width), ih = CGFloat(cgImage.height)
+            let targetAspect = CGFloat(cols) / CGFloat(rows)
+            var drawW = CGFloat(cols), drawH = CGFloat(rows)
+            var dx: CGFloat = 0, dy: CGFloat = 0
+            if iw / ih > targetAspect {
+                drawW = CGFloat(rows) * (iw / ih); dx = -(drawW - CGFloat(cols)) / 2
+            } else {
+                drawH = CGFloat(cols) * (ih / iw); dy = -(drawH - CGFloat(rows)) / 2
+            }
+            ctx.draw(cgImage, in: CGRect(x: dx, y: dy, width: drawW, height: drawH))
+            return true
+        }
+        guard drawn else { return }
+        var colors: [Color] = []
+        colors.reserveCapacity(cols * rows)
+        for row in 0..<rows {
+            let bufferRow = rows - 1 - row // CG origin is bottom-left
+            for col in 0..<cols {
+                let i = (bufferRow * cols + col) * 4
+                colors.append(Color(
+                    red: Double(pixels[i]) / 255.0,
+                    green: Double(pixels[i + 1]) / 255.0,
+                    blue: Double(pixels[i + 2]) / 255.0
+                ))
+            }
+        }
+        let sampled = colors
+        await MainActor.run {
+            let firstLoad = cellColors.isEmpty
+            cellColors = sampled
+            // First image starts the scan; a later swap (NanoBanana ready)
+            // keeps scan progress so its traces appear in already-built rows.
+            if firstLoad { scanStart = Date() }
+        }
     }
 }
 
@@ -8104,9 +9549,11 @@ private struct PixelDiffusionMask: View {
 
 private struct ActiveTransmissionTerminal: View {
     let snapshot: K1L0ActiveTransmissionSnapshot
+    let walkSteps: Int
     let availableHeight: CGFloat
     let onStop: () -> Void
     let onFailureReset: () -> Void
+    let onNewTransmission: () -> Void
     // Fullscreen transmitter mode: render the exact same fullscreen chain
     // player used everywhere else (settings gear, camera-roll save, tattered
     // frame) and overlay only the pencil (tweak) and END controls.
@@ -8123,12 +9570,19 @@ private struct ActiveTransmissionTerminal: View {
     @State private var tweakMusicPrompt = ""
     @State private var tweakLoadedJobId = ""
     @State private var textTransform = TransmissionTextTransformStore.load()
+    @State private var outgoingWalkBaseline: Int?
+    @StateObject private var chainObserver = K1L0ActiveChainObserver()
     @AppStorage("k1lo_native_transmissionFizzyEdges") private var transmissionFizzyEdges = false
     @AppStorage("k1lo_native_transmissionFX") private var transmissionFXEnabled = true
     @AppStorage("k1lo_native_transmissionFXIntensity") private var transmissionFXIntensity = 0.5
 
     private var saveOverlayText: String {
         snapshot.responsePlot.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var outgoingSignalStrength: Double {
+        guard let baseline = outgoingWalkBaseline else { return 0 }
+        return min(1, max(0, Double(walkSteps - baseline) / 200.0))
     }
 
     var body: some View {
@@ -8161,12 +9615,15 @@ private struct ActiveTransmissionTerminal: View {
             if showingTweakPanel {
                 loadTweakDetails()
             }
+            chainObserver.start(rootJobId: snapshot.jobId)
         }
         .onChange(of: snapshot.jobId) { _ in
+            chainObserver.start(rootJobId: snapshot.jobId)
             if showingTweakPanel {
                 loadTweakDetails(force: true)
             }
         }
+        .onDisappear { chainObserver.stop() }
         .onChange(of: snapshot.error) { error in
             if !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 showingSignalFailure = true
@@ -8184,8 +9641,9 @@ private struct ActiveTransmissionTerminal: View {
     }
 
     // The live transmission wrapped as a result so the shared fullscreen chain
-    // player renders it exactly like a received transmission. No response
-    // UI — the sender doesn't respond to their own live signal.
+    // player renders it exactly like a received transmission — including the
+    // respond composer when the deepest slide is someone else's response
+    // (the same alternation rule the server enforces on /respond).
     private var livePlayerResult: K1L0TransmissionResult {
         let videoURL = URL(string: snapshot.videoUrl)
         let audioURL = snapshot.audioUrl.isEmpty ? nil : URL(string: snapshot.audioUrl)
@@ -8197,18 +9655,33 @@ private struct ActiveTransmissionTerminal: View {
             responsePlot: snapshot.responsePlot,
             responseOptions: [],
             selectedResponse: "",
-            sourceJobId: snapshot.jobId
+            sourceJobId: snapshot.jobId,
+            sourceUserId: currentNativeUserId
         )
+        var clips = chainObserver.clips.isEmpty ? [clip] : chainObserver.clips
+        let ownKey = currentNativeUserId.lowercased()
+        var canAnswer = false
+        if var deepest = clips.last {
+            let deepestOwner = deepest.sourceUserId.lowercased()
+            canAnswer = !deepestOwner.isEmpty && !ownKey.isEmpty && deepestOwner != ownKey
+            if canAnswer {
+                deepest.allowsResponse = true
+                clips[clips.count - 1] = deepest
+            }
+        }
+        let first = clips.first ?? clip
         return K1L0TransmissionResult(
             status: "live",
-            imageURL: imageURL,
-            videoURL: videoURL,
-            audioURL: audioURL,
+            imageURL: first.imageURL,
+            videoURL: first.videoURL,
+            audioURL: first.audioURL,
             lyrics: "",
             responsePlot: snapshot.responsePlot,
-            responseOptions: [],
+            responseOptions: clips.last?.responseOptions ?? [],
             jobId: snapshot.jobId,
-            clips: [clip]
+            clips: clips,
+            allowsResponseOptions: canAnswer,
+            allowsTextResponse: canAnswer
         )
     }
 
@@ -8216,45 +9689,20 @@ private struct ActiveTransmissionTerminal: View {
         ZStack(alignment: .topLeading) {
             TransmissionResultPanel(
                 result: livePlayerResult,
-                onSelectOption: { _ in },
-                onClose: onClose
+                onSelectOption: { option, photoPath in
+                    K1L0OverlayDataModel.activeModel?.respondToTransmission(
+                        livePlayerResult, option: option, photoPath: photoPath)
+                },
+                composerBottomObstruction: 72,
+                onClose: onClose,
+                onNewTransmission: onNewTransmission
             )
             // Rebuild the player when a tweak regenerates the video or music.
-            .id("live-\(snapshot.jobId)-\(snapshot.videoUrl)-\(snapshot.audioUrl)")
+            .id("live-\(snapshot.jobId)-\(snapshot.videoUrl)-\(snapshot.audioUrl)-\(chainObserver.clips.map(\.sourceJobId).joined(separator: ":"))")
 
-            // Pencil + END pinned top-left, mirroring the player's own
-            // top-right save/settings/close row.
-            HStack(spacing: 10) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        showingTweakPanel.toggle()
-                    }
-                    if showingTweakPanel {
-                        loadTweakDetails()
-                    }
-                } label: {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 16, weight: .black))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .background(Color.black.opacity(0.38), in: Circle())
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    showingEndConfirmation = true
-                } label: {
-                    Text("END")
-                        .font(.system(size: 12, weight: .black, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .frame(height: 44)
-                        .padding(.horizontal, 14)
-                        .background(Color.black.opacity(0.38), in: Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.leading, 12)
-            .padding(.top, k1l0DeviceSafeAreaInsets().top + 2)
+            // END button removed — the transmission player has its own close
+            // affordances (pull-to-dismiss + tap-outside) and the END overlay
+            // was crowding the top-left of the video.
 
             if showingTweakPanel {
                 TransmissionTweakPanel(
@@ -8290,7 +9738,11 @@ private struct ActiveTransmissionTerminal: View {
                         Spacer(minLength: 0)
                         ZStack {
                             if snapshot.videoUrl.isEmpty {
-                                TransmissionBuildingArtwork(imageUrl: snapshot.imageUrl)
+                                TransmissionBuildingArtwork(
+                                    imageUrl: snapshot.imageUrl,
+                                    photoPath: snapshot.photoPath,
+                                    signalStrength: outgoingSignalStrength
+                                )
                             } else {
                                 InlineTransmissionVideoPlayer(urlString: snapshot.videoUrl, audioUrlString: snapshot.audioUrl.isEmpty ? nil : snapshot.audioUrl)
                                     .allowsHitTesting(false)
@@ -8326,7 +9778,25 @@ private struct ActiveTransmissionTerminal: View {
                             loadTweakDetails()
                         }
                     }
-                    Spacer()
+                    let isUnderway = snapshot.active && snapshot.videoUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    Button(action: onNewTransmission) {
+                        Text(isUnderway ? "Creating Transmission" : "NEW TRANSMISSION")
+                            .font(.system(size: 15, weight: .black, design: .rounded))
+                            .foregroundStyle(.black.opacity(0.88))
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background {
+                                Group {
+                                    if isUnderway {
+                                        SweepingGreenBackground()
+                                    } else {
+                                        Color.green
+                                    }
+                                }
+                                .clipShape(Capsule())
+                            }
+                            .overlay(Capsule().stroke(Color.white.opacity(0.48), lineWidth: 1.2))
+                    }
+                    .buttonStyle(.plain)
 #if canImport(UIKit)
                     if !snapshot.videoUrl.isEmpty {
                         CameraRollSaveButton(
@@ -8370,6 +9840,9 @@ private struct ActiveTransmissionTerminal: View {
         }
         .frame(maxWidth: .infinity, maxHeight: availableHeight, alignment: .top)
         .ignoresSafeArea(.keyboard, edges: .bottom)
+        .onAppear {
+            if outgoingWalkBaseline == nil { outgoingWalkBaseline = walkSteps }
+        }
     }
 
     private func transmitterToolButton(label: String?, systemImage: String?, action: @escaping () -> Void) -> some View {
@@ -8780,6 +10253,34 @@ private struct TransmissionTweakPanel: View {
             .buttonStyle(.plain)
         }
     }
+}
+
+private func k1l0PersistTransmissionPlot(jobId: String, userId: String, responsePlot: String, apiIndex: Int = 0) {
+    let candidates = [
+        "https://api-tunnel.kilo.gallery",
+        "http://192.168.40.34:3000",
+        "http://fred.local:3000",
+        "https://api.kilomeme.com"
+    ]
+    guard apiIndex < candidates.count,
+          let url = URL(string: "\(candidates[apiIndex])/api/k1l0/v2/transmit/\(jobId)/plot") else { return }
+    var request = URLRequest(url: url, timeoutInterval: 12)
+    request.httpMethod = "PATCH"
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.httpBody = try? JSONSerialization.data(withJSONObject: [
+        "userId": userId,
+        "responsePlot": responsePlot.trimmingCharacters(in: .whitespacesAndNewlines)
+    ])
+    URLSession.shared.dataTask(with: request) { data, response, _ in
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200...299).contains(code),
+              let data,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (root["ok"] as? Bool) == true else {
+            k1l0PersistTransmissionPlot(jobId: jobId, userId: userId, responsePlot: responsePlot, apiIndex: apiIndex + 1)
+            return
+        }
+    }.resume()
 }
 
 private struct TransmissionPlotRibbon: View {
@@ -9759,17 +11260,22 @@ private struct InlineTransmissionVideoPlayer: View {
     @Binding private var currentClipIndex: Int
     @Binding private var currentClipProgress: Double
     @Binding private var isVideoReady: Bool
+    // When true, the player loops the CURRENT clip in place instead of
+    // advancing to the next in the chain. Wired to the pencil-edit state
+    // in TransmissionResultPanel so the frame being edited stays put.
+    @Binding private var freezeCurrent: Bool
     @State private var timeObserver: Any?
     @State private var fxLoopState: K1L0TransmissionFXLoopState
     private let holdAtEndIndex: Int?
 
-    init(urlString: String, audioUrlString: String? = nil, currentClipProgress: Binding<Double> = .constant(0), isVideoReady: Binding<Bool> = .constant(false)) {
+    init(urlString: String, audioUrlString: String? = nil, currentClipProgress: Binding<Double> = .constant(0), isVideoReady: Binding<Bool> = .constant(false), freezeCurrent: Binding<Bool> = .constant(false)) {
         self.urlString = urlString
         self.audioUrlString = audioUrlString
         self.clips = []
         _currentClipIndex = .constant(0)
         _currentClipProgress = currentClipProgress
         _isVideoReady = isVideoReady
+        _freezeCurrent = freezeCurrent
         self.holdAtEndIndex = nil
         let loopState = K1L0TransmissionFXLoopState()
         _fxLoopState = State(initialValue: loopState)
@@ -9789,7 +11295,7 @@ private struct InlineTransmissionVideoPlayer: View {
         _audioPlayer = State(initialValue: audio)
     }
 
-    init(clips: [K1L0TransmissionClip], currentClipIndex: Binding<Int>, currentClipProgress: Binding<Double>, isVideoReady: Binding<Bool> = .constant(false), holdAtEndIndex: Int? = nil) {
+    init(clips: [K1L0TransmissionClip], currentClipIndex: Binding<Int>, currentClipProgress: Binding<Double>, isVideoReady: Binding<Bool> = .constant(false), holdAtEndIndex: Int? = nil, freezeCurrent: Binding<Bool> = .constant(false)) {
         let playable = clips.filter { $0.videoURL != nil }
         self.clips = playable
         self.urlString = playable.first?.videoURL?.absoluteString ?? ""
@@ -9797,6 +11303,7 @@ private struct InlineTransmissionVideoPlayer: View {
         _currentClipIndex = currentClipIndex
         _currentClipProgress = currentClipProgress
         _isVideoReady = isVideoReady
+        _freezeCurrent = freezeCurrent
         self.holdAtEndIndex = holdAtEndIndex
         let loopState = K1L0TransmissionFXLoopState()
         _fxLoopState = State(initialValue: loopState)
@@ -9851,6 +11358,18 @@ private struct InlineTransmissionVideoPlayer: View {
         guard !clips.isEmpty else {
             // Single video wrapped — count the completed play-through so the
             // next loop can re-roll its FX schedule.
+            fxLoopState.loopCount += 1
+            if let item = player.currentItem {
+                K1L0TransmissionFX.apply(to: item, loopState: fxLoopState)
+            }
+            player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                player.play()
+            }
+            return
+        }
+        // Pencil-edit takes precedence over chain advance and holdAtEndIndex:
+        // loop the current clip in place until the user closes the editor.
+        if freezeCurrent {
             fxLoopState.loopCount += 1
             if let item = player.currentItem {
                 K1L0TransmissionFX.apply(to: item, loopState: fxLoopState)
@@ -10025,12 +11544,18 @@ private final class K1L0MetalVideoView: MTKView, MTKViewDelegate {
         var intensity: Float = 0.5
     }
 
-    var player: AVPlayer? { didSet { attachOutputIfNeeded() } }
+    var player: AVPlayer? {
+        didSet {
+            fallbackPlayerLayer?.player = player
+            attachOutputIfNeeded()
+        }
+    }
     private var attachedItem: AVPlayerItem?
     private var videoOutput: AVPlayerItemVideoOutput?
     private var commandQueue: MTLCommandQueue?
     private var pipeline: MTLRenderPipelineState?
     private var textureCache: CVMetalTextureCache?
+    private var fallbackPlayerLayer: AVPlayerLayer?
     private let startedAt = CACurrentMediaTime()
 
     required init(coder: NSCoder) { super.init(coder: coder); configure() }
@@ -10051,10 +11576,23 @@ private final class K1L0MetalVideoView: MTKView, MTKViewDelegate {
         delegate = self
         commandQueue = device.makeCommandQueue()
         CVMetalTextureCacheCreate(nil, nil, device, nil, &textureCache)
-        let bundle = Bundle(for: K1L0TuningStaticPlayer.self)
-        guard let library = try? device.makeDefaultLibrary(bundle: bundle),
+        // K1L0TuningShader.metal is compiled into the main app target. Loading
+        // from Bundle(for:) here used to resolve UnityFramework and left the
+        // pipeline nil after the shader ownership moved to K1L0.app.
+        let shaderBundle = Bundle.main
+        let bundledLibrary = try? device.makeDefaultLibrary(bundle: shaderBundle)
+        let explicitLibrary: MTLLibrary? = {
+            let url = URL(fileURLWithPath: shaderBundle.bundlePath)
+                .appendingPathComponent("default.metallib")
+            return try? device.makeLibrary(URL: url)
+        }()
+        guard let library = bundledLibrary ?? explicitLibrary,
               let vertex = library.makeFunction(name: "k1l0VideoVertex"),
-              let fragment = library.makeFunction(name: "k1l0VideoFragment") else { return }
+              let fragment = library.makeFunction(name: "k1l0VideoFragment") else {
+            NSLog("[K1L0VideoMetal] app shader unavailable; using AVPlayerLayer fallback")
+            enablePlayerLayerFallback()
+            return
+        }
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
@@ -10066,10 +11604,25 @@ private final class K1L0MetalVideoView: MTKView, MTKViewDelegate {
         descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
         do {
             pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
-            NSLog("[K1L0PointCloud] pipeline ready")
+            NSLog("[K1L0VideoMetal] app-owned pipeline ready")
         } catch {
-            NSLog("[K1L0PointCloud] pipeline failed: \(error)")
+            NSLog("[K1L0VideoMetal] pipeline failed: \(error); using AVPlayerLayer fallback")
+            enablePlayerLayerFallback()
         }
+    }
+
+    private func enablePlayerLayerFallback() {
+        guard fallbackPlayerLayer == nil else { return }
+        let layer = AVPlayerLayer(player: player)
+        layer.videoGravity = .resizeAspectFill
+        self.layer.addSublayer(layer)
+        fallbackPlayerLayer = layer
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        fallbackPlayerLayer?.frame = bounds
     }
 
     private func attachOutputIfNeeded() {
@@ -10563,9 +12116,9 @@ private struct CameraRollSaveButton: View {
                 saveVideo()
             } label: {
                 Image(systemName: saving ? "hourglass" : "square.and.arrow.down")
-                    .font(.system(size: 16, weight: .black))
+                    .font(.system(size: 22, weight: .black))
                     .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 54, height: 54)
                     .background(Color.black.opacity(0.38), in: Circle())
             }
             .buttonStyle(.plain)
@@ -11553,6 +13106,27 @@ private struct NativePhotoPicker: UIViewControllerRepresentable {
 }
 #endif
 
+#if canImport(AppKit)
+private struct PhotoPickerRequest: Identifiable {
+    let id = UUID()
+    let source: UIImagePickerController.SourceType
+}
+
+/// Mac placeholder for the iOS camera sheet. The existing AppKit file-picker
+/// flows remain available elsewhere in the overlay; this preserves the shared
+/// response composer without pulling UIKit into the native Mac bundle.
+private struct NativePhotoPicker: View {
+    let sourceType: UIImagePickerController.SourceType
+    let onComplete: (NSImage?, String?) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: 1, height: 1)
+            .onAppear { onComplete(nil, nil) }
+    }
+}
+#endif
+
 private struct StepStatBlock: View {
     let label: String
     let value: Int
@@ -11581,9 +13155,15 @@ private struct StepLeaderboardSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text(title)
-                .font(.system(size: 11, weight: .black, design: .rounded))
-                .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
+            HStack {
+                Text(title)
+                    .font(.system(size: 11, weight: .black, design: .rounded))
+                    .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
+                Spacer()
+                Text("staps")
+                    .font(.system(size: 11, weight: .light, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.4))
+            }
             
             let displayCount = isExpanded ? 10 : 5
             ForEach(Array(leaders.prefix(displayCount).enumerated()), id: \.element.id) { index, leader in
@@ -11593,7 +13173,7 @@ private struct StepLeaderboardSection: View {
                         .foregroundStyle(.white.opacity(0.58))
                         .frame(width: 20, alignment: .trailing)
                     K1L0UserAvatar(urlString: leader.helmetUrl, size: 28, userId: leader.userId)
-                    Text(leader.name)
+                    Text(leader.displayName)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
                     Spacer()
@@ -11605,7 +13185,7 @@ private struct StepLeaderboardSection: View {
                     let user = OverlayUser(
                         userId: leader.userId,
                         name: leader.name,
-                        callsign: nil,
+                        callsign: leader.callsign,
                         avatarUrl: nil,
                         helmetUrl: leader.helmetUrl,
                         faceUrl: nil,
@@ -11721,19 +13301,76 @@ private struct GridVerticalRules: Shape {
     }
 }
 
+private struct TopFilterHUDIcons: View {
+    @AppStorage(K1L0OverlayDataModel.locationDropFilterKey) private var selectedDropFilter = "all"
+
+    private let items = [
+        ("coffee", "cup.and.saucer.fill"),
+        ("drinks", "wineglass.fill"),
+        ("food", "fork.knife")
+    ]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(items, id: \.0) { item in
+                Button {
+                    if selectedDropFilter == item.0 {
+                        selectedDropFilter = "all"
+                    } else {
+                        selectedDropFilter = item.0
+                    }
+                } label: {
+                    Image(systemName: item.1)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(selectedDropFilter == item.0 ? Color(red: 0.66, green: 1.0, blue: 0.76) : .white.opacity(0.45))
+                        .frame(width: 30, height: 30)
+                        .background(
+                            selectedDropFilter == item.0 
+                            ? Color(red: 0.66, green: 1.0, blue: 0.76).opacity(0.18) 
+                            : Color.white.opacity(0.06),
+                            in: Circle()
+                        )
+                        .overlay(
+                            Circle()
+                                .stroke(
+                                    selectedDropFilter == item.0 
+                                    ? Color(red: 0.66, green: 1.0, blue: 0.76).opacity(0.35) 
+                                    : Color.white.opacity(0.12),
+                                    lineWidth: 1
+                                )
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+}
+
 private struct FixedTopStatusHUD: View {
     @ObservedObject var data: K1L0OverlayDataModel
     let settingsActive: Bool
     let hideSteps: Bool
+    let weatherLookMode: String
     let onSettingsTapped: () -> Void
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            HStack(alignment: .top) {
-                WeatherPill(model: data, onSettingsTapped: onSettingsTapped)
-                Spacer()
+            HStack(alignment: .center) {
+                WeatherPill(model: data, weatherLookMode: weatherLookMode, onSettingsTapped: onSettingsTapped)
+                Spacer(minLength: 4)
+                TopFilterHUDIcons()
+                Spacer(minLength: 4)
                 if !hideSteps {
                     TopLiveStepsPill(model: data)
+                } else {
+                    Spacer().frame(width: 72)
                 }
             }
         }
@@ -11762,6 +13399,7 @@ private struct TopLiveStepsPill: View {
 
 private struct WeatherPill: View {
     @ObservedObject var model: K1L0OverlayDataModel
+    let weatherLookMode: String
     let onSettingsTapped: () -> Void
 
     var body: some View {
@@ -11770,8 +13408,8 @@ private struct WeatherPill: View {
                 if !model.cityText.isEmpty {
                     Text(model.cityText)
                         .font(.system(size: 16, weight: .semibold))
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
                 }
                 HStack(spacing: 7) {
                     Image(systemName: model.weatherGlyph)
@@ -11784,9 +13422,9 @@ private struct WeatherPill: View {
         .buttonStyle(.plain)
         .foregroundStyle(.white)
         .padding(.leading, 13)
-        .padding(.trailing, 13)
+        .padding(.trailing, 4)
         .padding(.vertical, 10)
-        .frame(maxWidth: 270, alignment: .leading)
+        .layoutPriority(1)
     }
 }
 
@@ -11913,6 +13551,153 @@ private struct SignalStrengthMeter: View {
 
     private var activeBars: Int {
         min(5, max(1, Int((strength * 5).rounded(.up))))
+    }
+}
+
+// Luminance → alpha masker. Item avatars are guaranteed pitch-black
+// backgrounds by the beam-avatar prompt spec, so mapping brightness to
+// alpha via CIColorMatrix makes the black bg transparent while preserving
+// the item's color. Cached by URL so scroll never re-processes.
+private enum K1L0BlackMasker {
+#if canImport(UIKit)
+    static let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 256
+        return c
+    }()
+
+    static func mask(_ input: UIImage) -> UIImage? {
+        guard let cg = input.cgImage else { return nil }
+        let ci = CIImage(cgImage: cg)
+        guard let filter = CIFilter(name: "CIColorMatrix") else { return nil }
+        filter.setValue(ci, forKey: kCIInputImageKey)
+        filter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+        filter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
+        filter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
+        // alpha = clamped luma with a bias so pitch-black (0,0,0) → 0 and
+        // any non-trivially-dark pixel saturates to 1.0 quickly. Without the
+        // coefficient scale-up, plain luma-to-alpha (0.299/0.587/0.114) made
+        // even saturated reds/blues render at ~30% opacity ("faint items").
+        // 6.0 * standard-luma weights ≈ full opacity by ~17% brightness; the
+        // Core Image pipeline auto-clamps output to [0,1].
+        filter.setValue(CIVector(x: 6.0 * 0.299, y: 6.0 * 0.587, z: 6.0 * 0.114, w: 0), forKey: "inputAVector")
+        filter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
+        guard let out = filter.outputImage else { return nil }
+        let ctx = CIContext(options: [.workingColorSpace: NSNull()])
+        guard let cgOut = ctx.createCGImage(out, from: out.extent) else { return nil }
+        return UIImage(cgImage: cgOut, scale: input.scale, orientation: input.imageOrientation)
+    }
+#elseif canImport(AppKit)
+    static let cache: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.countLimit = 256
+        return c
+    }()
+
+    static func mask(_ input: NSImage) -> NSImage? {
+        var rect = CGRect(origin: .zero, size: input.size)
+        guard let cg = input.cgImage(forProposedRect: &rect, context: nil, hints: nil) else { return nil }
+        let ci = CIImage(cgImage: cg)
+        guard let filter = CIFilter(name: "CIColorMatrix") else { return nil }
+        filter.setValue(ci, forKey: kCIInputImageKey)
+        filter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+        filter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
+        filter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
+        filter.setValue(CIVector(x: 6 * 0.299, y: 6 * 0.587, z: 6 * 0.114, w: 0), forKey: "inputAVector")
+        filter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputBiasVector")
+        guard let out = filter.outputImage,
+              let cgOut = CIContext(options: [.workingColorSpace: NSNull()]).createCGImage(out, from: out.extent)
+        else { return nil }
+        return NSImage(cgImage: cgOut, size: input.size)
+    }
+#endif
+}
+
+private struct BlackMaskedRemoteImage: View {
+    let url: URL?
+    var contentMode: ContentMode = .fill
+#if canImport(UIKit)
+    @State private var maskedImage: UIImage?
+#else
+    @State private var maskedImage: NSImage?
+#endif
+
+    var body: some View {
+        Group {
+            if let img = maskedImage {
+#if canImport(UIKit)
+                Image(uiImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+#else
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+#endif
+            } else {
+                Color.clear
+            }
+        }
+        .task(id: url?.absoluteString) {
+            guard let url else {
+                await MainActor.run { maskedImage = nil }
+                return
+            }
+            let key = url.absoluteString as NSString
+            if let cached = K1L0BlackMasker.cache.object(forKey: key) {
+                await MainActor.run { maskedImage = cached }
+                return
+            }
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+#if canImport(UIKit)
+                guard let raw = UIImage(data: data) else { return }
+#else
+                guard let raw = NSImage(data: data) else { return }
+#endif
+                guard let masked = K1L0BlackMasker.mask(raw) else {
+                    await MainActor.run { maskedImage = raw }
+                    return
+                }
+                K1L0BlackMasker.cache.setObject(masked, forKey: key)
+                await MainActor.run { maskedImage = masked }
+            } catch {
+                // Silent — Color.clear placeholder stays visible.
+            }
+        }
+    }
+}
+
+private struct NearbyItemThumbnail: View {
+    let imageUrl: String?
+
+    private var url: URL? {
+        let raw = (imageUrl ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? nil : URL(string: raw)
+    }
+
+    var body: some View {
+        Group {
+            if let url {
+                // Render at twice the viewport size for a center-focused crop
+                // matching the item grid; black bg is masked to alpha so no
+                // square box surrounds the item.
+                BlackMaskedRemoteImage(url: url, contentMode: .fill)
+                    .frame(width: 60, height: 60)
+                    .frame(width: 30, height: 30)
+                    .clipped()
+            } else {
+                fallback
+            }
+        }
+        .frame(width: 30, height: 30)
+        .frame(minWidth: 32, alignment: .trailing)
+    }
+
+    private var fallback: some View {
+        Image(systemName: "questionmark.diamond.fill")
+            .font(.system(size: 15, weight: .bold))
+            .foregroundStyle(.white.opacity(0.86))
     }
 }
 
@@ -12044,14 +13829,66 @@ private struct MysteryObjectCollectPrompt: View {
     }
 }
 
+private struct LocationDwellStatusChip: View {
+    let place: OverlayPlace
+    let elapsedSeconds: Int
+    let progress: Double
+    let onTap: () -> Void
+
+    var body: some View {
+        VStack {
+            HStack {
+                Button(action: onTap) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .font(.system(size: 18, weight: .black))
+                            .foregroundStyle(Color.green)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("AT \(place.name.uppercased())")
+                                .font(.system(size: 13, weight: .black, design: .rounded))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(String(format: "TRANSMITTING OBJECT · %d:%02d HERE", elapsedSeconds / 60, elapsedSeconds % 60))
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.72))
+                            GeometryReader { proxy in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(Color.white.opacity(0.13))
+                                    Capsule().fill(Color.green)
+                                        .frame(width: proxy.size.width * progress)
+                                }
+                            }
+                            .frame(height: 5)
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(.white.opacity(0.58))
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: 320)
+                    .background(Color.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(Color.green.opacity(0.55), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                Spacer()
+            }
+            Spacer()
+        }
+        .padding(.leading, 18)
+        .padding(.top, 112)
+        .allowsHitTesting(true)
+    }
+}
+
 private struct LocationItemCollectPrompt: View {
     let place: OverlayPlace
     let distanceText: String
     let relativeBearing: Double
-    let onCollect: () -> Void
+    let secondsRemaining: Int
+    let elapsedSeconds: Int
+    let progress: Double
     let onDismiss: () -> Void
-
-    @State private var pulse = false
 
     var body: some View {
         ZStack {
@@ -12072,56 +13909,60 @@ private struct LocationItemCollectPrompt: View {
                     .buttonStyle(.plain)
                 }
 
-                ZStack {
-                    Circle()
-                        .stroke(Color(red: 0.70, green: 1.0, blue: 0.50).opacity(pulse ? 0.18 : 0.75), lineWidth: pulse ? 16 : 3)
-                        .frame(width: pulse ? 190 : 128, height: pulse ? 190 : 128)
-                        .animation(.easeOut(duration: 1.25).repeatForever(autoreverses: false), value: pulse)
-
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.black.opacity(0.82))
-                        .frame(width: 116, height: 116)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(Color.white.opacity(0.22), lineWidth: 1)
-                        )
-
-                    Image(systemName: place.collectIconName)
-                        .font(.system(size: 46, weight: .black))
-                        .foregroundStyle(Color(red: 0.70, green: 1.0, blue: 0.50))
+                Group {
+                    if let raw = place.imageUrl, !raw.isEmpty, let url = URL(string: raw) {
+                        BlackMaskedRemoteImage(url: url, contentMode: .fit)
+                            .frame(width: 180, height: 180)
+                    } else {
+                        Image(systemName: place.collectIconName)
+                            .font(.system(size: 76, weight: .black))
+                            .foregroundStyle(Color(red: 0.70, green: 1.0, blue: 0.50))
+                            .frame(width: 180, height: 180)
+                    }
                 }
                 .frame(height: 204)
 
                 VStack(spacing: 8) {
-                    Text("Location Item Ready")
+                    Text("TRANSMITTING OBJECT")
                         .font(.system(size: 13, weight: .black))
                         .foregroundStyle(.white.opacity(0.68))
                         .textCase(.uppercase)
                     Text(place.collectTitle)
-                        .font(.system(size: 30, weight: .heavy))
+                        .font(.system(size: 28, weight: .heavy))
                         .foregroundStyle(.white)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
                         .minimumScaleFactor(0.62)
-                    Text(place.name)
+                    Text("Stay at \(place.name) until the signal completes.")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.74))
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
                         .minimumScaleFactor(0.7)
                 }
 
-                Button(action: onCollect) {
-                    Text("collect")
-                        .font(.system(size: 18, weight: .black, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.54)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(Color(red: 0.15, green: 0.45, blue: 0.22))
-                        .clipShape(Capsule())
+                VStack(spacing: 10) {
+                    Text("STAY HERE")
+                        .font(.system(size: 26, weight: .black, design: .rounded))
+                        .foregroundStyle(Color.green)
+                    TenBarSignalMeter(strength: progress)
+                        .scaleEffect(x: 2.0, y: 1.8)
+                        .frame(height: 38)
+                    Text(String(format: "%d:%02d here", elapsedSeconds / 60, elapsedSeconds % 60))
+                        .font(.system(size: 15, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.76))
                 }
-                .buttonStyle(.plain)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "timer")
+                    Text(String(format: "%d:%02d remaining", secondsRemaining / 60, secondsRemaining % 60))
+                        .font(.system(size: 18, weight: .black, design: .monospaced))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color(red: 0.15, green: 0.45, blue: 0.22))
+                .clipShape(Capsule())
             }
             .padding(22)
             .frame(maxWidth: 390, minHeight: 430)
@@ -12133,7 +13974,6 @@ private struct LocationItemCollectPrompt: View {
             .padding(.horizontal, 18)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .onAppear { pulse = true }
     }
 }
 
@@ -12148,12 +13988,28 @@ private struct NearbyProfileDTO: Decodable {
 }
 
 private struct RoundedCorners: Shape {
+#if canImport(UIKit)
     let corners: UIRectCorner
+#else
+    struct Corners: OptionSet {
+        let rawValue: Int
+        static let topLeft = Corners(rawValue: 1 << 0)
+        static let topRight = Corners(rawValue: 1 << 1)
+    }
+    let corners: Corners
+#endif
     let radius: CGFloat
 
     func path(in rect: CGRect) -> Path {
+#if canImport(UIKit)
         let path = UIBezierPath(roundedRect: rect, byRoundingCorners: corners, cornerRadii: CGSize(width: radius, height: radius))
         return Path(path.cgPath)
+#else
+        // AppKit has no UIRectCorner equivalent. Current call sites request the
+        // two top corners; a continuous rounded rectangle is the closest native
+        // Mac treatment and keeps the shared card geometry intact.
+        return Path(roundedRect: rect, cornerRadius: radius)
+#endif
     }
 }
 
@@ -12192,25 +14048,27 @@ private struct NearbyUserInfoCard: View {
                         .clipped()
                     LinearGradient(colors: [.clear, .black.opacity(0.30), .black.opacity(0.92)], startPoint: .top, endPoint: .bottom)
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Nearby")
-                            .font(.system(size: 12, weight: .black))
-                            .foregroundStyle(.white.opacity(0.72))
-                            .textCase(.uppercase)
-                        Text(user.displayName)
+                        Text(user.displayName.uppercased())
                             .font(.system(size: 28, weight: .heavy))
                             .foregroundStyle(.white)
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
-                        if user.nameAndCallsign != user.displayName {
-                            Text(user.nameAndCallsign)
+                        if !user.realName.isEmpty && user.realName.caseInsensitiveCompare(user.displayName) != .orderedSame {
+                            Text(user.realName)
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundStyle(.white.opacity(0.82))
                                 .lineLimit(1)
                         }
-                        if let handle = instagramDisplay, !handle.isEmpty {
-                            Label(handle, systemImage: "camera.fill")
+                        if let handle = instagramDisplay,
+                           !handle.isEmpty,
+                           let destination = instagramDestination {
+                            HStack(spacing: 0) {
+                                Text("ig: ")
+                                    .foregroundStyle(.white.opacity(0.68))
+                                Link(handle, destination: destination)
+                                    .foregroundStyle(Color(red: 0.45, green: 0.88, blue: 1.0))
+                            }
                                 .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.9))
                                 .lineLimit(1)
                         }
                     }
@@ -12351,6 +14209,13 @@ private struct NearbyUserInfoCard: View {
         return raw.hasPrefix("@") ? raw : "@\(raw)"
     }
 
+    private var instagramDestination: URL? {
+        guard let handle = instagramDisplay else { return nil }
+        let clean = handle.trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+        guard !clean.isEmpty else { return nil }
+        return URL(string: "https://www.instagram.com/\(clean)/")
+    }
+
     private func loadProfile() {
         guard !profileLoaded else { return }
         profileLoaded = true
@@ -12400,10 +14265,14 @@ private struct NearbyUserInfoCard: View {
 private struct InventoryItemDetailCard: View {
     let item: OverlayInventoryItem
     let onDismiss: () -> Void
-    @State private var particleSize = 1.0
-    @State private var particleSpacing = 1.0
-    @State private var zSpread = 0.10
-    @State private var brightness = 1.0
+    @AppStorage("k1lo_hologram_particle_size") private var particleSize = 1.0
+    @AppStorage("k1lo_hologram_spacing") private var particleSpacing = 1.0
+    @AppStorage("k1lo_hologram_z_spread") private var zSpread = 0.10
+    @AppStorage("k1lo_hologram_brightness") private var brightness = 1.0
+    @AppStorage("k1lo_hologram_rotation_speed") private var rotationSpeed = 1.0
+    @AppStorage("k1lo_hologram_perspective") private var perspective = 1.0
+    @AppStorage("k1lo_hologram_camera_distance") private var cameraDistance = 1.2
+    @AppStorage("k1lo_hologram_sparkle") private var sparkle = 1.0
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -12432,7 +14301,7 @@ private struct InventoryItemDetailCard: View {
                             AsyncImage(url: url) { phase in
                                 switch phase {
                                 case .success(let image):
-                                    image.resizable().scaledToFit().padding(5)
+                                    image.resizable().scaledToFill().scaleEffect(2.0)
                                 default:
                                     Text(item.symbol)
                                         .font(.system(size: 22, weight: .black))
@@ -12480,16 +14349,18 @@ private struct InventoryItemDetailCard: View {
 #if os(iOS)
                 if !item.isElement, let imageURL = URL(string: item.resolvedAvatarUrl) {
                     ZStack {
-                        AsyncImage(url: imageURL) { image in
-                            image.resizable().scaledToFit().opacity(0.055)
-                        } placeholder: { Color.black }
                         K1L0ItemPointCloudView(
                             imageURL: imageURL,
                             depthURL: URL(string: item.resolvedDepthMapUrl),
                             particleSize: particleSize,
                             spacing: particleSpacing,
                             zSpread: zSpread,
-                            brightness: brightness
+                            brightness: brightness,
+                            rotationDegrees: 15,
+                            rotationSpeed: rotationSpeed,
+                            perspective: perspective,
+                            cameraDistance: cameraDistance,
+                            sparkle: sparkle
                         )
                     }
                     .frame(width: 300, height: 300)
@@ -12497,12 +14368,24 @@ private struct InventoryItemDetailCard: View {
                     .background(Color.black)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                    VStack(spacing: 7) {
-                        hologramSlider("Particle size", value: $particleSize, range: 0.5...20.0)
-                        hologramSlider("Spacing", value: $particleSpacing, range: 0.25...10.0)
-                        hologramSlider("Z spread", value: $zSpread, range: 0.0...0.2)
+                    LazyVGrid(
+                        columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible())],
+                        alignment: .leading,
+                        spacing: 8
+                    ) {
                         hologramSlider("Brightness", value: $brightness, range: 0.1...4.0)
+                        hologramSlider("Glitch", value: $sparkle, range: 0.0...3.0)
                     }
+
+                    Button(action: resetHologramControls) {
+                        Label("Reset hologram", systemImage: "arrow.counterclockwise")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.82))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                            .background(Color.white.opacity(0.08), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
                 }
 #endif
 
@@ -12530,13 +14413,19 @@ private struct InventoryItemDetailCard: View {
             .padding(.horizontal, 20)
             .padding(.top, 20)
             .padding(.bottom, 28)
-            .background(Color.black, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            // Span the full width so the sheet pins to the left/right edges
+            // instead of free-floating at its natural content width.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.black)
             .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                Rectangle()
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
             )
         }
-        .ignoresSafeArea(edges: .bottom)
+        .frame(maxWidth: .infinity)
+        .onAppear {
+            NSLog("[K1L0PointCloud] modal appeared name=\(item.name) kind=\(item.kind) isElement=\(item.isElement) avatar=\(item.resolvedAvatarUrl) depth=\(item.resolvedDepthMapUrl)")
+        }
     }
 
     private func hologramSlider(
@@ -12544,18 +14433,32 @@ private struct InventoryItemDetailCard: View {
         value: Binding<Double>,
         range: ClosedRange<Double>
     ) -> some View {
-        HStack(spacing: 10) {
-            Text(title)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white.opacity(0.62))
-                .frame(width: 82, alignment: .leading)
+        VStack(spacing: 3) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Spacer(minLength: 2)
+                Text(value.wrappedValue.formatted(.number.precision(.fractionLength(2))))
+                    .font(.system(size: 9, weight: .bold).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.72))
+            }
             Slider(value: value, in: range)
                 .tint(Color(red: 0.30, green: 0.78, blue: 1.0))
-            Text(value.wrappedValue.formatted(.number.precision(.fractionLength(2))))
-                .font(.system(size: 10, weight: .bold).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.72))
-                .frame(width: 34, alignment: .trailing)
         }
+    }
+
+    private func resetHologramControls() {
+        particleSize = 1.0
+        particleSpacing = 1.0
+        zSpread = 0.10
+        brightness = 1.0
+        rotationSpeed = 1.0
+        perspective = 1.0
+        cameraDistance = 1.2
+        sparkle = 1.0
     }
 }
 
@@ -12567,19 +14470,44 @@ private struct K1L0ItemPointCloudView: UIViewRepresentable {
     let spacing: Double
     let zSpread: Double
     let brightness: Double
+    let rotationDegrees: Double
+    let rotationSpeed: Double
+    let perspective: Double
+    let cameraDistance: Double
+    let sparkle: Double
 
     func makeUIView(context: Context) -> K1L0ItemPointCloudMetalView {
         // Pass the device explicitly: a bare (frame:) call can resolve to
         // UIView's inherited init and silently skip the whole Metal setup.
         NSLog("[K1L0PointCloud] makeUIView image=\(imageURL) depth=\(depthURL?.absoluteString ?? "none")")
         let view = K1L0ItemPointCloudMetalView(frame: .zero, device: MTLCreateSystemDefaultDevice())
-        view.configure(particleSize: particleSize, spacing: spacing, zSpread: zSpread, brightness: brightness)
+        view.configure(
+            particleSize: particleSize,
+            spacing: spacing,
+            zSpread: zSpread,
+            brightness: brightness,
+            rotationDegrees: rotationDegrees,
+            rotationSpeed: rotationSpeed,
+            perspective: perspective,
+            cameraDistance: cameraDistance,
+            sparkle: sparkle
+        )
         view.load(imageURL: imageURL, depthURL: depthURL)
         return view
     }
 
     func updateUIView(_ view: K1L0ItemPointCloudMetalView, context: Context) {
-        view.configure(particleSize: particleSize, spacing: spacing, zSpread: zSpread, brightness: brightness)
+        view.configure(
+            particleSize: particleSize,
+            spacing: spacing,
+            zSpread: zSpread,
+            brightness: brightness,
+            rotationDegrees: rotationDegrees,
+            rotationSpeed: rotationSpeed,
+            perspective: perspective,
+            cameraDistance: cameraDistance,
+            sparkle: sparkle
+        )
         view.load(imageURL: imageURL, depthURL: depthURL)
     }
 }
@@ -12679,6 +14607,12 @@ private final class K1L0ItemPointCloudMetalView: MTKView, MTKViewDelegate {
         var spacing: Float = 1
         var zSpread: Float = 0.1
         var brightness: Float = 1
+        var rotationDegrees: Float = 60
+        var rotationSpeed: Float = 1
+        var perspective: Float = 1
+        var cameraDistance: Float = 1.2
+        var sparkle: Float = 1
+        var foregroundCenter = SIMD2<Float>(repeating: 0.5)
     }
     private static let pointGrid = 192 // must match K1L0_POINT_GRID in K1L0TuningShader.metal
     private static let starCount = 56 // must match K1L0_STAR_COUNT in K1L0TuningShader.metal
@@ -12693,9 +14627,19 @@ private final class K1L0ItemPointCloudMetalView: MTKView, MTKViewDelegate {
     private var particleSpacing: Float = 1
     private var depthSpread: Float = 0.1
     private var particleBrightness: Float = 1
+    private var rotationDegrees: Float = 60
+    private var rotationSpeed: Float = 1
+    private var perspective: Float = 1
+    private var cameraDistance: Float = 1.2
+    private var sparkle: Float = 1
+    private var foregroundCenter = SIMD2<Float>(repeating: 0.5)
+    private var loggedFirstDraw = false
+    private var loggedBlockedDraw = false
 
     override init(frame: CGRect, device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
         super.init(frame: frame, device: device)
+        let deviceName = device?.name ?? "none"
+        NSLog("[K1L0PointCloud] Metal view init device=\(deviceName) bundle=\(Bundle.main.bundlePath)")
         framebufferOnly = true
         colorPixelFormat = .bgra8Unorm
         clearColor = MTLClearColorMake(0, 0, 0, 1)
@@ -12703,26 +14647,29 @@ private final class K1L0ItemPointCloudMetalView: MTKView, MTKViewDelegate {
         isPaused = false
         enableSetNeedsDisplay = false
         delegate = self
-        let shaderBundle = Bundle.main
-        let bundledLibrary = try? device?.makeDefaultLibrary(bundle: shaderBundle)
-        let explicitLibrary: MTLLibrary? = {
-            guard let device else { return nil }
-            // The native hologram metallib is owned by the main app target.
-            let url = URL(fileURLWithPath: shaderBundle.bundlePath)
-                .appendingPathComponent("default.metallib")
-            do {
-                let library = try device.makeLibrary(URL: url)
-                NSLog("[K1L0PointCloud] loaded app metallib \(url.path)")
-                return library
-            } catch {
-                NSLog("[K1L0PointCloud] metallib load failed \(url.path): \(error)")
-                return nil
+        guard let device else {
+            NSLog("[K1L0PointCloud] Metal device unavailable")
+            return
+        }
+        let shaderBundles = [Bundle.main, Bundle(for: K1L0TuningStaticPlayer.self)]
+        var shaderLibrary: MTLLibrary?
+        for bundle in shaderBundles where shaderLibrary == nil {
+            let candidates: [MTLLibrary?] = [
+                try? device.makeDefaultLibrary(bundle: bundle),
+                try? device.makeLibrary(URL: bundle.bundleURL.appendingPathComponent("default.metallib"))
+            ]
+            if let library = candidates.compactMap({ $0 }).first(where: {
+                $0.makeFunction(name: "k1l0ItemGlitchVertex") != nil &&
+                $0.makeFunction(name: "k1l0ItemGlitchFragment") != nil
+            }) {
+                shaderLibrary = library
+                NSLog("[K1L0PointCloud] shader library ready bundle=\(bundle.bundlePath)")
             }
-        }()
-        guard let device, let library = bundledLibrary ?? explicitLibrary ?? device.makeDefaultLibrary(),
-              let vertex = library.makeFunction(name: "k1l0ItemPointVertex"),
-              let fragment = library.makeFunction(name: "k1l0ItemPointFragment") else {
-            NSLog("[K1L0PointCloud] shader library/functions unavailable bundle=\(shaderBundle.bundlePath)")
+        }
+        guard let library = shaderLibrary,
+              let vertex = library.makeFunction(name: "k1l0ItemGlitchVertex"),
+              let fragment = library.makeFunction(name: "k1l0ItemGlitchFragment") else {
+            NSLog("[K1L0PointCloud] shader functions unavailable in app and UnityFramework bundles")
             return
         }
         let descriptor = MTLRenderPipelineDescriptor()
@@ -12736,7 +14683,7 @@ private final class K1L0ItemPointCloudMetalView: MTKView, MTKViewDelegate {
         descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         do {
             pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
-            NSLog("[K1L0PointCloud] pipeline ready bundle=\(shaderBundle.bundlePath)")
+            NSLog("[K1L0PointCloud] pipeline ready")
         } catch {
             NSLog("[K1L0PointCloud] pipeline failed: \(error)")
         }
@@ -12755,35 +14702,151 @@ private final class K1L0ItemPointCloudMetalView: MTKView, MTKViewDelegate {
 
     required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(particleSize: Double, spacing: Double, zSpread: Double, brightness: Double) {
+    private struct DecodedTexture {
+        let texture: MTLTexture
+        let foregroundCenter: SIMD2<Float>
+    }
+
+    private static func decodeTexture(_ data: Data, using device: MTLDevice) throws -> DecodedTexture {
+        // Rasterize into a predictable RGBA8 buffer. MTKTextureLoader rejects
+        // some otherwise valid CDN RGB and palette-indexed PNG representations.
+        guard let image = UIImage(data: data), let cgImage = image.cgImage else {
+            throw NSError(
+                domain: "K1L0PointCloud",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "UIKit could not decode image data"]
+            )
+        }
+        let width = cgImage.width
+        let height = cgImage.height
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        return try pixels.withUnsafeMutableBytes { bytes in
+            guard let context = CGContext(
+                data: bytes.baseAddress,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+            ) else {
+                throw NSError(
+                    domain: "K1L0PointCloud",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Could not create RGBA bitmap context"]
+                )
+            }
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: 1, y: -1)
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+            // Match the shader's alpha/luma background rejection and measure
+            // the actual visible subject rather than the full square texture.
+            let rgba = bytes.bindMemory(to: UInt8.self)
+            var minX = width, minY = height, maxX = -1, maxY = -1
+            for y in 0..<height {
+                for x in 0..<width {
+                    let offset = y * bytesPerRow + x * 4
+                    let r = Int(rgba[offset])
+                    let g = Int(rgba[offset + 1])
+                    let b = Int(rgba[offset + 2])
+                    let a = Int(rgba[offset + 3])
+                    let luma1000 = 299 * r + 587 * g + 114 * b
+                    if a >= 39 && luma1000 >= 11_475 {
+                        minX = min(minX, x); maxX = max(maxX, x)
+                        minY = min(minY, y); maxY = max(maxY, y)
+                    }
+                }
+            }
+            let center: SIMD2<Float>
+            if maxX >= minX, maxY >= minY {
+                center = SIMD2(
+                    Float(minX + maxX + 1) / Float(width * 2),
+                    Float(minY + maxY + 1) / Float(height * 2)
+                )
+            } else {
+                center = SIMD2(repeating: 0.5)
+            }
+
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .rgba8Unorm,
+                width: width,
+                height: height,
+                mipmapped: false
+            )
+            descriptor.usage = [.shaderRead]
+            descriptor.storageMode = .shared
+            guard let texture = device.makeTexture(descriptor: descriptor) else {
+                throw NSError(
+                    domain: "K1L0PointCloud",
+                    code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "Metal could not allocate RGBA texture"]
+                )
+            }
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: bytes.baseAddress!,
+                bytesPerRow: bytesPerRow
+            )
+            return DecodedTexture(texture: texture, foregroundCenter: center)
+        }
+    }
+
+    func configure(
+        particleSize: Double,
+        spacing: Double,
+        zSpread: Double,
+        brightness: Double,
+        rotationDegrees: Double,
+        rotationSpeed: Double,
+        perspective: Double,
+        cameraDistance: Double,
+        sparkle: Double
+    ) {
         particleScale = Float(particleSize)
         particleSpacing = Float(spacing)
         depthSpread = Float(zSpread)
         particleBrightness = Float(brightness)
+        self.rotationDegrees = Float(rotationDegrees)
+        self.rotationSpeed = Float(rotationSpeed)
+        self.perspective = Float(perspective)
+        self.cameraDistance = Float(cameraDistance)
+        self.sparkle = Float(sparkle)
     }
 
     func load(imageURL: URL, depthURL: URL?) {
         let key = imageURL.absoluteString + "|" + (depthURL?.absoluteString ?? "")
         guard key != loadedKey, let device else { return }
         loadedKey = key
+        let depthAddress = depthURL?.absoluteString ?? "none"
+        NSLog("[K1L0PointCloud] load requested image=\(imageURL.absoluteString) depth=\(depthAddress)")
         Task.detached(priority: .utility) { [weak self] in
-            guard let imageData = try? Data(contentsOf: imageURL) else {
-                NSLog("[K1L0PointCloud] image download failed \(imageURL)")
-                return
-            }
-            let loader = MTKTextureLoader(device: device)
-            guard let color = try? await loader.newTexture(data: imageData, options: [.SRGB: false]) else {
-                NSLog("[K1L0PointCloud] color texture failed")
-                return
-            }
-            var depth = color
-            if let depthURL, let data = try? Data(contentsOf: depthURL),
-               let texture = try? await loader.newTexture(data: data, options: [.SRGB: false]) { depth = texture }
-            await MainActor.run {
-                self?.colorTexture = color
-                self?.depthTexture = depth
-                self?.started = CACurrentMediaTime()
-                NSLog("[K1L0PointCloud] textures ready color=\(color.width)x\(color.height) depth=\(depth.width)x\(depth.height)")
+            do {
+                let imageData = try Data(contentsOf: imageURL, options: .mappedIfSafe)
+                NSLog("[K1L0PointCloud] image data ready bytes=\(imageData.count)")
+                let decodedColor = try Self.decodeTexture(imageData, using: device)
+                let color = decodedColor.texture
+                var depth = color
+                if let depthURL {
+                    do {
+                        let depthData = try Data(contentsOf: depthURL, options: .mappedIfSafe)
+                        NSLog("[K1L0PointCloud] depth data ready bytes=\(depthData.count)")
+                        depth = try Self.decodeTexture(depthData, using: device).texture
+                    } catch {
+                        NSLog("[K1L0PointCloud] depth load failed \(depthURL.absoluteString) error=\(error.localizedDescription); using color texture")
+                    }
+                }
+                await MainActor.run {
+                    self?.colorTexture = color
+                    self?.depthTexture = depth
+                    self?.foregroundCenter = decodedColor.foregroundCenter
+                    self?.started = CACurrentMediaTime()
+                    NSLog("[K1L0PointCloud] textures ready color=\(color.width)x\(color.height) depth=\(depth.width)x\(depth.height) foregroundCenter=\(decodedColor.foregroundCenter)")
+                }
+            } catch {
+                NSLog("[K1L0PointCloud] color load failed \(imageURL.absoluteString) error=\(error.localizedDescription)")
             }
         }
     }
@@ -12794,7 +14857,17 @@ private final class K1L0ItemPointCloudMetalView: MTKView, MTKViewDelegate {
         guard let drawable = currentDrawable, let pass = currentRenderPassDescriptor,
               let pipeline, let colorTexture, let depthTexture,
               let queue = commandQueue, let command = queue.makeCommandBuffer(),
-              let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { return }
+              let encoder = command.makeRenderCommandEncoder(descriptor: pass) else {
+            if !loggedBlockedDraw {
+                loggedBlockedDraw = true
+                NSLog("[K1L0PointCloud] draw blocked drawable=\(currentDrawable != nil) pass=\(currentRenderPassDescriptor != nil) pipeline=\(pipeline != nil) color=\(colorTexture != nil) depth=\(depthTexture != nil) queue=\(commandQueue != nil) size=\(drawableSize.width)x\(drawableSize.height)")
+            }
+            return
+        }
+        if !loggedFirstDraw {
+            loggedFirstDraw = true
+            NSLog("[K1L0PointCloud] first draw size=\(drawableSize.width)x\(drawableSize.height) color=\(colorTexture.width)x\(colorTexture.height) depth=\(depthTexture.width)x\(depthTexture.height)")
+        }
         let hasTextures = true
         let grid = Self.pointGrid
         var uniforms = Uniforms(
@@ -12810,17 +14883,19 @@ private final class K1L0ItemPointCloudMetalView: MTKView, MTKViewDelegate {
             particleScale: particleScale,
             spacing: particleSpacing,
             zSpread: depthSpread,
-            brightness: particleBrightness
+            brightness: particleBrightness,
+            rotationDegrees: rotationDegrees,
+            rotationSpeed: rotationSpeed,
+            perspective: perspective,
+            cameraDistance: cameraDistance,
+            sparkle: sparkle,
+            foregroundCenter: foregroundCenter
         )
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setVertexTexture(colorTexture, index: 0)
         encoder.setVertexTexture(depthTexture, index: 1)
-        encoder.drawPrimitives(
-            type: .point,
-            vertexStart: 0,
-            vertexCount: grid * grid * 2 + Self.starCount
-        )
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
         command.present(drawable)
         command.commit()
@@ -12833,10 +14908,9 @@ private struct DropFilterBar: View {
 
     private let filters = [
         ("all", "all"),
-        ("drink", "🍺"),
         ("coffee", "☕️"),
-        ("food", "🍽️"),
-        ("snack", "🍬")
+        ("drinks", "🍸"),
+        ("food", "🍽️")
     ]
 
     var body: some View {
@@ -12887,6 +14961,8 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
     @Published var collectCandidatePlace: OverlayPlace?
     @Published var receiveProgressSteps = 0
     @Published var receiveSignalStatus = "scanning signals"
+    @Published var renderReady = false
+    @Published var renderLoadingDetail = "starting map"
     @Published var locationStatus = "loading nearby places…"
     @Published var beamStatus = "scanning ambient…"
     @Published var elementsStatus = "loading elements…"
@@ -12905,6 +14981,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
     @Published private var now = Date()
     @Published private var headingDegrees = 0.0
     @Published private(set) var activeAPIBase: String?
+    private var locationHologramRetryCount = 0
 
     private let locationManager = CLLocationManager()
 #if os(macOS)
@@ -12964,6 +15041,15 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
     private var collectingBeamIds = Set<String>()
     private var collectingPlaceIds = Set<String>()
     private var collectedPlaceIds = Set<String>()
+    private var locationDwellStartedAt: [String: Date] = [:]
+    private var dismissedLocationDwellIds = Set<String>()
+    private var didApplyInitialDenseLocationFilter = false
+    // The /places response currently supplies a center coordinate rather than
+    // polygon geometry. Treat it as the footprint anchor with the requested
+    // 15 m edge allowance; distance-to-polygon can replace this calculation
+    // without changing the dwell state machine once footprints are exposed.
+    private let locationDwellRadiusMeters = 15.0
+    private let locationDwellDuration: TimeInterval = 10 * 60
     private var receiveUnlockedIds = Set<String>()
     private var isFetchingIncomingTransmission = false
     private static let incomingWaitBaselineKey = "k1lo_native_incomingWaitBaselineSteps_v1"
@@ -13019,39 +15105,60 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         return "last \(hours) \(hours == 1 ? "hour" : "hours")"
     }
 
+    private func getKeepWalkingString(base: String) -> String {
+        if liveSteps < 200 {
+            if base == "KEEP WALKING" {
+                return "YOU ONLY TOOK \(liveSteps) STEPS... KEEP WALKING"
+            } else if base == "Keep walking" {
+                return "You only took \(liveSteps) steps... keep walking"
+            } else {
+                return "you only took \(liveSteps) steps... keep walking"
+            }
+        } else {
+            if base == "KEEP WALKING" {
+                return "YOU TOOK \(liveSteps) STEPS... KEEP WALKING!"
+            } else if base == "Keep walking" {
+                return "You took \(liveSteps) steps... keep walking!"
+            } else {
+                return "you took \(liveSteps) steps... keep walking!"
+            }
+        }
+    }
+
     var ctaText: String {
         if let beam = activePursuedBeam {
             return "AMBIENT · \(distanceText(to: beam).uppercased())"
         }
         guard liveSteps > 0 else { return "WALK" }
         let remaining = signalAcquisitionRemainingSteps()
-        return remaining > 0 ? "KEEP WALKING · SIGNAL IN \(remaining) STEPS" : "KEEP WALKING · SEARCHING"
+        let kw = getKeepWalkingString(base: "KEEP WALKING")
+        return remaining > 0 ? "\(kw) · SIGNAL IN \(remaining) STEPS" : "\(kw) · SEARCHING"
     }
 
     var walkingSkyAlertBeam: OverlayBeam? { activePursuedBeam }
 
     var walkingSkyAlertText: String {
         guard liveSteps > 0 else {
-            let action = environmentKnown && likelyIndoors ? "go outside and explore the kiloverse" : "walk"
             let duration = liveStepDurationText
                 .replacingOccurrences(of: "last ", with: "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return "you have been inactive for \(duration)\n\(action)"
+            return "inactive for \(duration).   Please walk."
         }
+        let kw = getKeepWalkingString(base: "keep walking")
         if let beam = activePursuedBeam {
-            return "keep walking\n\(beam.teaserText.lowercased())"
+            return "\(kw)\n\(beam.teaserText.lowercased())"
         }
         let remaining = signalAcquisitionRemainingSteps()
         if remaining > 0 {
-            return "keep walking\nsearching for signals from other users\(animatedDots)"
+            return "\(kw)\(animatedDots)"
         }
         let status = receiveSignalStatus
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         if !status.isEmpty && !status.hasPrefix("walk ") {
-            return "keep walking\n\(animatedSignalStatus(status))"
+            return "\(kw)\n\(animatedSignalStatus(status))"
         }
-        return "keep walking\nsearching for signals from other users\(animatedDots)"
+        return "\(kw)\(animatedDots)"
     }
 
     // The string always carries exactly three dots (constant width, no
@@ -13071,10 +15178,10 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
             || trimmed.hasPrefix("signal empty")
             || trimmed.hasPrefix("signal decode")
             || trimmed.hasPrefix("skipped ") {
-            return "searching for signals from other users\(animatedDots)"
+            return "keep walking\(animatedDots)"
         }
-        if trimmed == "scanning signals" || trimmed == "searching for signals" || trimmed == "searching" {
-            return "searching for signals from other users\(animatedDots)"
+        if trimmed == "scanning signals" || trimmed.contains("searching") {
+            return "keep walking\(animatedDots)"
         }
         return status
     }
@@ -13120,6 +15227,10 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
 
     private var homeHighlightBeam: OverlayBeam? {
         guard liveSteps > 0 else { return nil }
+        // DESIGN: while the player is dwelling at a location, ambient beams are
+        // deliberately NOT advertised — the location visit is the activity
+        // (hang out, collect the location item, transmit from there).
+        guard collectCandidatePlace == nil else { return nil }
         if let beam = activePursuedBeam {
             return beam
         }
@@ -13167,6 +15278,12 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
                 "artifactContainer": "",
                 "artifactSenderName": ""
             ]
+            if let imageUrl = place.imageUrl, !imageUrl.isEmpty {
+                entry["imageUrl"] = imageUrl
+            }
+            if let depthMapUrl = place.depthMapUrl, !depthMapUrl.isEmpty {
+                entry["depthMapUrl"] = depthMapUrl
+            }
             if let placeId = place.placeId {
                 entry["placeId"] = placeId
             }
@@ -13193,37 +15310,48 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         }
     }
 
+    private func applyInitialDenseLocationFilterIfNeeded(_ incomingPlaces: [OverlayPlace]) {
+        guard !didApplyInitialDenseLocationFilter else { return }
+        didApplyInitialDenseLocationFilter = true
+        guard incomingPlaces.count > 20 else { return }
+
+        let candidates = ["coffee", "drinks", "food"]
+        let counts = Dictionary(grouping: incomingPlaces, by: placeCategory).mapValues(\.count)
+        guard let selected = candidates.max(by: { (counts[$0] ?? 0) < (counts[$1] ?? 0) }) else { return }
+
+        UserDefaults.standard.set(selected, forKey: Self.locationDropFilterKey)
+        let coffeeCount = counts["coffee"] ?? 0
+        let barCount = counts["drinks"] ?? 0
+        let restaurantCount = counts["food"] ?? 0
+        print("[K1L0Overlay] dense nearby init: \(incomingPlaces.count) open places; auto-selected \(selected) (coffee=\(coffeeCount), bar=\(barCount), restaurant=\(restaurantCount))")
+    }
+
     func homeMarqueeItems() -> [K1L0MarqueeItem] {
         var rows: [K1L0MarqueeItem] = []
+        if !renderReady {
+            rows.append(K1L0MarqueeItem(
+                id: "render-loading",
+                kind: "status",
+                line1: "Loading Kiloverse…",
+                line2: renderLoadingDetail,
+                distanceText: nil,
+                relativeBearing: nil,
+                progress: nil
+            ))
+        }
         rows.append(K1L0MarqueeItem(
             id: "walking-status",
             kind: "status",
             line1: liveSteps > 0 ? "Keep walking" : "Walk",
-            line2: liveSteps > 0 ? "you took \(liveSteps) steps \(liveStepDurationText)" : "Idle for \(inactiveDurationPlainText)",
+            line2: liveSteps > 0 ? "\(liveSteps) steps \(liveStepDurationText)" : "Idle for \(inactiveDurationPlainText)",
             distanceText: nil,
             relativeBearing: nil,
             progress: nil
         ))
 
-        var incomingLocked = false
         var ambientLocked = false
 
-        if let incoming = incomingTransmission {
-            if liveSteps > 0 {
-                incomingLocked = true
-                rows.append(K1L0MarqueeItem(
-                    id: "incoming:\(incoming.id)",
-                    kind: "incomingTransmission",
-                    line1: "searching for signals from other users\(animatedDots)",
-                    line2: "walk",
-                    distanceText: nil,
-                    relativeBearing: nil,
-                    progress: nil
-                ))
-            }
-        }
-
-        if !incomingLocked, let beam = homeHighlightBeam {
+        if let beam = homeHighlightBeam {
             ambientLocked = true
             let itemId = "beam:\(beam.id)"
             rows.append(K1L0MarqueeItem(
@@ -13233,20 +15361,79 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
                 line2: beam.teaserText,
                 distanceText: distanceText(to: beam),
                 relativeBearing: relativeBearingDegrees(to: beam),
-                progress: nil
+                progress: nil,
+                imageUrl: beam.imageUrl
             ))
         }
 
-        if !incomingLocked, !ambientLocked, let place = bestLocationMarqueeCandidate() {
+        if !ambientLocked, let place = bestLocationMarqueeCandidate() {
             let itemId = "place:\(place.placeId ?? place.id)"
             rows.append(K1L0MarqueeItem(
                 id: itemId,
                 kind: "location",
                 line1: place.name,
-                line2: "Stop in to collect something.",
+                line2: locationMarqueeInstruction(for: place),
                 distanceText: distanceText(to: place),
                 relativeBearing: relativeBearingDegrees(to: place),
+                progress: nil,
+                imageUrl: place.imageUrl
+            ))
+        }
+
+        return rows
+    }
+
+    func mapMarqueeItems() -> [K1L0MarqueeItem] {
+        var rows: [K1L0MarqueeItem] = []
+        if !renderReady {
+            rows.append(K1L0MarqueeItem(
+                id: "render-loading",
+                kind: "status",
+                line1: "Loading Kiloverse…",
+                line2: renderLoadingDetail,
+                distanceText: nil,
+                relativeBearing: nil,
                 progress: nil
+            ))
+        }
+        rows.append(K1L0MarqueeItem(
+            id: "walking-status",
+            kind: "status",
+            line1: liveSteps > 0 ? "Keep walking" : "Walk",
+            line2: liveSteps > 0 ? "\(liveSteps) steps \(liveStepDurationText)" : "Idle for \(inactiveDurationPlainText)",
+            distanceText: nil,
+            relativeBearing: nil,
+            progress: nil
+        ))
+
+        if let beam = homeHighlightBeam {
+            let itemId = "beam:\(beam.id)"
+            rows.append(K1L0MarqueeItem(
+                id: itemId,
+                kind: beam.rewardType?.lowercased() == "object" ? "ambientObject" : "ambientElement",
+                // Uniform ambient banner: thumbnail + "Nearby item" only. The
+                // teaser made banners inconsistent (some beams have one, some
+                // don't); the teaser still shows on the collect card itself.
+                line1: "Nearby item",
+                line2: "",
+                distanceText: distanceText(to: beam),
+                relativeBearing: relativeBearingDegrees(to: beam),
+                progress: nil,
+                imageUrl: beam.imageUrl
+            ))
+        }
+
+        if let place = bestLocationMarqueeCandidate() {
+            let itemId = "place:\(place.placeId ?? place.id)"
+            rows.append(K1L0MarqueeItem(
+                id: itemId,
+                kind: "location",
+                line1: place.name,
+                line2: locationMarqueeInstruction(for: place),
+                distanceText: distanceText(to: place),
+                relativeBearing: relativeBearingDegrees(to: place),
+                progress: nil,
+                imageUrl: place.imageUrl
             ))
         }
 
@@ -13268,6 +15455,8 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
                 let itemId = "place:\(place.placeId ?? place.id)"
                 return meters < nearestBeamDistance
                     && steps <= 500
+                    && locationDwellStartedAt[place.id] == nil
+                    && collectCandidatePlace?.id != place.id
                     && isWalkingTowardItem(itemId, relativeBearing: relativeBearingDegrees(to: place))
             }
             .sorted { distanceMeters(to: $0) < distanceMeters(to: $1) }
@@ -13276,6 +15465,10 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
 
     private func estimatedSteps(forMeters meters: Double) -> Int {
         max(1, Int((max(0, meters) * 1.3).rounded()))
+    }
+
+    private func locationMarqueeInstruction(for place: OverlayPlace) -> String {
+        "Nearby"
     }
 
     private func stepsText(toMeters meters: Double) -> String {
@@ -13318,7 +15511,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
 
     func emoji(for place: OverlayPlace) -> String {
         switch placeCategory(place) {
-        case "drink": return "🍺"
+        case "drinks": return "🍸"
         case "coffee": return "☕️"
         case "food": return "🍽️"
         case "snack": return "🍬"
@@ -14325,7 +16518,31 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
 	                if includePlaces {
 	                    self?.places = decoded.places.sorted { $0.distance < $1.distance }
 	                    self?.locationStatus = decoded.places.isEmpty ? "no open places nearby" : "\(decoded.places.count) open places nearby"
-	                    self?.markPlacesFresh(latitude: latitude, longitude: longitude)
+	                    self?.applyInitialDenseLocationFilterIfNeeded(decoded.places)
+	                    self?.applyLocationFilter()
+	                    let collectibleLocations = decoded.places
+	                        .filter(\.hasCollectibleArtifact)
+	                        .sorted { $0.distance < $1.distance }
+	                        .prefix(3)
+	                    let missingHolograms = collectibleLocations.contains {
+	                        ($0.imageUrl ?? "").isEmpty || ($0.depthMapUrl ?? "").isEmpty
+	                    }
+	                    if missingHolograms, let self, self.locationHologramRetryCount < 6 {
+	                        self.locationHologramRetryCount += 1
+	                        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
+	                            guard let self else { return }
+	                            self.fetchWorldNearby(
+	                                latitude: latitude,
+	                                longitude: longitude,
+	                                apiBase: apiBase,
+	                                includePlaces: true,
+	                                includeBeams: false
+	                            )
+	                        }
+	                    } else {
+	                        self?.locationHologramRetryCount = 0
+	                        self?.markPlacesFresh(latitude: latitude, longitude: longitude)
+	                    }
 	                    self?.applyLocationFilter()
 	                }
 	                if includeBeams {
@@ -14343,7 +16560,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         }.resume()
     }
 
-    func respondToTransmission(_ result: K1L0TransmissionResult, option: String) {
+    func respondToTransmission(_ result: K1L0TransmissionResult, option: String, photoPath: String? = nil, completion: (() -> Void)? = nil) {
         guard let userId = currentUserIdForInventory() else {
             print("[K1L0Overlay] respond dropped: no user id")
             return
@@ -14371,27 +16588,42 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
             return
         }
         resolveAPIBase { apiBase in
-            guard let url = URL(string: "\(apiBase)/api/k1l0/v2/transmit/respond") else { return }
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            let body: [String: Any] = [
-                "userId": userId,
-                "parentUserId": parentUserId,
-                "parentJobId": parentJobId,
-                "selectedResponse": option
-            ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-            URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
-                DispatchQueue.main.async {
-                    self?.setIncomingWaitBaseline(self?.liveSteps ?? 0)
-                    self?.clearIncomingTuneBaseline()
-                    self?.incomingTransmission = nil
-                    self?.receiveProgressSteps = 0
-                    self?.receiveSignalStatus = "response transmitting…"
-                    self?.fetchIncomingTransmissionIfNeeded()
+            let sendRespond: (String?) -> Void = { [weak self] attachedImageUrl in
+                guard let url = URL(string: "\(apiBase)/api/k1l0/v2/transmit/respond") else { return }
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                var body: [String: Any] = [
+                    "userId": userId,
+                    "parentUserId": parentUserId,
+                    "parentJobId": parentJobId,
+                    "selectedResponse": option
+                ]
+                if let attachedImageUrl, !attachedImageUrl.isEmpty {
+                    // Responder photo becomes the response slide's background,
+                    // like the input image on an original transmission.
+                    body["image"] = attachedImageUrl
                 }
-            }.resume()
+                request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+                URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+                    DispatchQueue.main.async {
+                        self?.setIncomingWaitBaseline(self?.liveSteps ?? 0)
+                        self?.clearIncomingTuneBaseline()
+                        self?.incomingTransmission = nil
+                        self?.receiveProgressSteps = 0
+                        self?.receiveSignalStatus = "response transmitting…"
+                        self?.fetchIncomingTransmissionIfNeeded()
+                        completion?()
+                    }
+                }.resume()
+            }
+            if let photoPath, !photoPath.isEmpty {
+                self.uploadTransmissionPhoto(photoPath: photoPath, apiBase: apiBase, userId: userId, status: { _ in }) { uploadResult in
+                    sendRespond(try? uploadResult.get())
+                }
+            } else {
+                sendRespond(nil)
+            }
         }
     }
 
@@ -14431,6 +16663,15 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         UserDefaults.standard.removeObject(forKey: K1L0OverlayDataModel.incomingTuneSignalIdKey)
     }
 
+    func declineIncomingTransmission() {
+        guard incomingTransmission != nil else { return }
+        setIncomingWaitBaseline(liveSteps)
+        clearIncomingTuneBaseline()
+        receiveProgressSteps = 0
+        receiveSignalStatus = "contact declined"
+        incomingTransmission = nil
+    }
+
     private func fetchIncomingTransmissionIfNeeded() {
         guard incomingTransmission == nil, !isFetchingIncomingTransmission else { return }
         guard activePursuedBeam == nil else { return }
@@ -14468,35 +16709,35 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
                     self.isFetchingIncomingTransmission = false
                     let code = (response as? HTTPURLResponse)?.statusCode ?? 0
                     guard code == 200 else {
-                        self.receiveSignalStatus = "searching for signals"
+                        self.receiveSignalStatus = "scanning signals"
                         return
                     }
                     guard let data else {
-                        self.receiveSignalStatus = "searching for signals"
+                        self.receiveSignalStatus = "scanning signals"
                         return
                     }
                     let decoded: OverlayReceiveResponse
                     do {
                         decoded = try JSONDecoder().decode(OverlayReceiveResponse.self, from: data)
                     } catch {
-                        self.receiveSignalStatus = "searching for signals"
+                        self.receiveSignalStatus = "scanning signals"
                         return
                     }
                     guard decoded.ok else {
-                        self.receiveSignalStatus = "searching for signals"
+                        self.receiveSignalStatus = "scanning signals"
                         return
                     }
                     guard let transmission = decoded.transmission else {
-                        self.receiveSignalStatus = "searching for signals"
+                        self.receiveSignalStatus = "scanning signals"
                         self.requestNearbyTestSignal(apiBase: apiBase, userId: userId)
                         return
                     }
                     guard transmission.isOriginalTransmission else {
-                        self.receiveSignalStatus = "searching for signals"
+                        self.receiveSignalStatus = "scanning signals"
                         return
                     }
                     guard !self.isOwnIncomingTransmission(transmission, currentUserId: userId) else {
-                        self.receiveSignalStatus = "searching for signals"
+                        self.receiveSignalStatus = "scanning signals"
                         return
                     }
                     self.setIncomingTuneBaseline(self.liveSteps, signalId: transmission.id)
@@ -14823,6 +17064,8 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
             DispatchQueue.main.async {
                 self?.places = decoded.places.sorted { $0.distance < $1.distance }
                 self?.locationStatus = decoded.places.isEmpty ? "no open places nearby" : "\(decoded.places.count) open places nearby"
+                self?.applyInitialDenseLocationFilterIfNeeded(decoded.places)
+                self?.applyLocationFilter()
                 self?.checkForBeamCollection()
             }
         }.resume()
@@ -15208,8 +17451,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         if let candidate = collectCandidatePlace {
             let stillAvailable = places.contains(where: { $0.id == candidate.id })
                 && candidate.hasCollectibleArtifact
-                && !collectedPlaceIds.contains(candidate.id)
-                && distanceMeters(to: candidate) <= locationCollectRadiusMeters()
+                && distanceMeters(to: candidate) <= locationDwellRadiusMeters
             if !stillAvailable {
                 collectCandidatePlace = nil
             }
@@ -15246,21 +17488,79 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         guard incomingTransmission == nil else { return }
         guard currentLocation != nil else { return }
         guard collectCandidateBeam == nil else { return }
+
+        // A location reward requires one uninterrupted ten-minute stay. Moving
+        // beyond the 15 m footprint allowance clears every bit of progress.
+        for (placeId, startedAt) in Array(locationDwellStartedAt) {
+            guard let trackedPlace = places.first(where: { $0.id == placeId }),
+                  distanceMeters(to: trackedPlace) <= locationDwellRadiusMeters else {
+                locationDwellStartedAt.removeValue(forKey: placeId)
+                dismissedLocationDwellIds.remove(placeId)
+                if collectCandidatePlace?.id == placeId { collectCandidatePlace = nil }
+                continue
+            }
+
+            if now.timeIntervalSince(startedAt) >= locationDwellDuration,
+               !collectedPlaceIds.contains(placeId) {
+                collectPlace(trackedPlace)
+                // Collection does not end presence. Keep the same location
+                // chip and elapsed clock visible until the player leaves.
+                collectCandidatePlace = trackedPlace
+                return
+            }
+        }
+
+        // Independently clear dismissed IDs when the user has walked out of a
+        // place's 15 m radius. Without this, a place dismissed BEFORE it ever
+        // entered the dwell timer (which is the common case — you tap the X on
+        // the prompt right as you pass) stayed dismissed for the whole session
+        // because the loop above never iterated over it. Walking >50 m away is
+        // the "I've moved on, offer this place again next time I'm near" signal
+        // for the dwell timer, so treat it the same for the dismissed set.
+        for placeId in Array(dismissedLocationDwellIds) {
+            guard let dismissedPlace = places.first(where: { $0.id == placeId }) else {
+                dismissedLocationDwellIds.remove(placeId)
+                continue
+            }
+            if distanceMeters(to: dismissedPlace) > locationDwellRadiusMeters {
+                dismissedLocationDwellIds.remove(placeId)
+            }
+        }
+
         if collectCandidatePlace != nil { return }
-        let radius = locationCollectRadiusMeters()
         guard let place = places
             .filter({
                 $0.hasCollectibleArtifact
                     && !collectingPlaceIds.contains($0.id)
                     && !collectedPlaceIds.contains($0.id)
-                    && distanceMeters(to: $0) <= radius
+                    && !dismissedLocationDwellIds.contains($0.id)
+                    && distanceMeters(to: $0) <= locationDwellRadiusMeters
             })
             .sorted(by: { distanceMeters(to: $0) < distanceMeters(to: $1) })
             .first
         else { return }
 
+        if locationDwellStartedAt[place.id] == nil {
+            locationDwellStartedAt[place.id] = now
+        }
         collectCandidatePlace = place
         K1L0WeatherOverlayInstaller.playBeamCollectSound()
+    }
+
+    func locationDwellRemainingSeconds(for place: OverlayPlace) -> Int {
+        guard let startedAt = locationDwellStartedAt[place.id] else {
+            return Int(locationDwellDuration)
+        }
+        return max(0, Int(ceil(locationDwellDuration - now.timeIntervalSince(startedAt))))
+    }
+
+    func locationDwellElapsedSeconds(for place: OverlayPlace) -> Int {
+        guard let startedAt = locationDwellStartedAt[place.id] else { return 0 }
+        return max(0, Int(now.timeIntervalSince(startedAt)))
+    }
+
+    func locationDwellProgress(for place: OverlayPlace) -> Double {
+        min(1, max(0, Double(locationDwellElapsedSeconds(for: place)) / locationDwellDuration))
     }
 
     func confirmCollectBeam(_ beam: OverlayBeam) {
@@ -15277,7 +17577,10 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
 
     func dismissLocationCollectPrompt() {
         if let place = collectCandidatePlace {
-            collectedPlaceIds.insert(place.id)
+            // Do not show the same notice repeatedly during this visit. The
+            // dwell timer continues in the background and still resets if the
+            // player moves beyond the 15 m footprint allowance.
+            dismissedLocationDwellIds.insert(place.id)
         }
         collectCandidatePlace = nil
     }
@@ -15323,7 +17626,6 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
     private func collectPlace(_ place: OverlayPlace) {
         collectingPlaceIds.insert(place.id)
         collectedPlaceIds.insert(place.id)
-        collectCandidatePlace = nil
         K1L0WeatherOverlayInstaller.playBeamCollectSound()
 
         resolveAPIBase { [weak self] apiBase in
@@ -15763,12 +18065,12 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
         ]
 
         if !typeSet.isDisjoint(with: coffeeTypes) { return "coffee" }
-        if !typeSet.isDisjoint(with: drinkTypes) { return "drink" }
+        if !typeSet.isDisjoint(with: drinkTypes) { return "drinks" }
         if !typeSet.isDisjoint(with: snackTypes) { return "snack" }
         if !typeSet.isDisjoint(with: foodTypes) { return "food" }
 
         if !words.isDisjoint(with: ["coffee", "cafe", "bakery", "donut"]) { return "coffee" }
-        if !words.isDisjoint(with: ["bar", "brewery", "brewpub", "taproom", "pub", "beer", "wine", "cocktail"]) { return "drink" }
+        if !words.isDisjoint(with: ["bar", "brewery", "brewpub", "taproom", "pub", "beer", "wine", "cocktail"]) { return "drinks" }
         if !words.isDisjoint(with: ["restaurant", "pizza", "thai", "wing", "wings", "sandwich", "primanti"]) { return "food" }
         if !words.isDisjoint(with: ["convenience", "bodega", "market", "mart", "store", "shop", "gas", "fuel", "candy"]) { return "snack" }
         return "food"
@@ -15777,7 +18079,7 @@ private final class K1L0OverlayDataModel: NSObject, ObservableObject, CLLocation
     private func normalizedLocationFilter(_ filter: String) -> String {
         switch filter.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
         case "drink", "drinks", "bar":
-            return "drink"
+            return "drinks"
         case "coffee", "cafe":
             return "coffee"
         case "food", "restaurant":
@@ -16012,6 +18314,27 @@ private struct K1L0MarqueeItem: Identifiable {
     let distanceText: String?
     let relativeBearing: Double?
     let progress: Double?
+    let imageUrl: String?
+
+    init(
+        id: String,
+        kind: String,
+        line1: String,
+        line2: String,
+        distanceText: String?,
+        relativeBearing: Double?,
+        progress: Double?,
+        imageUrl: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.line1 = line1
+        self.line2 = line2
+        self.distanceText = distanceText
+        self.relativeBearing = relativeBearing
+        self.progress = progress
+        self.imageUrl = imageUrl
+    }
 
     var kindDisplay: String {
         switch kind {
@@ -16035,6 +18358,8 @@ private struct OverlayPlace: Decodable, Identifiable {
     let artifactLabel: String?
     let artifactTeaser: String?
     let teaser: String?
+    let imageUrl: String?
+    let depthMapUrl: String?
 
     var id: String { placeId ?? name }
 
@@ -16099,11 +18424,17 @@ private struct OverlayUsersResponse: Decodable {
 private struct OverlayStepLeader: Decodable, Identifiable {
     let userId: String
     let name: String
+    let callsign: String?
     let helmetUrl: String
     let steps24h: Int
     let steps7d: Int
     let synthetic: Bool
     var id: String { userId }
+
+    var displayName: String {
+        let call = (callsign ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return call.isEmpty ? name : call
+    }
 }
 
 private struct OverlayStepLeaderboardResponse: Decodable {
@@ -16201,6 +18532,11 @@ private struct OverlayUser: Decodable, Identifiable {
         let realName = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !realName.isEmpty { return realName }
         return String(userId.prefix(10))
+    }
+
+    var realName: String {
+        let realName = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return realName.isEmpty ? displayName : realName
     }
 
     var nameAndCallsign: String {
@@ -16416,33 +18752,29 @@ private struct InventoryTile: View {
     var body: some View {
         VStack(spacing: 6) {
             ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(item.isElement ? Color(red: 0.05, green: 0.25, blue: 0.12).opacity(0.72) : Color.white.opacity(0.10))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(item.isElement ? Color(red: 0.66, green: 1.0, blue: 0.76).opacity(0.42) : Color.white.opacity(0.16), lineWidth: 1)
-                    )
-                if !item.isElement, let url = URL(string: item.avatarUrl), !item.avatarUrl.isEmpty {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFit()
-                                .padding(5)
-                        default:
-                            Text(item.symbol)
-                                .font(.system(size: 18, weight: .black))
-                                .foregroundStyle(.white.opacity(0.78))
-                        }
-                    }
-                    .frame(width: 58, height: 58)
-                    .background(Color.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                // Element tiles keep the green-tinted card; non-element items
+                // float freely — no card, no border, no black background. The
+                // BlackMaskedRemoteImage masks pitch-black bg to alpha so the
+                // item silhouette is what shows.
+                if item.isElement {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(red: 0.05, green: 0.25, blue: 0.12).opacity(0.72))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color(red: 0.66, green: 1.0, blue: 0.76).opacity(0.42), lineWidth: 1)
+                        )
+                    Text(item.symbol)
+                        .font(.system(size: 24, weight: .black))
+                        .foregroundStyle(Color(red: 0.66, green: 1.0, blue: 0.76))
+                } else if let url = URL(string: item.avatarUrl), !item.avatarUrl.isEmpty {
+                    BlackMaskedRemoteImage(url: url, contentMode: .fill)
+                        .scaleEffect(2.0)
+                        .frame(width: 58, height: 58)
+                        .clipped()
                 } else {
                     Text(item.symbol)
-                        .font(.system(size: item.isElement ? 24 : 18, weight: .black))
-                        .foregroundStyle(item.isElement ? Color(red: 0.66, green: 1.0, blue: 0.76) : .white.opacity(0.84))
+                        .font(.system(size: 18, weight: .black))
+                        .foregroundStyle(.white.opacity(0.84))
                 }
             }
             .frame(width: 64, height: 64)
@@ -16726,3 +19058,4 @@ extension View {
     func transmitterKeyboardDoneToolbar() -> some View { self }
 }
 #endif
+ 

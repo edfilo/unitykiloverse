@@ -13,6 +13,16 @@ public class BeamAvatar : MonoBehaviour
     private const float ParticleBeamTargetHeight = 150f;
     private const float MinParticleBeamTargetHeight = 18f;
 
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    private static void EnableProjectorLaserDefaultOnce()
+    {
+        const string migrationKey = "k1lo_projectorLaserDefault_v1";
+        if (PlayerPrefs.GetInt(migrationKey, 0) == 1) return;
+        PlayerPrefs.SetInt("k1lo_projectorLaserBeams", 1);
+        PlayerPrefs.SetInt(migrationKey, 1);
+        PlayerPrefs.Save();
+    }
+
     public enum BeamVisualMode
     {
         LegacyMagicParticles,
@@ -77,6 +87,10 @@ public class BeamAvatar : MonoBehaviour
     public float particleRotationSpeed = 45f;
 
     private ParticleSystem magicalParticles;
+    private GameObject projectorBeamObject;
+    private Material projectorBeamMaterial;
+    private GameObject projectorBaseObject;
+    private Material projectorBaseMaterial;
     private MeshRenderer orbRenderer;
     private GameObject avatarObject;
     private MeshRenderer avatarRenderer;
@@ -102,6 +116,7 @@ public class BeamAvatar : MonoBehaviour
 
     void Start()
     {
+        timeOffset = Mathf.Repeat(GetInstanceID() * .381966f, 100f);
         orbRenderer = GetComponent<MeshRenderer>();
         if (orbRenderer != null)
         {
@@ -124,6 +139,8 @@ public class BeamAvatar : MonoBehaviour
         if (magicalParticles != null) Destroy(magicalParticles.gameObject);
         if (beamRenderer != null) Destroy(beamRenderer.gameObject);
         if (beamGlowRenderer != null) Destroy(beamGlowRenderer.gameObject);
+        if (projectorBeamObject != null) Destroy(projectorBeamObject);
+        if (projectorBaseObject != null) Destroy(projectorBaseObject);
 
         // Create light beam or particles
         if (showBeam)
@@ -229,9 +246,9 @@ public class BeamAvatar : MonoBehaviour
         psr.material.SetColor("_EmissionColor", c1 * 20f);
 
         // Platform-specific particle count limits
-        int maxParticles = particleCount;
+        int maxParticles = Mathf.Max(1, Mathf.RoundToInt(particleCount * 0.8f));
         #if UNITY_IOS || UNITY_ANDROID
-        maxParticles = Mathf.Min(particleCount, 1000); // Limit to 1000 on mobile
+        maxParticles = Mathf.Min(maxParticles, 800); // 20% leaner mobile ceiling
         #endif
 
         var main = magicalParticles.main;
@@ -241,7 +258,9 @@ public class BeamAvatar : MonoBehaviour
 
         main.startLifetime = lifetime;
         main.startSpeed = safeSpeed;
-        main.startSize = new ParticleSystem.MinMaxCurve(particleBaseSize / particleSizeVariation, particleBaseSize * particleSizeVariation);
+        float minSpeckSize = particleBaseSize / (Mathf.Max(1f, particleSizeVariation) * 2.25f);
+        float maxSpeckSize = particleBaseSize * Mathf.Max(1f, particleSizeVariation) * 0.52f;
+        main.startSize = new ParticleSystem.MinMaxCurve(minSpeckSize, maxSpeckSize);
         main.startColor = new ParticleSystem.MinMaxGradient(c1, c2);
         main.maxParticles = maxParticles + 500;
         main.simulationSpace = ParticleSystemSimulationSpace.Local;
@@ -415,8 +434,117 @@ public class BeamAvatar : MonoBehaviour
         beamRenderer.enabled = false;
         beamGlowRenderer.enabled = false;
 
-        CreateMagicalParticles();
+        if (ProjectorLaserEnabled)
+            CreateProjectorLaser();
+        else
+            CreateMagicalParticles();
         UpdateBeamAppearance();
+    }
+
+    private static bool ProjectorLaserEnabled => PlayerPrefs.GetInt("k1lo_projectorLaserBeams", 1) != 0;
+
+    public static void SetProjectorLaserEnabled(bool enabled)
+    {
+        PlayerPrefs.SetInt("k1lo_projectorLaserBeams", enabled ? 1 : 0);
+        PlayerPrefs.Save();
+        foreach (var beam in FindObjectsByType<BeamAvatar>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            if (beam != null) beam.RebuildBeamSystem();
+        Debug.Log($"[BeamAvatar] Projector laser beams enabled={enabled}");
+    }
+
+    private void CreateProjectorLaser()
+    {
+        projectorBeamObject = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        projectorBeamObject.name = "ProjectorLaserBeam";
+        projectorBeamObject.transform.SetParent(transform, false);
+        var collider = projectorBeamObject.GetComponent<Collider>();
+        if (collider != null) Destroy(collider);
+
+        Shader shader = Shader.Find("K1L0/ProjectorLaserBeam");
+        if (shader == null)
+        {
+            Debug.LogError("[BeamAvatar] K1L0/ProjectorLaserBeam shader missing");
+            projectorBeamObject.SetActive(false);
+            return;
+        }
+        projectorBeamMaterial = new Material(shader);
+        var renderer = projectorBeamObject.GetComponent<MeshRenderer>();
+        renderer.material = projectorBeamMaterial;
+        renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        renderer.receiveShadows = false;
+
+        // Wide grounded emitter ring inspired by a physical projector source.
+        // One additive quad per beam is substantially cheaper than a ring mesh
+        // plus a second particle system.
+        projectorBaseObject = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        projectorBaseObject.name = "ProjectorLaserBaseRing";
+        projectorBaseObject.transform.SetParent(transform, false);
+        var baseCollider = projectorBaseObject.GetComponent<Collider>();
+        if (baseCollider != null) Destroy(baseCollider);
+        projectorBaseMaterial = new Material(shader);
+        projectorBaseMaterial.SetFloat("_BaseOnly", 1f);
+        var baseRenderer = projectorBaseObject.GetComponent<MeshRenderer>();
+        baseRenderer.material = projectorBaseMaterial;
+        baseRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+        baseRenderer.receiveShadows = false;
+        UpdateProjectorLaser();
+    }
+
+    private void UpdateProjectorLaser()
+    {
+        if (projectorBeamObject == null || projectorBeamMaterial == null) return;
+        float height = GetVisibleBeamHeight();
+        Vector3 center = transform.position + Vector3.up * (height * 0.5f);
+        projectorBeamObject.transform.position = center;
+
+        Camera cam = Camera.main;
+        if (cam != null)
+        {
+            Vector3 toCamera = cam.transform.position - center;
+            toCamera.y = 0f;
+            if (toCamera.sqrMagnitude > 0.001f)
+                projectorBeamObject.transform.rotation = Quaternion.LookRotation(toCamera.normalized, Vector3.up);
+        }
+
+        // Match the former particle plume's glow envelope, not merely its
+        // narrow emitter radius, so distant beams retain the same silhouette.
+        float worldWidth = Mathf.Max(3.5f, beamWidth) * 1.4f;
+        Vector3 parentScale = transform.lossyScale;
+        projectorBeamObject.transform.localScale = new Vector3(
+            worldWidth / Mathf.Max(0.001f, Mathf.Abs(parentScale.x)),
+            height / Mathf.Max(0.001f, Mathf.Abs(parentScale.y)),
+            1f / Mathf.Max(0.001f, Mathf.Abs(parentScale.z)));
+        projectorBeamMaterial.SetColor("_Color", beamColor);
+        // Keep additive RGB below white clipping so this reads as a volume of
+        // colored projected light rather than a fluorescent/laser tube.
+        float solarDayness = Mathf.Clamp01(
+            (KiloWorld.Rendering.Systems.RenderManager.LiveSunAltitudeDeg + 4f) / 14f);
+        // In daylight the item should remain the signal; the shaft is only a
+        // trace connecting it to the ground. Night retains the full projector.
+        float daylightBeamFade = Mathf.Lerp(1f, .10f, solarDayness);
+        projectorBeamMaterial.SetFloat("_Intensity",
+            Mathf.Clamp(beamEmission * 0.021f, 1.15f, 2.45f) * daylightBeamFade);
+        // The beam itself stays continuous. Its procedural filaments still
+        // rise and wander, while glitching belongs exclusively to the item.
+        projectorBeamMaterial.SetFloat("_GlitchAmount", 0f);
+        projectorBeamMaterial.SetFloat("_TimeOffset", Time.time + timeOffset);
+
+        if (projectorBaseObject != null && projectorBaseMaterial != null)
+        {
+            projectorBaseObject.transform.position = transform.position + Vector3.up * .08f;
+            projectorBaseObject.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+            // Oversized source plate: the soft outer ring should read around
+            // the avatar at close range instead of collapsing into a tiny dot.
+            float baseDiameter = Mathf.Max(13.5f, worldWidth * 2.75f);
+            projectorBaseObject.transform.localScale = new Vector3(
+                baseDiameter / Mathf.Max(.001f, Mathf.Abs(parentScale.x)),
+                baseDiameter / Mathf.Max(.001f, Mathf.Abs(parentScale.z)),
+                1f);
+            projectorBaseMaterial.SetColor("_Color", beamColor);
+            projectorBaseMaterial.SetFloat("_Intensity",
+                Mathf.Clamp(beamEmission * .020f, 1.25f, 2.6f) * Mathf.Lerp(1f, .16f, solarDayness));
+            projectorBaseMaterial.SetFloat("_TimeOffset", Time.time + timeOffset);
+        }
     }
 
     void ConfigureLaserLine(LineRenderer line, string materialName, bool core)
@@ -494,6 +622,8 @@ public class BeamAvatar : MonoBehaviour
         if (Mathf.Abs(clamped - visibleBeamHeight) < 1f) return;
 
         visibleBeamHeight = clamped;
+        var itemHologram = GetComponent<BeamItemHologram>();
+        if (itemHologram != null) itemHologram.SetBeamHeight(visibleBeamHeight);
 
         if (magicalParticles != null)
         {
@@ -514,6 +644,7 @@ public class BeamAvatar : MonoBehaviour
         }
 
         UpdateAvatarVisual();
+        UpdateProjectorLaser();
 
         // Float animation — only if not externally positioned (VirtualGridSpawner calls SetPosition every frame)
         if (floatAnimation && !externallyPositioned)
@@ -582,6 +713,14 @@ public class BeamAvatar : MonoBehaviour
         if (beamGlowRenderer != null && beamGlowRenderer.material != null)
         {
             Destroy(beamGlowRenderer.material);
+        }
+        if (projectorBeamMaterial != null)
+        {
+            Destroy(projectorBeamMaterial);
+        }
+        if (projectorBaseMaterial != null)
+        {
+            Destroy(projectorBaseMaterial);
         }
     }
 

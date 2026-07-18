@@ -38,7 +38,12 @@ def strip_k1l0_entitlements
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
     <plist version="1.0">
-    <dict/>
+    <dict>
+      <key>com.apple.developer.applesignin</key>
+      <array>
+        <string>Default</string>
+      </array>
+    </dict>
     </plist>
   PLIST
 end
@@ -124,7 +129,7 @@ platform :ios do
       app_platform:                         "ios",
       distribute_only:                      true,
       app_version:                          "0.1.0",
-      build_number:                         "0",
+      build_number:                         "2",
       distribute_external:                  true,
       groups:                               BETA_GROUPS,
       submit_beta_review:                   true,

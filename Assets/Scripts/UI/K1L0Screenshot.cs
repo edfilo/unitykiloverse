@@ -30,6 +30,11 @@ public class K1L0Screenshot : MonoBehaviour
     private IEnumerator CaptureAndUpload(bool analyze)
     {
         _capturing = true;
+        float readinessDeadline = Time.realtimeSinceStartup + 30f;
+        while (!BootState.InitialRenderReady && Time.realtimeSinceStartup < readinessDeadline)
+            yield return new WaitForSecondsRealtime(0.25f);
+        if (!BootState.InitialRenderReady)
+            Debug.LogWarning("[Screenshot] Readiness wait timed out; capturing current scene after 30s.");
         yield return new WaitForEndOfFrame();
 
         var tex = ScreenCapture.CaptureScreenshotAsTexture();

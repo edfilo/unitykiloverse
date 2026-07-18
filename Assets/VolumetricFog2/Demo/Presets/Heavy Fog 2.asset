@@ -12,41 +12,40 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 612e70f49e5124da0a95111a57250300, type: 3}
   m_Name: Heavy Fog 2
   m_EditorClassIdentifier: 
-  raymarchQuality: 3
-  raymarchNearStepping: 14.1
+  raymarchQuality: 7
   raymarchMinStep: 0.25
   jittering: 1
-  dithering: 1.31
+  dithering: 1
   renderQueue: 3100
   sortingLayerID: 0
   sortingOrder: 0
   constantDensity: 0
   noiseTexture: {fileID: 2800000, guid: 9c79340e1a1054275ba04070a27de306, type: 3}
   noiseTextureOptimizedSize: 256
-  noiseStrength: 1.68
+  noiseStrength: 0.1
   noiseScale: 20
-  noiseFinalMultiplier: 0.45
-  useDetailNoise: 1
+  noiseFinalMultiplier: 1
+  useDetailNoise: 0
   detailTexture: {fileID: 11700000, guid: 950add8d241c6479bbab1f10e1035d60, type: 2}
   detailScale: 10
-  detailStrength: 0.494
+  detailStrength: 0.119
   detailOffset: -0.5
   density: 0.35
   shape: 0
-  scaleNoiseWithHeight: 0.59
+  scaleNoiseWithHeight: 0
   border: 0.061
   customHeight: 1
-  height: 747.31
+  height: 750
   verticalOffset: 0
   distance: 500
-  distanceFallOff: 0.562
+  distanceFallOff: 0.83
   maxDistance: 10000
   maxDistanceFallOff: 0
-  terrainFit: 1
+  terrainFit: 0
   terrainFitResolution: 128
   terrainLayerMask:
     serializedVersion: 2
-    m_Bits: 0
+    m_Bits: 4294967293
   terrainFogHeight: 25
   terrainFogMinAltitude: 0
   terrainFogMaxAltitude: 150
@@ -79,7 +78,6 @@ MonoBehaviour:
     atime6: 0
     atime7: 0
     m_Mode: 0
-    m_ColorSpace: -1
     m_NumColorKeys: 2
     m_NumAlphaKeys: 2
   depthGradientMaxDistance: 500
@@ -111,7 +109,6 @@ MonoBehaviour:
     atime6: 0
     atime7: 0
     m_Mode: 0
-    m_ColorSpace: -1
     m_NumColorKeys: 2
     m_NumAlphaKeys: 2
   brightness: 1
@@ -127,30 +124,22 @@ MonoBehaviour:
   sunDirection: {x: 45, y: 45, z: 0}
   sunColor: {r: 1, g: 1, b: 1, a: 1}
   sunIntensity: 1
-  ambientLightMultiplier: 0.1
-  lightDiffusionModel: 1
-  lightDiffusionPower: 85
-  lightDiffusionIntensity: 2.99
-  lightDiffusionNearDepthAtten: 0.3
-  receiveShadows: 0
+  ambientLightMultiplier: 0
+  lightDiffusionModel: 0
+  lightDiffusionPower: 26
+  lightDiffusionIntensity: 0.25
+  receiveShadows: 1
   shadowIntensity: 0.4
   shadowCancellation: 0
   shadowMaxDistance: 250
   cookie: 0
   distantFog: 1
   distantFogStartDistance: 500
-  distantFogDistanceDensity: 0
-  distantFogMaxHeight: 25.99
+  distantFogDistanceDensity: 0.3
+  distantFogMaxHeight: 250
   distantFogHeightDensity: 1
   distantFogColor: {r: 0.735849, g: 0.735849, b: 0.735849, a: 1}
-  distantFogDiffusionIntensity: 1.32
-  distantFogRenderQueue: 2500
+  distantFogDiffusionIntensity: 0.4
+  distantFogRenderQueue: 2999
   distantFogBaseAltitude: 0
   distantFogSymmetrical: 0
-  distantFogNoise: 0
-  distantFogNoiseTexture: {fileID: 11700000, guid: 950add8d241c6479bbab1f10e1035d60, type: 2}
-  distantFogDistanceNoiseScale: 0.1
-  distantFogDistanceNoiseStrength: 0.5
-  distantFogDistanceNoiseMaxDistance: 250
-  distantFogNoiseWindDirection: {x: 0.002, y: 0.002, z: 0}
-  customMesh: {fileID: 0}

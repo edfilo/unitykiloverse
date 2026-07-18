@@ -38,7 +38,10 @@ public class ForceWhiteText : MonoBehaviour
         Sweep();
         yield return new WaitForSeconds(0.5f);
         Sweep();
-        var wait = new WaitForSeconds(0.25f);
+        // UI construction is event-driven and changes infrequently. A fast global
+        // object scan was needlessly expensive on device, especially when Swift
+        // owns the visible HUD.
+        var wait = new WaitForSeconds(2f);
         while (true) { Sweep(); yield return wait; }
     }
 
@@ -48,6 +51,12 @@ public class ForceWhiteText : MonoBehaviour
         for (int i = 0; i < all.Length; i++)
         {
             var t = all[i];
+            // Beam labels intentionally use a conventional UI sans-serif and
+            // live on the foreground HUD canvas for maximum map readability.
+            // Do not replace them with the global display face.
+            if (t.transform.parent != null &&
+                t.transform.parent.name.StartsWith("BeamMeters_", System.StringComparison.Ordinal))
+                continue;
             if (_martianMono != null && t.font != _martianMono) t.font = _martianMono;
             if (t.color != Color.white) t.color = Color.white;
             if (t.enableVertexGradient) t.enableVertexGradient = false;

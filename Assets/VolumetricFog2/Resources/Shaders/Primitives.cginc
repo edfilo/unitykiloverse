@@ -12,6 +12,20 @@ float BoxIntersection(float3 origin, float3 viewDir) {
     return max(t0, 0);
 }
 
+// Full slab test used by the transparent object path: the fog volume mesh bounds the ray implicitly, but arbitrary fragments need the box exit distance and miss detection
+void BoxIntersection(float3 origin, float3 viewDir, out float t0, out float t1) {
+    float3 ro = origin - _BoundsCenter;
+    float3 invR   = 1.0.xxx / viewDir;
+    float3 tbot   = invR * (-_BoundsExtents - ro);
+    float3 ttop   = invR * (_BoundsExtents - ro);
+    float3 tmin   = min (ttop, tbot);
+    float3 tmax   = max (ttop, tbot);
+    float2 tt0    = max (tmin.xx, tmin.yz);
+    t0 = max(max(tt0.x, tt0.y), 0);
+    float2 tt1    = min (tmax.xx, tmax.yz);
+    t1 = min(tt1.x, tt1.y);
+}
+
 void SphereIntersection(float3 origin, float3 viewDir, out float t0, out float t1) {
     float3  oc = origin - _BoundsCenter;
     float   b = dot(viewDir, oc);

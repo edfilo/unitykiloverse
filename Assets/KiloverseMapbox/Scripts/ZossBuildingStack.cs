@@ -11,8 +11,11 @@ namespace Kiloverse.Mapbox
 {
     public class ZossBuildingStack : MapboxMeshMod
     {
-        /// <summary>Set by tile loader before processing each tile. True = distant tile, simplified geometry.</summary>
-        public static bool SimpleLOD;
+        public enum BuildingLODMode { Detailed, SingleWindow, Silhouette }
+        /// <summary>Set by the tile loader for each building before mesh generation.</summary>
+        public static BuildingLODMode CurrentLOD = BuildingLODMode.Detailed;
+        public static Vector3 CurrentViewerPosition;
+        public static bool HasCurrentViewerPosition;
 
         /// <summary>Building height/floor corrections keyed by Overture building ID.</summary>
         public static Dictionary<string, float[]> Corrections;
@@ -258,18 +261,33 @@ public override void Run(MapboxFeature feature, MapboxMD md, MapboxMapInfo mapIn
 
             Vector3 offset = normal * 0.00001f;
 
-            if (SimpleLOD)
+            if (CurrentLOD == BuildingLODMode.Silhouette)
+                return;
+
+            if (CurrentLOD == BuildingLODMode.SingleWindow)
             {
-                // Distant LOD: single emissive quad per wall (~60% coverage)
-                // Looks like one big glowing window from afar
-                float insetH = wallLength * 0.15f;
-                float insetV = totalHeight * 0.12f;
+                // The solid wall remains for depth/silhouette, but skip facade
+                // lighting on the side facing away from the viewer. This avoids
+                // spending window pixels on a wall hidden by its own building.
+                Vector3 wallCenter = (v1 + v2) * 0.5f + Vector3.up * (totalHeight * 0.5f);
+                if (HasCurrentViewerPosition &&
+                    Vector3.Dot(normal, CurrentViewerPosition - wallCenter) <= 0f)
+                    return;
+
+                // Smaller, sparse panes read as real rooms instead of full-floor
+                // fluorescent panels. The deterministic occupancy mask keeps
+                // distant facades cheap and stable while the camera moves.
+                float insetH = wallLength * 0.05f;
+                float insetV = totalHeight * 0.06f;
                 float brightness = 0.5f + (float)(rng.NextDouble() * 0.5);
                 Color glowColor = Color.white * brightness;
-                AddQuad(md,
+                int facadeColumns = Mathf.Clamp(Mathf.RoundToInt(wallLength * tileToMeters / 4f), 2, 8);
+                int facadeRows = Mathf.Clamp(Mathf.RoundToInt(totalHeight * tileToMeters / 4f), 2, 8);
+                AddWindowGrid(md,
                     v1 + offset + direction * insetH, v1.y + insetV,
                     v2 + offset - direction * insetH, v1.y + totalHeight - insetV,
-                    normal, glowColor, 1);
+                    normal, glowColor, 1, facadeColumns, facadeRows,
+                    .28f, .58f, seed);
                 return;
             }
 
@@ -430,7 +448,7 @@ private void AddQuad(MapboxMD md, Vector3 bottomLeft, float yBottom, Vector3 bot
         }
     
 
-private void AddWindowGrid(MapboxMD md, Vector3 bottomLeft, float yBottom, Vector3 bottomRight, float yTop, Vector3 normal, Color color, int submeshIndex, int columns = 4, int rows = 6)
+private void AddWindowGrid(MapboxMD md, Vector3 bottomLeft, float yBottom, Vector3 bottomRight, float yTop, Vector3 normal, Color color, int submeshIndex, int columns = 4, int rows = 6, float occupancy = 1f, float paneScale = 1f, int occupancySeed = 0)
         {
             // PERFORMANCE NOTE: columns=1, rows=1 creates single solid window (4 vertices)
             // vs columns=2, rows=3 creates 6-pane grid (24 vertices) = 6x memory cost
@@ -453,14 +471,27 @@ private void AddWindowGrid(MapboxMD md, Vector3 bottomLeft, float yBottom, Vecto
             {
                 for (int col = 0; col < columns; col++)
                 {
+                    if (occupancy < 0.999f)
+                    {
+                        uint hash = unchecked((uint)occupancySeed * 374761393u +
+                                              (uint)row * 668265263u +
+                                              (uint)col * 2246822519u);
+                        hash = (hash ^ (hash >> 13)) * 1274126177u;
+                        float selected = (hash & 0x00ffffffu) / 16777215f;
+                        if (selected > occupancy) continue;
+                    }
                     // Calculate pane position
                     float xOffset = col * (paneWidth + frameThickness);
                     float yOffset = row * (paneHeight + frameThickness);
-                    
+                    float scaledWidth = paneWidth * Mathf.Clamp01(paneScale);
+                    float scaledHeight = paneHeight * Mathf.Clamp01(paneScale);
+                    xOffset += (paneWidth - scaledWidth) * .5f;
+                    yOffset += (paneHeight - scaledHeight) * .5f;
+
                     Vector3 paneBottomLeft = bottomLeft + dirHorizontal * xOffset;
-                    Vector3 paneBottomRight = paneBottomLeft + dirHorizontal * paneWidth;
+                    Vector3 paneBottomRight = paneBottomLeft + dirHorizontal * scaledWidth;
                     float paneYBottom = yBottom + yOffset;
-                    float paneYTop = paneYBottom + paneHeight;
+                    float paneYTop = paneYBottom + scaledHeight;
                     
                     // Add single pane quad
                     AddQuad(md, paneBottomLeft, paneYBottom, paneBottomRight, paneYTop, normal, color, submeshIndex);

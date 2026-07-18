@@ -32,8 +32,7 @@ Shader "Custom/SeamlessRoadWorldSpace"
     }
     SubShader
     {
-        // Changed Queue to Transparent to render AFTER the Opaque Copy (Scene Color) pass
-        Tags { "RenderType"="Opaque" "RenderPipeline" = "UniversalPipeline" "Queue"="Transparent" }
+        Tags { "RenderType"="Opaque" "RenderPipeline" = "UniversalPipeline" "Queue"="Geometry" }
         LOD 300
 
         Pass
@@ -41,7 +40,6 @@ Shader "Custom/SeamlessRoadWorldSpace"
             Name "ForwardLit"
             Tags { "LightMode"="UniversalForward" }
             
-            // Force ZWrite On so the road is treated as solid despite the Transparent queue
             ZWrite On
 
             HLSLPROGRAM
@@ -226,6 +224,15 @@ Shader "Custom/SeamlessRoadWorldSpace"
 
                 // Calculate PBR Lighting (now diffuse-only)
                 half4 finalColor = UniversalFragmentPBR(inputData, surfaceData);
+
+                // Preserve the road silhouette when night lighting approaches
+                // black. This is a low diffuse visibility floor, not emission:
+                // texture variation remains visible and neon accents can still
+                // sit well above it without turning the street into a lightbox.
+                half3 roadVisibilityFloor = albedo * .18h
+                    + _BaseColor.rgb * .028h
+                    + half3(.032h, .044h, .078h);
+                finalColor.rgb = max(finalColor.rgb, roadVisibilityFloor);
                 
                 // Restore smoothness for our fake reflection math
                 surfaceData.smoothness = puddleSmoothness;
@@ -248,57 +255,32 @@ Shader "Custom/SeamlessRoadWorldSpace"
                 // Blend road color to Puddle Color based on mask
                 finalColor.rgb = lerp(finalColor.rgb, _PuddleColor.rgb, puddleMask);
 
-                // C. Reflection Coordinates (Vertical Offset)
-                // Sample screen space area of a world space ~15m "above" this point
-                float3 reflectionTargetWS = input.positionWS + float3(0, _ReflectionYOffset, 0);
-                float4 reflectionClipPos = TransformWorldToHClip(reflectionTargetWS);
-                
-                // Safety: If point is behind camera, don't reflect it
-                float validProjection = step(0.0, reflectionClipPos.w);
-                
-                float4 reflectionScreenPos = ComputeScreenPos(reflectionClipPos);
-                float2 reflectionUV = reflectionScreenPos.xy / max(reflectionScreenPos.w, 0.0001);
-                
-                // D. Warp / Stretch
-                // 1. Normal Distortion (Bumpy road)
-                float2 normalDistort = surfaceData.normalTS.xy * _ReflectionDistortion;
-                
-                // 2. Ripple/Stretch (Sin wave distortion)
-                float2 ripple;
-                // Horizontal Warble based on World Z (distance down the road)
-                ripple.x = sin(input.positionWS.z * _ReflectionWarbleScale) * _ReflectionWarble;
-                ripple.y = cos(input.positionWS.x * 5.0) * 0.005; // Vertical stretch/wobble
-                
-                // Combine: Puddles get Ripple, Road gets Bump
-                float2 finalDistortion = lerp(normalDistort, ripple, puddleMask * 0.8);
-                
-                // Apply distortion
-                reflectionUV += finalDistortion;
-
-                // E. Sample Opaque
-                // Clamp to valid screen area to avoid sampling border garbage
-                reflectionUV = clamp(reflectionUV, 0.001, 0.999);
-                half3 sceneColor = SAMPLE_TEXTURE2D(_CameraOpaqueTexture, sampler_CameraOpaqueTexture, reflectionUV).rgb;
-                
-                // F. Masking
-                // STRICT Reflection: Only reflect in puddles.
-                float reflectionMask = puddleMask * _ReflectionStrength * validProjection;
-                
-                // Edge Fade: Soften reflections near screen edges to hide the "clamp" and "pop"
-                float edgeFade = smoothstep(0.0, 0.15, reflectionUV.y) * smoothstep(1.0, 0.85, reflectionUV.y); 
-                // (Horizontal fade is less critical but good for corners)
-                edgeFade *= smoothstep(0.0, 0.05, reflectionUV.x) * smoothstep(1.0, 0.95, reflectionUV.x);
-                
-                reflectionMask *= edgeFade;
-                
                 if (_DebugReflection > 0.5)
                 {
                     // Visualize Puddles (White) vs Road (Black)
                     return half4(puddleMask, puddleMask, puddleMask, 1.0);
                 }
 
-                // Additive blend
-                finalColor.rgb += sceneColor * reflectionMask;
+                // Stable wet-asphalt sheen. The former implementation sampled
+                // an arbitrarily offset screen pixel, so its fake reflections
+                // slid and stretched while the God camera panned. This uses
+                // only world-space breakup and view angle, staying attached to
+                // the road while costing less than the camera-color lookup.
+                float grazing=pow(1.0-saturate(dot(normalize(inputData.normalWS),
+                    normalize(inputData.viewDirectionWS))),3.0);
+                float microBreakup=.72+.28*noise(input.positionWS.xz*2.7+17.0);
+                half3 wetTint=lerp(_BaseColor.rgb,half3(.16,.23,.42),.48);
+                float wetSheen=puddleMask*grazing*microBreakup*saturate(_ReflectionStrength*.32);
+                finalColor.rgb=lerp(finalColor.rgb,finalColor.rgb+wetTint*(.18+grazing*.52),wetSheen);
+
+                // Road texture, emission and wet highlights collapse into a
+                // bright one-pixel stripe where the ground meets the sky. Fade
+                // those high-frequency details before they become sub-pixel;
+                // nearby streets retain their full authored appearance.
+                float cameraDistance = distance(input.positionWS, _WorldSpaceCameraPos);
+                float skylineRoadFade = smoothstep(520.0, 880.0, cameraDistance);
+                half3 distantRoadHaze = half3(.045h, .032h, .030h);
+                finalColor.rgb = lerp(finalColor.rgb, distantRoadHaze, skylineRoadFade);
                 
                 return finalColor;
             }

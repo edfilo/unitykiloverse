@@ -37,11 +37,20 @@ public class BuildingFlattener : MonoBehaviour
     public bool enableFlattening = true;
 
     [Header("Scan")]
-    [Tooltip("Seconds between footprint scans. 0.2-0.3 is plenty for walking pace.")]
-    public float scanInterval = 0.25f;
+    [Tooltip("Maximum seconds between footprint scans. Walking/local movement can trigger an earlier scan.")]
+    public float scanInterval = 1f;
+
+    [Tooltip("Run an early footprint scan after this much local player movement.")]
+    public float movementThresholdMeters = 1.5f;
 
     [Tooltip("Buildings further than this from the player are ignored. Keep tight — 200m is generous for a zoomed map.")]
     public float prefilterRadiusMeters = 200f;
+
+    [Tooltip("Extra XZ distance outside a footprint that still counts as inside. Prevents edge GPS jitter from exposing the building shell.")]
+    public float footprintEdgeBufferMeters = 8f;
+
+    [Tooltip("Additional exit-only tolerance. Prevents GPS jitter from restoring a roof while the player remains on its edge.")]
+    public float footprintExitHysteresisMeters = 5f;
 
     [Header("Look")]
     [Tooltip("Roof tint applied to the flat overlay polygon. Default is a slightly darker grey so the footprint reads against terrain.")]
@@ -55,7 +64,10 @@ public class BuildingFlattener : MonoBehaviour
     public int currentlyFlattened = 0;
 
     private Transform _player;
+    private KiloFirstPersonController _playerController;
     private float _timer;
+    private Vector3 _lastScanPosition;
+    private bool _hasLastScanPosition;
     private Material _sharedRoofMaterial;
     private readonly Dictionary<BuildingMetadata, FlattenState> _states = new Dictionary<BuildingMetadata, FlattenState>();
     private readonly HashSet<BuildingMetadata> _frameInside = new HashSet<BuildingMetadata>();
@@ -69,6 +81,7 @@ public class BuildingFlattener : MonoBehaviour
         public Vector3[] footprintWorld;  // world-space roof verts (XZ used for poly test)
         public float groundY;             // world Y of the roof polygon overlay
         public Bounds worldBounds;        // cached MeshRenderer.bounds for prefilter
+        public Vector3 lastBoundsCenter;  // tracks floating-origin shifts
     }
 
     private void Awake()
@@ -84,15 +97,21 @@ public class BuildingFlattener : MonoBehaviour
         if (_player == null)
         {
             var controller = FindFirstObjectByType<KiloFirstPersonController>();
+            _playerController = controller;
             _player = controller != null ? controller.transform : (Camera.main != null ? Camera.main.transform : null);
             if (_player == null) return;
         }
 
         _timer += Time.deltaTime;
-        if (_timer < scanInterval) return;
+        Vector3 pos = _playerController != null
+            ? _playerController.PlayerVisualWorldPosition
+            : _player.position;
+        bool movedEnough = _hasLastScanPosition &&
+            DistanceXZ(pos, _lastScanPosition) >= Mathf.Max(0.25f, movementThresholdMeters);
+        if (!movedEnough && _timer < Mathf.Max(0.25f, scanInterval)) return;
         _timer = 0;
-
-        Vector3 pos = _player.position;
+        _lastScanPosition = pos;
+        _hasLastScanPosition = true;
         float prefilterSq = prefilterRadiusMeters * prefilterRadiusMeters;
 
         // Sweep visible buildings. FindObjectsByType has been heavy on this
@@ -105,13 +124,14 @@ public class BuildingFlattener : MonoBehaviour
         {
             var bm = all[i];
             if (bm == null) continue;
-            var quickRenderer = bm.GetComponentInChildren<MeshRenderer>();
+            _states.TryGetValue(bm, out var state);
+            var quickRenderer = state != null ? state.renderer : bm.GetComponentInChildren<MeshRenderer>();
             if (quickRenderer == null) continue;
             Bounds quickBounds = quickRenderer.bounds;
             float quickDistance = DistanceXZPointToBounds(pos, quickBounds);
             if (quickDistance * quickDistance > prefilterSq) continue;
 
-            if (!_states.TryGetValue(bm, out var state))
+            if (state == null)
             {
                 state = ExtractFootprint(bm);
                 if (state == null) continue;
@@ -120,14 +140,38 @@ public class BuildingFlattener : MonoBehaviour
 
             // Bounds shift with the floating map origin, so refresh them on
             // each scan instead of trusting the first cached value forever.
-            if (state.renderer != null) state.worldBounds = state.renderer.bounds;
+            if (state.renderer != null)
+            {
+                Bounds nextBounds = state.renderer.bounds;
+                Vector3 shift = nextBounds.center - state.lastBoundsCenter;
+                if (shift.sqrMagnitude > .000001f)
+                {
+                    for (int v = 0; v < state.footprintWorld.Length; v++)
+                        state.footprintWorld[v] += shift;
+                }
+                state.worldBounds = nextBounds;
+                state.lastBoundsCenter = nextBounds.center;
+            }
 
             // Cheap XZ AABB pre-test. Do not use Bounds.Contains directly:
             // the player/camera Y can be outside the extruded bounds while
             // still being inside the 2D footprint.
-            if (!ContainsXZ(state.worldBounds, pos)) continue;
+            bool alreadyFlattened = state.overlay != null;
+            float edgeBuffer = Mathf.Max(0f, footprintEdgeBufferMeters) +
+                (alreadyFlattened ? Mathf.Max(0f, footprintExitHysteresisMeters) : 0f);
+            if (DistanceXZPointToBounds(pos, state.worldBounds) > edgeBuffer) continue;
 
-            if (PointInPolygonXZ(pos, state.footprintWorld) || ContainsXZ(state.worldBounds, pos))
+            // Metadata/mesh ordering can occasionally yield a footprint that
+            // no longer matches the individual renderer after LOD regeneration.
+            // If the avatar is visibly inside a normal-sized building's XZ
+            // bounds, treat that as authoritative. Exclude large merged batches
+            // so this cannot flatten an entire city block.
+            bool normalIndividualBounds = state.worldBounds.size.x <= 150f &&
+                                          state.worldBounds.size.z <= 150f;
+            bool visiblyInsideBounds = normalIndividualBounds && ContainsXZ(state.worldBounds, pos);
+            if (PointInPolygonXZ(pos, state.footprintWorld) ||
+                DistanceXZPointToPolygon(pos, state.footprintWorld) <= edgeBuffer ||
+                visiblyInsideBounds)
             {
                 _frameInside.Add(bm);
                 if (state.overlay == null) Flatten(bm, state);
@@ -145,6 +189,13 @@ public class BuildingFlattener : MonoBehaviour
         for (int i = 0; i < _toRestore.Count; i++) Restore(_toRestore[i]);
 
         currentlyFlattened = _frameInside.Count;
+    }
+
+    private static float DistanceXZ(Vector3 a, Vector3 b)
+    {
+        float dx = a.x - b.x;
+        float dz = a.z - b.z;
+        return Mathf.Sqrt(dx * dx + dz * dz);
     }
 
     // ── Footprint extraction ───────────────────────────────────────────────
@@ -203,6 +254,7 @@ public class BuildingFlattener : MonoBehaviour
             footprintWorld = roofWorld.ToArray(),
             groundY = groundWorldY + overlayLift,
             worldBounds = mr.bounds,
+            lastBoundsCenter = mr.bounds.center,
         };
     }
 
@@ -316,5 +368,21 @@ public class BuildingFlattener : MonoBehaviour
         else if (point.z > bounds.max.z) dz = point.z - bounds.max.z;
 
         return Mathf.Sqrt(dx * dx + dz * dz);
+    }
+
+    private static float DistanceXZPointToPolygon(Vector3 point, Vector3[] poly)
+    {
+        float bestSq = float.MaxValue;
+        Vector2 p = new Vector2(point.x, point.z);
+        for (int i = 0, j = poly.Length - 1; i < poly.Length; j = i++)
+        {
+            Vector2 a = new Vector2(poly[j].x, poly[j].z);
+            Vector2 b = new Vector2(poly[i].x, poly[i].z);
+            Vector2 ab = b - a;
+            float denom = ab.sqrMagnitude;
+            float t = denom > .000001f ? Mathf.Clamp01(Vector2.Dot(p - a, ab) / denom) : 0f;
+            bestSq = Mathf.Min(bestSq, (p - (a + ab * t)).sqrMagnitude);
+        }
+        return Mathf.Sqrt(bestSq);
     }
 }

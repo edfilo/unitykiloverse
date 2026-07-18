@@ -266,11 +266,6 @@ public class K1L0ProfileMode : MonoBehaviour
         y = AddToggle(scrollContent, y, "ENABLED", "chromaticEnabled", pfx.chromaticAberrationEnabled, v => pfx.chromaticAberrationEnabled = v);
         y = AddSlider(scrollContent, y, "INTENSITY", "chromaticIntensity", 0, 1, pfx.chromaticAberrationIntensity, v => pfx.chromaticAberrationIntensity = v);
 
-        // ── LENS DISTORTION ──
-        y = AddHeader(scrollContent, y, "LENS DISTORTION");
-        y = AddToggle(scrollContent, y, "ENABLED", "lensDistEnabled", pfx.lensDistortionEnabled, v => pfx.lensDistortionEnabled = v);
-        y = AddSlider(scrollContent, y, "INTENSITY", "lensDistIntensity", -1, 1, pfx.lensDistortionIntensity, v => pfx.lensDistortionIntensity = v);
-
         // ── DEPTH OF FIELD ──
         y = AddHeader(scrollContent, y, "DEPTH OF FIELD");
         y = AddToggle(scrollContent, y, "ENABLED", "dofEnabled", pfx.depthOfFieldEnabled, v => pfx.depthOfFieldEnabled = v);

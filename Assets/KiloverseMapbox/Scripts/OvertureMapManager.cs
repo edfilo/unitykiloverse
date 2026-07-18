@@ -48,12 +48,21 @@ namespace Kiloverse.Mapbox
         public static int _buildingLoadedCount = 0;
         public static int _buildingRequestingCount = 0;
         public static string _lastBuildingRender = "";
+        public static int _buildingDetailedCount = 0;
+        public static int _buildingSimpleCount = 0;
+        public static int _buildingShellCount = 0;
+        public static int _buildingLoadedVertices = 0;
+        public static int _buildingVisibleVertices = 0;
+        public static int _buildingVisibleRenderers = 0;
+        public static int _buildingTinyRenderers = 0;
+        public static int _buildingTinyVertices = 0;
+        public static int _buildingFarRenderers = 0;
 
         public static string RenderDebugJson()
         {
             return string.Format(
                 System.Globalization.CultureInfo.InvariantCulture,
-                "\"render\":{{\"tilesFetched\":{0},\"tilesRendered\":{1},\"lastTile\":\"{2}\",\"lastTileResult\":\"{3}\",\"buildingCenter\":\"{4}\",\"buildingLoaded\":{5},\"buildingRequesting\":{6},\"buildingTiles\":\"{7}\",\"lastBuilding\":\"{8}\"}}",
+                "\"render\":{{\"tilesFetched\":{0},\"tilesRendered\":{1},\"lastTile\":\"{2}\",\"lastTileResult\":\"{3}\",\"buildingCenter\":\"{4}\",\"buildingLoaded\":{5},\"buildingRequesting\":{6},\"buildingTiles\":\"{7}\",\"lastBuilding\":\"{8}\",\"buildingDetailed\":{9},\"buildingSimple\":{10},\"buildingShell\":{11},\"buildingVertices\":{12},\"buildingVisibleVertices\":{13},\"activeSignals\":{14},\"spawnedBeams\":{15},\"visibleBeams\":{16},\"buildingVisibleRenderers\":{17},\"buildingTinyRenderers\":{18},\"buildingTinyVertices\":{19},\"buildingFarRenderers\":{20}}}",
                 _tilesFetched,
                 _tilesRendered,
                 EscapeJson(_lastTileUrl),
@@ -62,7 +71,19 @@ namespace Kiloverse.Mapbox
                 _buildingLoadedCount,
                 _buildingRequestingCount,
                 EscapeJson(_buildingLoadedTiles),
-                EscapeJson(_lastBuildingRender)
+                EscapeJson(_lastBuildingRender),
+                _buildingDetailedCount,
+                _buildingSimpleCount,
+                _buildingShellCount,
+                _buildingLoadedVertices,
+                _buildingVisibleVertices,
+                SignalBeamBridge.ActiveSignalCount,
+                SignalBeamBridge.SpawnedBeamCount,
+                SignalBeamBridge.VisibleBeamCount,
+                _buildingVisibleRenderers,
+                _buildingTinyRenderers,
+                _buildingTinyVertices,
+                _buildingFarRenderers
             );
         }
 
@@ -700,10 +721,23 @@ private void DoUpdate()
         {
             Debug.Log("[OvertureMapManager] Clearing loaded tiles for native location jump.");
             m_Renderer?.ClearAllTiles();
+            m_Renderer?.PurgePooledEntities();
             foreach (var layer in m_Layers)
             {
                 layer.ClearLoadedState();
             }
+            StartCoroutine(ReclaimLocationJumpMemory());
+        }
+
+        private IEnumerator ReclaimLocationJumpMemory()
+        {
+            // Let Destroy() retire purged meshes/GameObjects before asking Unity
+            // to release now-unreferenced assets and managed wrappers.
+            yield return null;
+            yield return null;
+            yield return Resources.UnloadUnusedAssets();
+            System.GC.Collect();
+            Debug.Log("[OvertureMapManager] Location-jump memory reclamation complete.");
         }
 
         // Calculate which tiles are visible in camera frustum
@@ -910,6 +944,13 @@ private void RequestCurrentTile()
 
         private void CreateTileFetchers(string baseURL)
         {
+#if UNITY_STANDALONE_OSX
+            // The Mac visual-lab player runs beside kiloworld-api. Its map can
+            // initialize before APIManager Auto finishes probing, which used to
+            // freeze the first production URL into every XYZ fetcher. Always use
+            // the healthy local proxy on Mac; device builds retain normal Auto.
+            baseURL = "http://localhost:3000";
+#endif
             if (string.IsNullOrWhiteSpace(baseURL))
             {
                 baseURL = ResolveTileBaseURLImmediate();
@@ -943,7 +984,29 @@ private void RequestCurrentTile()
         private IEnumerator ResolveTileBaseURL(Action<string> onComplete)
         {
             yield return null;
-            onComplete?.Invoke(ResolveTileBaseURLImmediate());
+            var api = APIManager.Instance;
+            string resolved = null;
+            if (api != null)
+            {
+                resolved = api.GetBaseURL();
+                if (string.IsNullOrWhiteSpace(resolved) &&
+                    api.GetCurrentEnvironment() == APIManager.APIEnvironment.Auto)
+                {
+                    // Auto deliberately has no URL until it probes connectivity.
+                    // The old map boot path interpreted that temporary null as a
+                    // permanent failure and locked tiles to the LAN-only IP even
+                    // while the native overlay was successfully using the tunnel.
+                    yield return api.TryAutoConnect((_, url) => resolved = url);
+                }
+            }
+            if (string.IsNullOrWhiteSpace(resolved))
+                resolved = ResolveTileBaseURLImmediate();
+#if !UNITY_EDITOR && !UNITY_STANDALONE_OSX
+            if (string.IsNullOrWhiteSpace(resolved))
+                resolved = "https://api-tunnel.kilo.gallery";
+#endif
+            Debug.Log($"[OvertureMapManager] Resolved tile API base after connectivity probe: {resolved}");
+            onComplete?.Invoke(resolved);
         }
     }
 
@@ -1202,7 +1265,13 @@ private void RequestCurrentTile()
             int maxNewPerPoll = Application.isEditor ? 2 : (IsBuildingsLayer ? 3 : 20);
             int maxInFlight = Application.isEditor ? 4 : (IsBuildingsLayer ? 6 : 25);
             int added = 0;
-            foreach (var tile in tilesToAdd)
+            foreach (var tile in tilesToAdd
+                .OrderBy(t =>
+                {
+                    long dx = (long)t.X - currentCenter.X;
+                    long dy = (long)t.Y - currentCenter.Y;
+                    return dx * dx + dy * dy;
+                }))
             {
                 if (added >= maxNewPerPoll || _requestingTiles.Count >= maxInFlight) break;
 
@@ -1248,7 +1317,14 @@ public IEnumerator RequestTile(TileId tile, int tileIndex)
                 }
                 else
                 {
-                    _requestingTiles.Remove(tile); // Failed - remove from requesting
+                    // A successful 0-byte response means this layer has no data
+                    // for the tile. Treat that as a resolved/loaded empty tile;
+                    // removing it from requesting without caching it caused the
+                    // visibility poll to request the same empties forever.
+                    _requestingTiles.Remove(tile);
+                    _loadedTiles.Add(tile);
+                    if (_loadedTiles.Count == 1)
+                        BootState.SetFirstTilesLoaded();
                 }
             });
         }
@@ -1294,16 +1370,52 @@ public IEnumerator RequestTile(TileId tile, int tileIndex)
         // Each vertex ≈ 80 bytes (pos 12 + normal 12 + tangent 16 + uv0 8 + uv1 8 + indices ~24)
         // Buildings get real caps because dense waterfront/downtown tiles can contain thousands of
         // window/door quads before renderer culling ever gets a chance to disable them.
-        private const int VERTEX_BUDGET_BUILDING = 250000;
+        private const int VERTEX_BUDGET_BUILDING = 900000;
         private const int VERTEX_BUDGET_ROAD     = int.MaxValue;
         private const int VERTEX_BUDGET_WATER    = int.MaxValue;
         private const int VERTEX_BUDGET_DEFAULT  = int.MaxValue;
-        private const int FEATURE_CAP_BUILDING   = 1200;
+        private const int FEATURE_CAP_BUILDING   = int.MaxValue;
         private const int FEATURE_CAP_ROAD       = int.MaxValue;
         private const int FEATURE_CAP_DEFAULT    = int.MaxValue;
         private const int FEATURES_PER_YIELD     = 50;       // Yield to main thread every N features (editor uses 10)
-        private const float BUILDING_DETAIL_RADIUS_METERS = 750f;
-        private const float BUILDING_SIMPLE_RADIUS_METERS = 6000f;
+        // A global quality allocation is more predictable than per-tile quotas:
+        // sparse places can spend all available detail on their few buildings,
+        // while dense cities cannot multiply the allowance by nine loaded tiles.
+        private const int BUILDING_DETAIL_GLOBAL_LIMIT = 96;
+        // Streaming tiles arrive sequentially. Without a per-tile share, the
+        // first dense tile can consume all 96 detailed slots and leave a
+        // physically adjacent tile simplified when the player stands near an
+        // edge. Eighteen preserves rich center/cardinal neighborhoods while
+        // the global cap still bounds total geometry.
+        private const int BUILDING_DETAIL_PER_TILE_LIMIT = 18;
+        private const int BUILDING_DETAIL_BACKGROUND_LIMIT = 48;
+        private const float BUILDING_IMMEDIATE_DETAIL_RADIUS_METERS = 300f;
+        private const int BUILDING_SIMPLE_GLOBAL_LIMIT = 1000;
+        private const int BUILDING_DETAIL_VERTEX_LIMIT = 400000;
+        private const int BUILDING_SIMPLE_VERTEX_LIMIT = 250000;
+        private const int BUILDING_SHELL_VERTEX_LIMIT = 250000;
+        private const float BUILDING_VISIBLE_RADIUS_METERS = 2200f;
+        private const float BUILDING_DETAIL_RADIUS_METERS = 350f;
+        private const float BUILDING_EMISSIVE_RADIUS_METERS = 850f;
+
+        private sealed class BuildingTileStats
+        {
+            public int detailed;
+            public int simple;
+            public int shell;
+            public int detailedVertices;
+            public int simpleVertices;
+            public int shellVertices;
+            public int TotalVertices => detailedVertices + simpleVertices + shellVertices;
+        }
+
+        private readonly Dictionary<string, BuildingTileStats> _buildingStatsByTile = new();
+        private int _globalDetailedBuildings;
+        private int _globalSimpleBuildings;
+        private int _globalShellBuildings;
+        private int _globalDetailedVertices;
+        private int _globalSimpleVertices;
+        private int _globalShellVertices;
 
         public OvertureVectorRenderer(KiloverseMapInfo map, Dictionary<string, MapboxIVLV> visualizers, bool logLayers)
         {
@@ -1518,15 +1630,65 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                         int cumulativeVerts = 0;
                         int processedFeatures = 0;
                         bool budgetExceeded = false;
-
-                        int effectiveFeatureCount = sourceLayer == "building"
-                            ? featureCount
-                            : Mathf.Min(featureCount, featureCap);
-                        if (sourceLayer != "building" && featureCount > featureCap)
+                        var distantBuildingBatches = sourceLayer == "building"
+                            ? new List<MapboxMeshData>()
+                            : null;
+                        var roadBatches = sourceLayer == "segment"
+                            ? new List<MapboxMeshData>()
+                            : null;
+                        int effectiveFeatureCount = Mathf.Min(featureCount, featureCap);
+                        if (featureCount > featureCap)
                         {
                             Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tileKey} '{sourceLayer}': Feature cap hit — {featureCount} features, capped to {featureCap}");
                         }
 
+                        // Process each building tile from nearest to farthest. Tile
+                        // requests are also center-first, so the global counters
+                        // converge on the nearest buildings rather than source order.
+                        int[] featureOrder = null;
+                        if (sourceLayer == "building")
+                        {
+                            featureOrder = Enumerable.Range(0, effectiveFeatureCount)
+                                .Select(index =>
+                                {
+                                    var rawFeature = layerData.GetFeature(index);
+                                    var geometry = rawFeature.Geometry<float>(0);
+                                    double sumX = 0d, sumY = 0d;
+                                    double minX = double.MaxValue, maxX = double.MinValue;
+                                    double minY = double.MaxValue, maxY = double.MinValue;
+                                    int points = 0;
+                                    foreach (var part in geometry)
+                                    foreach (var point in part)
+                                    {
+                                        double x = point.X / 4096d;
+                                        double y = -point.Y / 4096d;
+                                        sumX += x;
+                                        sumY += y;
+                                        minX = System.Math.Min(minX, x); maxX = System.Math.Max(maxX, x);
+                                        minY = System.Math.Min(minY, y); maxY = System.Math.Max(maxY, y);
+                                        points++;
+                                    }
+                                    float distance = points > 0
+                                        ? EstimateNormalizedFeatureDistanceMeters(tile, sumX / points, sumY / points)
+                                        : float.MaxValue;
+                                    // Approximate projected importance: large facades
+                                    // retain detail farther away than tiny structures.
+                                    double tileMeters = Conversions.TileEdgeSizeInMercator(tile.Z);
+                                    float footprintMeters = points > 0
+                                        ? (float)(System.Math.Max(maxX - minX, maxY - minY) * tileMeters)
+                                        : 1f;
+                                    float sizeWeight = Mathf.Sqrt(Mathf.Clamp(footprintMeters, 8f, 80f) / 8f);
+                                    float detailPriority = distance / sizeWeight;
+                                    return (index, detailPriority);
+                                })
+                                .OrderBy(candidate => candidate.detailPriority)
+                                .Select(candidate => candidate.index)
+                                .ToArray();
+                        }
+
+                        var tileBuildingStats = sourceLayer == "building"
+                            ? new BuildingTileStats()
+                            : null;
                         int featuresPerYield = Application.isEditor ? 5 : FEATURES_PER_YIELD;
                         for (int i = 0; i < effectiveFeatureCount; i++)
                         {
@@ -1534,7 +1696,8 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                             if (i > 0 && i % featuresPerYield == 0)
                                 yield return null;
 
-                            var feature = layerData.GetFeature(i);
+                            int featureIndex = featureOrder != null ? featureOrder[i] : i;
+                            var feature = layerData.GetFeature(featureIndex);
 
                             // Convert to Mapbox VectorFeatureUnity (Mapbox modifier stacks expect Mapbox types)
                             var featureUnity = new MapboxFeature();
@@ -1572,14 +1735,64 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                             }
                             featureUnity.Points = points;
 
-                            bool useSimpleBuildingLod = false;
+                            bool useMergedBuildingLod = false;
+                            bool preserveIndividualBuilding = false;
+                            var buildingLod = ZossBuildingStack.BuildingLODMode.Detailed;
                             if (sourceLayer == "building")
                             {
                                 float featureDistance = EstimateFeatureDistanceFromMapCenterMeters(tile, featureUnity);
-                                if (featureDistance > BUILDING_SIMPLE_RADIUS_METERS)
+                                if (featureDistance > BUILDING_VISIBLE_RADIUS_METERS)
                                     continue;
 
-                                useSimpleBuildingLod = featureDistance > BUILDING_DETAIL_RADIUS_METERS;
+                                // Buildings near enough for the player/avatar to
+                                // enter must retain their own renderer and mesh.
+                                // Tile-level merging destroys the one-footprint
+                                // identity BuildingFlattener needs at edges.
+                                // Keep a generous player neighborhood unmerged.
+                                // Large footprints can have a centroid well over
+                                // 120m away while their edge contains the player;
+                                // merging those buildings destroys the individual
+                                // metadata/footprint required by BuildingFlattener.
+                                preserveIndividualBuilding = featureDistance <= 300f;
+
+                                float detailRadius = Mathf.Clamp(
+                                    PlayerPrefs.GetFloat("k1lo_buildingDetailRadius", BUILDING_DETAIL_RADIUS_METERS),
+                                    BUILDING_IMMEDIATE_DETAIL_RADIUS_METERS, 1200f);
+                                float emissiveRadius = Mathf.Clamp(
+                                    PlayerPrefs.GetFloat("k1lo_buildingEmissiveRadius", BUILDING_EMISSIVE_RADIUS_METERS),
+                                    detailRadius, BUILDING_VISIBLE_RADIUS_METERS);
+                                bool immediateDetail = featureDistance <= BUILDING_IMMEDIATE_DETAIL_RADIUS_METERS;
+                                bool detailEligible = featureDistance <= detailRadius;
+                                bool hasDetailAllocation = detailEligible && (immediateDetail
+                                    ? _globalDetailedBuildings < BUILDING_DETAIL_GLOBAL_LIMIT
+                                    : tileBuildingStats.detailed < BUILDING_DETAIL_PER_TILE_LIMIT &&
+                                      _globalDetailedBuildings < BUILDING_DETAIL_BACKGROUND_LIMIT);
+
+                                if (hasDetailAllocation &&
+                                    _globalDetailedVertices < BUILDING_DETAIL_VERTEX_LIMIT)
+                                {
+                                    buildingLod = ZossBuildingStack.BuildingLODMode.Detailed;
+                                    _globalDetailedBuildings++;
+                                    tileBuildingStats.detailed++;
+                                }
+                                else if (featureDistance <= emissiveRadius &&
+                                         _globalSimpleBuildings < BUILDING_SIMPLE_GLOBAL_LIMIT &&
+                                         _globalSimpleVertices < BUILDING_SIMPLE_VERTEX_LIMIT)
+                                {
+                                    buildingLod = ZossBuildingStack.BuildingLODMode.SingleWindow;
+                                    _globalSimpleBuildings++;
+                                    tileBuildingStats.simple++;
+                                }
+                                else
+                                {
+                                    if (_globalShellVertices >= BUILDING_SHELL_VERTEX_LIMIT)
+                                        continue;
+                                    buildingLod = ZossBuildingStack.BuildingLODMode.Silhouette;
+                                    _globalShellBuildings++;
+                                    tileBuildingStats.shell++;
+                                }
+                                useMergedBuildingLod = buildingLod != ZossBuildingStack.BuildingLODMode.Detailed &&
+                                    !preserveIndividualBuilding;
                             }
 
                             // WATER FILTERS: Skip problematic water (El Paso fix - giant polygons, ocean, intermittent, canals)
@@ -1726,9 +1939,13 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                             {
                                 if (i == 0 && sourceLayer == "building")
                                     Debug.Log($"[DIAG] Pre-RunMeshModifiers: feature pts={featureUnity.Points?.Count}/{featureUnity.Points?[0]?.Count}, stack={stack?.GetType().Name}, mapInfo={_mapboxMapInfo != null}");
-                                bool previousSimpleLod = ZossBuildingStack.SimpleLOD;
+                                var previousBuildingLod = ZossBuildingStack.CurrentLOD;
                                 if (sourceLayer == "building")
-                                    ZossBuildingStack.SimpleLOD = useSimpleBuildingLod;
+                                {
+                                    ZossBuildingStack.CurrentLOD = buildingLod;
+                                    ZossBuildingStack.CurrentViewerPosition = GetViewerPositionInTile(tile);
+                                    ZossBuildingStack.HasCurrentViewerPosition = true;
+                                }
 
                                 try
                                 {
@@ -1737,7 +1954,7 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                                 finally
                                 {
                                     if (sourceLayer == "building")
-                                        ZossBuildingStack.SimpleLOD = previousSimpleLod;
+                                        ZossBuildingStack.CurrentLOD = previousBuildingLod;
                                 }
                                 if (i == 0 && sourceLayer == "building")
                                     Debug.Log($"[DIAG] Post-RunMeshModifiers: verts={md.Vertices?.Count ?? -1}, tris={md.Triangles?.Count ?? -1}");
@@ -1755,6 +1972,46 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                             // Only add MeshData with valid vertices to avoid CreateGo crashes
                             if (md.Vertices != null && md.Vertices.Count > 0)
                             {
+                                if (sourceLayer == "building")
+                                {
+                                    int globalBuildingVertices = _globalDetailedVertices + _globalSimpleVertices + _globalShellVertices;
+                                    if (globalBuildingVertices + md.Vertices.Count > VERTEX_BUDGET_BUILDING)
+                                    {
+                                        // Undo the provisional count reservation for
+                                        // the building that could not fit the budget.
+                                        if (buildingLod == ZossBuildingStack.BuildingLODMode.Detailed)
+                                        {
+                                            _globalDetailedBuildings--; tileBuildingStats.detailed--;
+                                        }
+                                        else if (buildingLod == ZossBuildingStack.BuildingLODMode.SingleWindow)
+                                        {
+                                            _globalSimpleBuildings--; tileBuildingStats.simple--;
+                                        }
+                                        else
+                                        {
+                                            _globalShellBuildings--; tileBuildingStats.shell--;
+                                        }
+                                        budgetExceeded = true;
+                                        Debug.LogWarning($"[MEMORY] Global building vertex budget reached at {globalBuildingVertices:N0}/{VERTEX_BUDGET_BUILDING:N0}; remaining farther buildings skipped.");
+                                        break;
+                                    }
+
+                                    if (buildingLod == ZossBuildingStack.BuildingLODMode.Detailed)
+                                    {
+                                        _globalDetailedVertices += md.Vertices.Count;
+                                        tileBuildingStats.detailedVertices += md.Vertices.Count;
+                                    }
+                                    else if (buildingLod == ZossBuildingStack.BuildingLODMode.SingleWindow)
+                                    {
+                                        _globalSimpleVertices += md.Vertices.Count;
+                                        tileBuildingStats.simpleVertices += md.Vertices.Count;
+                                    }
+                                    else
+                                    {
+                                        _globalShellVertices += md.Vertices.Count;
+                                        tileBuildingStats.shellVertices += md.Vertices.Count;
+                                    }
+                                }
                                 cumulativeVerts += md.Vertices.Count;
                                 processedFeatures++;
 
@@ -1770,9 +2027,42 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                                     break; // Stop processing more features for this layer
                                 }
 
-                                if (!meshDataDict.ContainsKey(stackPair.Key)) meshDataDict.Add(stackPair.Key, new HashSet<MapboxMeshData>());
-                                meshDataDict[stackPair.Key].Add(md);
+                                if (sourceLayer == "building" && useMergedBuildingLod)
+                                {
+                                    AppendDistantBuildingMesh(distantBuildingBatches, md);
+                                }
+                                else if (sourceLayer == "segment")
+                                {
+                                    // Roads share one material and do not require
+                                    // per-segment GameObjects. Batch them per tile
+                                    // to remove thousands of renderers/draw calls.
+                                    AppendDistantBuildingMesh(roadBatches, md);
+                                }
+                                else
+                                {
+                                    if (!meshDataDict.ContainsKey(stackPair.Key)) meshDataDict.Add(stackPair.Key, new HashSet<MapboxMeshData>());
+                                    meshDataDict[stackPair.Key].Add(md);
+                                }
                             }
+                        }
+
+                        if (distantBuildingBatches != null && distantBuildingBatches.Count > 0)
+                        {
+                            if (!meshDataDict.ContainsKey(stackPair.Key)) meshDataDict.Add(stackPair.Key, new HashSet<MapboxMeshData>());
+                            foreach (var batch in distantBuildingBatches)
+                                meshDataDict[stackPair.Key].Add(batch);
+                        }
+                        if (roadBatches != null && roadBatches.Count > 0)
+                        {
+                            if (!meshDataDict.ContainsKey(stackPair.Key)) meshDataDict.Add(stackPair.Key, new HashSet<MapboxMeshData>());
+                            foreach (var batch in roadBatches)
+                                meshDataDict[stackPair.Key].Add(batch);
+                        }
+
+                        if (sourceLayer == "building" && tileBuildingStats != null)
+                        {
+                            _buildingStatsByTile[tileKey] = tileBuildingStats;
+                            PublishBuildingStats();
                         }
 
                         // WATER SUMMARY: If blue everywhere but we skip no-class, something else is rendering
@@ -1928,6 +2218,15 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
 
                         goIndex++;
                         go.SetActive(true);
+                        if (sourceLayer == "building" &&
+                            PlayerPrefs.GetFloat("k1lo_buildingsVisible", 1f) < 0.5f)
+                        {
+                            foreach (var renderer in go.GetComponentsInChildren<Renderer>(true))
+                            {
+                                renderer.forceRenderingOff = true;
+                                renderer.enabled = false;
+                            }
+                        }
                         createdObjects.Add(go);
 
                         // Cache Y offset for this object based on its layer
@@ -1961,12 +2260,79 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
             }
             _tileObjects[tileKey].AddRange(createdObjects);
 
+            if (layerName.IndexOf("road", StringComparison.OrdinalIgnoreCase) >= 0)
+                ApplyRoadBrightnessToObjects(createdObjects, PlayerPrefs.GetFloat("k1lo_roadValue", .88f));
+
             // Position tile objects in Web Mercator space (1 Unity unit = 1 meter)
             // Game coordinate system: player at (0,0,0), map center = player GPS
             // Mesh vertices are in normalized tile space (0-1), need scaling to meters
             PositionTileObjectsInMercator(tile, createdObjects, tileIndexStr);
 
             Debug.Log($"[TileLoad] {layerName}{tileIndexStr} {tile.Z}/{tile.X}/{tile.Y}: Rendering complete (spread across multiple frames to avoid lag)");
+            BootState.MarkTileRenderComplete(layerName);
+        }
+
+        /// <summary>
+        /// Refreshes already-generated roads without rebuilding map tiles. The
+        /// old setting only updated PlayerPrefs, leaving every live renderer on
+        /// its original material color until the next app launch/tile load.
+        /// </summary>
+        public void ApplyRoadBrightness(float value)
+        {
+            value = Mathf.Clamp01(value);
+            int objectCount = 0;
+            foreach (var tile in _tileObjects)
+            {
+                var objects = tile.Value;
+                if (objects == null) continue;
+                foreach (var go in objects)
+                {
+                    if (go == null) continue;
+                    string n = go.name ?? string.Empty;
+                    if (n.IndexOf("road", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        n.IndexOf("segment", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    ApplyRoadBrightnessToObject(go, value);
+                    objectCount++;
+                }
+            }
+            Debug.Log($"[OvertureMapManager] Applied road brightness {value:F2} to {objectCount} road objects.");
+        }
+
+        private static void ApplyRoadBrightnessToObjects(IEnumerable<GameObject> objects, float value)
+        {
+            if (objects == null) return;
+            foreach (var go in objects)
+                if (go != null) ApplyRoadBrightnessToObject(go, value);
+        }
+
+        private static void ApplyRoadBrightnessToObject(GameObject go, float value)
+        {
+            float roadDayness = PlayerPrefs.GetInt("k1lo_visualNightOverride", 0) == 1
+                ? 0f : Mathf.Clamp01((KiloWorld.Rendering.Systems.RenderManager.LiveSunAltitudeDeg + 4f) / 14f);
+            float dayValue = PlayerPrefs.GetFloat("k1lo_dayRoadValue", .32f);
+            value = Mathf.Lerp(value, dayValue, roadDayness);
+            foreach (var renderer in go.GetComponentsInChildren<Renderer>(true))
+            {
+                var shared = renderer.sharedMaterial;
+                if (shared == null) continue;
+                Color source = shared.HasProperty("_BaseColor") ? shared.GetColor("_BaseColor")
+                    : shared.HasProperty("_Color") ? shared.GetColor("_Color") : Color.gray;
+                float hue = PlayerPrefs.GetFloat("k1lo_roadHue", .62f);
+                float saturation = PlayerPrefs.GetFloat("k1lo_roadSaturation", .08f);
+                Color adjusted = Color.HSVToRGB(Mathf.Repeat(hue, 1f), Mathf.Clamp01(saturation), Mathf.Clamp01(value));
+                adjusted.a = source.a;
+                var block = new MaterialPropertyBlock();
+                renderer.GetPropertyBlock(block);
+                if (shared.HasProperty("_BaseColor")) block.SetColor("_BaseColor", adjusted);
+                if (shared.HasProperty("_Color")) block.SetColor("_Color", adjusted);
+                if (shared.HasProperty("_EmissionColor"))
+                {
+                    float glow = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_roadGlow", .34f)) * (1f - roadDayness);
+                    block.SetColor("_EmissionColor", adjusted * (glow * 1.8f));
+                    shared.EnableKeyword("_EMISSION");
+                }
+                renderer.SetPropertyBlock(block);
+            }
         }
 
         private float EstimateFeatureDistanceFromMapCenterMeters(TileId tile, MapboxFeature feature)
@@ -1991,11 +2357,19 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
             if (pointCount == 0)
                 return 0f;
 
-            var tileBoundsM = Conversions.TileBoundsInWebMercator(new TileId(tile.Z, tile.X, tile.Y));
-            double tileSize = Conversions.TileEdgeSizeInMercator(tile.Z);
             double normalizedX = sumX / pointCount;
             double normalizedZ = sumZ / pointCount;
 
+            return EstimateNormalizedFeatureDistanceMeters(tile, normalizedX, normalizedZ);
+        }
+
+        private float EstimateNormalizedFeatureDistanceMeters(TileId tile, double normalizedX, double normalizedZ)
+        {
+            if (_map == null || _map.MapInformation == null)
+                return 0f;
+
+            var tileBoundsM = Conversions.TileBoundsInWebMercator(new TileId(tile.Z, tile.X, tile.Y));
+            double tileSize = Conversions.TileEdgeSizeInMercator(tile.Z);
             double featureMercatorX = tileBoundsM.minX + normalizedX * tileSize;
             double featureMercatorY = tileBoundsM.maxY + normalizedZ * tileSize;
 
@@ -2016,6 +2390,24 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
             return (float)System.Math.Sqrt(dx * dx + dy * dy);
         }
 
+        private Vector3 GetViewerPositionInTile(TileId tile)
+        {
+            var tileBoundsM = Conversions.TileBoundsInWebMercator(new TileId(tile.Z, tile.X, tile.Y));
+            double tileSize = Conversions.TileEdgeSizeInMercator(tile.Z);
+            Vector2d viewer;
+            if (_playerCullCenterMercator.HasValue)
+                viewer = _playerCullCenterMercator.Value;
+            else
+            {
+                var ll = _map.MapInformation.LatitudeLongitude;
+                viewer = Conversions.LatitudeLongitudeToWebMercator(new LatitudeLongitude(ll.Latitude, ll.Longitude));
+            }
+            return new Vector3(
+                (float)((viewer.x - tileBoundsM.minX) / tileSize),
+                0f,
+                (float)((viewer.y - tileBoundsM.maxY) / tileSize));
+        }
+
         public void UpdateForView(TileId tile)
         {
             if (!_initialized) return;
@@ -2023,6 +2415,35 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
             {
                 visualizer.UpdateForView(MapboxTypeBridge.ToMapbox(tile), _mapboxMapInfo);
             }
+        }
+
+        private void PublishBuildingStats()
+        {
+            OvertureMapManager._buildingDetailedCount = Mathf.Max(0, _globalDetailedBuildings);
+            OvertureMapManager._buildingSimpleCount = Mathf.Max(0, _globalSimpleBuildings);
+            OvertureMapManager._buildingShellCount = Mathf.Max(0, _globalShellBuildings);
+            OvertureMapManager._buildingLoadedVertices = Mathf.Max(0,
+                _globalDetailedVertices + _globalSimpleVertices + _globalShellVertices);
+            int visibleVertices = 0;
+            foreach (var pair in _buildingStatsByTile)
+            {
+                if (_tileVisibility.TryGetValue(pair.Key, out bool visible) && visible)
+                    visibleVertices += pair.Value.TotalVertices;
+            }
+            OvertureMapManager._buildingVisibleVertices = Mathf.Max(0, visibleVertices);
+        }
+
+        private void ReleaseBuildingStats(string tileKey)
+        {
+            if (!_buildingStatsByTile.TryGetValue(tileKey, out var stats) || stats == null) return;
+            _globalDetailedBuildings -= stats.detailed;
+            _globalSimpleBuildings -= stats.simple;
+            _globalShellBuildings -= stats.shell;
+            _globalDetailedVertices -= stats.detailedVertices;
+            _globalSimpleVertices -= stats.simpleVertices;
+            _globalShellVertices -= stats.shellVertices;
+            _buildingStatsByTile.Remove(tileKey);
+            PublishBuildingStats();
         }
 
         /// <summary>
@@ -2165,6 +2586,7 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
             }
 
             Debug.Log($"[RemoveTile] {tileKey}: Removing tile");
+            ReleaseBuildingStats(tileKey);
 
             // Deactivate objects immediately (visual feedback) but DO NOT DESTROY them manually
             // The visualizer handles object pooling and destruction logic via UnregisterTile
@@ -2228,7 +2650,49 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                  }
             }
             _tileObjects.Clear();
+            _buildingStatsByTile.Clear();
+            _globalDetailedBuildings = _globalSimpleBuildings = _globalShellBuildings = 0;
+            _globalDetailedVertices = _globalSimpleVertices = _globalShellVertices = 0;
+            PublishBuildingStats();
             Debug.Log($"[OvertureVectorRenderer] Cleared {count} tiles properly via UnregisterTile");
+        }
+
+        public void PurgePooledEntities()
+        {
+            int stacks = 0;
+            foreach (var visualizer in _visualizers.Values)
+            {
+                if (visualizer == null || visualizer.GetModStacks == null) continue;
+                foreach (var stack in visualizer.GetModStacks.Values)
+                {
+                    PurgeModifierStackPool(stack);
+                    stacks++;
+                }
+            }
+            Debug.Log($"[OvertureVectorRenderer] Purged pooled entities from {stacks} modifier stacks.");
+        }
+
+        private static void PurgeModifierStackPool(MapboxModStack stack)
+        {
+            if (stack == null) return;
+            var poolField = typeof(MapboxModStack).GetField("_objectPool", BindingFlags.Instance | BindingFlags.NonPublic);
+            var pool = poolField?.GetValue(stack);
+            if (pool == null) return;
+            var queueField = pool.GetType().GetField("_objects", BindingFlags.Instance | BindingFlags.NonPublic);
+            var queue = queueField?.GetValue(pool) as System.Collections.IEnumerable;
+            if (queue != null)
+            {
+                foreach (var pooled in queue)
+                {
+                    if (pooled == null) continue;
+                    var pooledType = pooled.GetType();
+                    var mesh = pooledType.GetField("Mesh")?.GetValue(pooled) as Mesh;
+                    var gameObject = pooledType.GetField("GameObject")?.GetValue(pooled) as GameObject;
+                    if (mesh != null) UnityEngine.Object.Destroy(mesh);
+                    if (gameObject != null) UnityEngine.Object.Destroy(gameObject);
+                }
+            }
+            queueField?.FieldType.GetMethod("Clear")?.Invoke(queueField.GetValue(pool), null);
         }
 
         private Dictionary<string, bool> _tileVisibility = new Dictionary<string, bool>();
@@ -2340,10 +2804,45 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                         if (go != null)
                         {
                             go.SetActive(tileVisible);
+                            if (go.name.IndexOf("building", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                bool buildingsVisible = PlayerPrefs.GetFloat("k1lo_buildingsVisible", 1f) >= 0.5f;
+                                foreach (var renderer in go.GetComponentsInChildren<Renderer>(true))
+                                {
+                                    renderer.forceRenderingOff = !buildingsVisible;
+                                    renderer.enabled = buildingsVisible;
+                                }
+                            }
                         }
                     }
                 }
+
+                // The modifier/material pipeline can re-enable renderers without
+                // changing tile visibility. When the diagnostic world toggle is
+                // off, enforce suppression on every culling pass rather than
+                // only when the tile enters or leaves the frustum.
+                if (PlayerPrefs.GetFloat("k1lo_buildingsVisible", 1f) < 0.5f)
+                {
+                    foreach (var go in objects)
+                    {
+                        if (go == null ||
+                            go.name.IndexOf("building", StringComparison.OrdinalIgnoreCase) < 0)
+                            continue;
+                        foreach (var renderer in go.GetComponentsInChildren<Renderer>(true))
+                        {
+                            renderer.forceRenderingOff = true;
+                            renderer.enabled = false;
+                        }
+                        // Renderer/material modifiers can replace or re-enable a
+                        // renderer after the live command. Disable the Overture
+                        // building object itself so no child renderer can draw.
+                        if (go.activeSelf)
+                            go.SetActive(false);
+                    }
+                }
             }
+            PublishProjectedBuildingStats(mainCamera, frustumPlanes);
+            PublishBuildingStats();
 
             // Log stats every 5 seconds (300 frames at 60fps)
             if (Time.frameCount % 300 == 0)
@@ -2453,6 +2952,85 @@ private IEnumerator RenderTileCoroutine(TileId tile, byte[] payload, string[] so
                 float activeMeshMB = (activeVerts * 80f) / (1024f * 1024f);
                 Debug.Log($"[MEMORY TOTAL] {totalMeshObjects} mesh objects | {totalVerts:N0} total verts (~{totalMeshMB:F1}MB) | {activeVerts:N0} active verts (~{activeMeshMB:F1}MB) | Tiles: {_tileObjects.Count} loaded, {_tileVisibility.Count(v => v.Value)} visible");
             }
+        }
+
+        private void PublishProjectedBuildingStats(Camera camera, Plane[] frustumPlanes)
+        {
+            int visibleRenderers = 0;
+            int tinyRenderers = 0;
+            int tinyVertices = 0;
+            int farRenderers = 0;
+            float focalPixels = camera.orthographic
+                ? camera.pixelHeight / Mathf.Max(0.01f, camera.orthographicSize * 2f)
+                : camera.pixelHeight / (2f * Mathf.Tan(camera.fieldOfView * Mathf.Deg2Rad * 0.5f));
+
+            foreach (var pair in _tileObjects)
+            {
+                if (!_tileVisibility.TryGetValue(pair.Key, out bool tileVisible) || !tileVisible || pair.Value == null)
+                    continue;
+
+                foreach (var go in pair.Value)
+                {
+                    if (go == null || !go.activeInHierarchy ||
+                        !go.name.Contains("building", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var renderer = go.GetComponent<Renderer>();
+                    if (renderer == null || !renderer.enabled ||
+                        !GeometryUtility.TestPlanesAABB(frustumPlanes, renderer.bounds))
+                        continue;
+
+                    visibleRenderers++;
+                    float distance = Vector3.Distance(camera.transform.position, renderer.bounds.center);
+                    if (distance > 1000f) farRenderers++;
+
+                    float projectedPixels = renderer.bounds.size.magnitude * focalPixels / Mathf.Max(0.1f, distance);
+                    if (projectedPixels < 4f)
+                    {
+                        tinyRenderers++;
+                        var filter = go.GetComponent<MeshFilter>();
+                        if (filter != null && filter.sharedMesh != null)
+                            tinyVertices += filter.sharedMesh.vertexCount;
+                    }
+                }
+            }
+
+            OvertureMapManager._buildingVisibleRenderers = visibleRenderers;
+            OvertureMapManager._buildingTinyRenderers = tinyRenderers;
+            OvertureMapManager._buildingTinyVertices = tinyVertices;
+            OvertureMapManager._buildingFarRenderers = farRenderers;
+        }
+
+        private const int DISTANT_BUILDING_BATCH_VERTEX_LIMIT = 60000;
+
+        private static void AppendDistantBuildingMesh(List<MapboxMeshData> batches, MapboxMeshData source)
+        {
+            if (batches == null || source == null || source.Vertices == null || source.Vertices.Count == 0) return;
+            MapboxMeshData target = batches.Count > 0 ? batches[batches.Count - 1] : null;
+            if (target == null || target.Vertices.Count + source.Vertices.Count > DISTANT_BUILDING_BATCH_VERTEX_LIMIT)
+            {
+                target = new MapboxMeshData { Feature = source.Feature, PositionInTile = source.PositionInTile };
+                batches.Add(target);
+            }
+
+            int vertexOffset = target.Vertices.Count;
+            target.Vertices.AddRange(source.Vertices);
+            target.Normals.AddRange(source.Normals);
+            target.Tangents.AddRange(source.Tangents);
+            target.Colors.AddRange(source.Colors);
+            foreach (int edgeIndex in source.Edges)
+                target.Edges.Add(edgeIndex + vertexOffset);
+
+            while (target.Triangles.Count < source.Triangles.Count)
+                target.Triangles.Add(new List<int>());
+            for (int submesh = 0; submesh < source.Triangles.Count; submesh++)
+                foreach (int index in source.Triangles[submesh])
+                    target.Triangles[submesh].Add(index + vertexOffset);
+
+            while (target.UV.Count < source.UV.Count)
+                target.UV.Add(new List<Vector2>());
+            for (int channel = 0; channel < source.UV.Count; channel++)
+                target.UV[channel].AddRange(source.UV[channel]);
         }
 
         private static string ResolveVisualizerKey(string sourceLayer)
