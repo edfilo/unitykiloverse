@@ -11,6 +11,7 @@ namespace KiloWorld
         [SerializeField] private Transform playerTransform;
 
         private Light spotLight;
+        private Light characterFillLight;
         private Camera mainCamera;
 
         private void Awake()
@@ -43,6 +44,7 @@ namespace KiloWorld
             }
 
             ApplySpotlightSettings();
+            CreateCharacterFillLight();
 
             // Debug log
             Debug.Log($"[SpotlightManager] Initialized - Enabled: {spotLight.enabled}, Intensity: {spotLight.intensity}, Range: {spotLight.range}, Type: {spotLight.type}");
@@ -86,6 +88,55 @@ namespace KiloWorld
 
             // Apply settings every frame to allow live tuning
             ApplySpotlightSettings();
+            UpdateCharacterFillLight();
+        }
+
+        private void CreateCharacterFillLight()
+        {
+            if (characterFillLight != null || playerTransform == null || mainCamera == null) return;
+
+            var fillObject = new GameObject("K1L0 Character Fill Light");
+            fillObject.transform.SetParent(mainCamera.transform, false);
+            fillObject.transform.localPosition = Vector3.zero;
+            characterFillLight = fillObject.AddComponent<Light>();
+            characterFillLight.type = LightType.Spot;
+            characterFillLight.color = new Color(0.88f, 0.93f, 1f);
+            characterFillLight.intensity = PlayerPrefs.GetFloat("k1lo_characterFillIntensity", 9f);
+            characterFillLight.range = 20f;
+            characterFillLight.spotAngle = PlayerPrefs.GetFloat("k1lo_characterFillAngle", 38f);
+            characterFillLight.innerSpotAngle = characterFillLight.spotAngle * .63f;
+            characterFillLight.shadows = LightShadows.None;
+            characterFillLight.renderMode = LightRenderMode.ForcePixel;
+        }
+
+        private void UpdateCharacterFillLight()
+        {
+            if (characterFillLight == null)
+            {
+                CreateCharacterFillLight();
+                return;
+            }
+
+            // This is a local avatar-readability light, not the global camera
+            // spotlight. Keep it available even when a weather preset disables
+            // the map-wide spotlight.
+            characterFillLight.enabled = profile != null;
+            if (!characterFillLight.enabled || mainCamera == null || playerTransform == null) return;
+
+            characterFillLight.intensity = Mathf.Clamp(
+                PlayerPrefs.GetFloat("k1lo_characterFillIntensity", 9f), 0f, 25f);
+            characterFillLight.spotAngle = Mathf.Clamp(
+                PlayerPrefs.GetFloat("k1lo_characterFillAngle", 38f), 12f, 90f);
+            characterFillLight.innerSpotAngle = characterFillLight.spotAngle * .63f;
+
+            float targetHeight = Mathf.Clamp(
+                PlayerPrefs.GetFloat("k1lo_characterFillTargetHeight", 1.05f), -1f, 4f);
+            Vector3 torso = playerTransform.position + Vector3.up * targetHeight;
+            Vector3 toTorso = torso - characterFillLight.transform.position;
+            if (toTorso.sqrMagnitude < 0.01f) return;
+
+            characterFillLight.transform.rotation = Quaternion.LookRotation(toTorso.normalized, mainCamera.transform.up);
+            characterFillLight.range = Mathf.Max(20f, toTorso.magnitude + 5f);
         }
 
 private void ApplySpotlightSettings()

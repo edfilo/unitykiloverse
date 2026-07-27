@@ -315,6 +315,21 @@ public class MobileInputManager : MonoBehaviour
             
             Debug.Log($"[MobileInput] Dragging. Delta: {delta}, Locked: {lockedAxis}");
 
+            // Fixed/non-GPS navigation is a continuous two-axis control: a
+            // diagonal drag rotates and walks at the same time. Do this before
+            // the live-GPS dominant-axis lock, which remains useful for clean
+            // camera-mode swipes in normal play.
+            if (GPSLocationController.GPSDisabled)
+            {
+                float combinedScreenFactor = Mathf.Max(1f, Screen.height);
+                float combinedMoveY = Mathf.Clamp(delta.y / (combinedScreenFactor * 0.1f), -1f, 1f);
+                float combinedRotateX = Mathf.Clamp(delta.x / (combinedScreenFactor * 0.1f), -1f, 1f);
+                if (Mathf.Abs(delta.x) > LOCK_THRESHOLD_PX && gps != null)
+                    gps.PauseCompass(5.0f);
+                OnInput?.Invoke(combinedMoveY, combinedRotateX);
+                return;
+            }
+
             // Determine Axis Lock if not yet locked
             if (lockedAxis == Axis.None)
             {
@@ -336,7 +351,12 @@ public class MobileInputManager : MonoBehaviour
             else if (lockedAxis == Axis.Vertical)
             {
                 delta.x = 0; // Ignore horizontal
-                OnInput?.Invoke(0, 0);
+                // In a fixed/non-GPS location, vertical map drag is the mobile
+                // equivalent of W/S or Up/Down on Mac: continuously walk the
+                // simulated player forward/back while the finger is moving.
+                float verticalScreenFactor = Mathf.Max(1f, Screen.height);
+                float verticalMoveY = Mathf.Clamp(delta.y / (verticalScreenFactor * 0.1f), -1f, 1f);
+                OnInput?.Invoke(verticalMoveY, 0);
                 return;
             }
             else
@@ -370,7 +390,9 @@ public class MobileInputManager : MonoBehaviour
                     && Mathf.Abs(totalDelta.y) > Mathf.Abs(totalDelta.x) * 1.15f;
                 Debug.Log($"[MobileInput] PointerUp: hasMoved={hasMoved} dur={dur:F3}s move={totalMove:F1}px delta=({totalDelta.x:F1},{totalDelta.y:F1}) verticalSwipe={isVerticalSwipe}");
                 if (totalMove > TAP_THRESHOLD_PX) lastDragEndTime = Time.time;
-                if (isVerticalSwipe)
+                // Live GPS retains the established up/down camera-mode toggle.
+                // Fixed-location mode consumed this gesture as actual movement.
+                if (isVerticalSwipe && !GPSLocationController.GPSDisabled)
                 {
                     OnVerticalSwipe?.Invoke(totalDelta.y);
                 }

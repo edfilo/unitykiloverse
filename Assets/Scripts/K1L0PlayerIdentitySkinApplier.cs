@@ -5,6 +5,9 @@ using UnityEngine.Networking;
 
 public class K1L0PlayerIdentitySkinApplier : MonoBehaviour
 {
+    // Temporary art direction: keep the cloak.glb material/foil textures that
+    // ship with Unity. Custom helmet skins remain enabled.
+    private const bool CustomCloaksEnabled = false;
     private static K1L0PlayerIdentitySkinApplier instance;
     private static GameObject registeredHelmetRoot;
 
@@ -16,6 +19,9 @@ public class K1L0PlayerIdentitySkinApplier : MonoBehaviour
     private Coroutine cloakReapplyRoutine;
     private static readonly Vector2 CloakTextureScale = new Vector2(2.25f, 2.25f);
     private static readonly Dictionary<int, Texture2D> generatedCloakNormals = new Dictionary<int, Texture2D>();
+    private float nextVisibilityRefresh;
+    private Renderer[] visibilityCloakRenderers;
+    private Renderer[] visibilityHelmetRenderers;
 
     public static void ApplyFromMetadata(
         string helmetUrl,
@@ -42,6 +48,7 @@ public class K1L0PlayerIdentitySkinApplier : MonoBehaviour
     {
         if (helmetRoot == null) return;
         registeredHelmetRoot = helmetRoot;
+        if (instance != null) instance.visibilityHelmetRenderers = null;
         Debug.Log($"[K1L0Skin] Registered runtime helmet root: {helmetRoot.name}");
     }
 
@@ -64,8 +71,64 @@ public class K1L0PlayerIdentitySkinApplier : MonoBehaviour
 
     private void Start()
     {
-        cloakRoutine = StartCoroutine(LoadCachedAndApply(true));
+        if (CustomCloaksEnabled)
+            cloakRoutine = StartCoroutine(LoadCachedAndApply(true));
         helmetRoutine = StartCoroutine(LoadCachedAndApply(false));
+    }
+
+    private void Update()
+    {
+        if (Time.unscaledTime < nextVisibilityRefresh) return;
+        nextVisibilityRefresh = Time.unscaledTime + 0.75f;
+        ApplyVisibilityBoost(PlayerPrefs.GetFloat("k1lo_avatarEmission", 0.18f));
+    }
+
+    public static void SetVisibilityBoost(float strength)
+    {
+        strength = Mathf.Clamp(strength, 0f, 2f);
+        PlayerPrefs.SetFloat("k1lo_avatarEmission", strength);
+        PlayerPrefs.Save();
+        EnsureInstance().ApplyVisibilityBoost(strength);
+    }
+
+    private void ApplyVisibilityBoost(float strength)
+    {
+        if (!HasLiveRenderer(visibilityCloakRenderers))
+            visibilityCloakRenderers = FindTargetRenderers(true);
+        if (!HasLiveRenderer(visibilityHelmetRenderers))
+            visibilityHelmetRenderers = FindTargetRenderers(false);
+        ApplyVisibilityBoost(visibilityCloakRenderers, strength);
+        ApplyVisibilityBoost(visibilityHelmetRenderers, strength * 0.85f);
+    }
+
+    private static bool HasLiveRenderer(Renderer[] renderers)
+    {
+        if (renderers == null || renderers.Length == 0) return false;
+        foreach (var renderer in renderers)
+            if (renderer != null) return true;
+        return false;
+    }
+
+    private static void ApplyVisibilityBoost(Renderer[] renderers, float strength)
+    {
+        if (renderers == null || strength < 0f) return;
+        var emission = new Color(strength * 0.86f, strength * 0.93f, strength, 1f);
+        foreach (var renderer in renderers)
+        {
+            if (renderer == null) continue;
+            foreach (var material in renderer.materials)
+            {
+                if (material == null || !material.HasProperty("_EmissionColor")) continue;
+                Texture albedo = material.HasProperty("_BaseMap")
+                    ? material.GetTexture("_BaseMap")
+                    : material.mainTexture;
+                if (albedo != null && material.HasProperty("_EmissionMap"))
+                    material.SetTexture("_EmissionMap", albedo);
+                material.SetColor("_EmissionColor", emission);
+                if (strength > 0.001f) material.EnableKeyword("_EMISSION");
+                else material.DisableKeyword("_EMISSION");
+            }
+        }
     }
 
     private IEnumerator LoadCachedAndApply(bool cloak)
@@ -138,11 +201,11 @@ public class K1L0PlayerIdentitySkinApplier : MonoBehaviour
         var cloakIsMaterialTexture = !string.IsNullOrWhiteSpace(cloakTextureUrl);
         var helmetIsMaterialTexture = !string.IsNullOrWhiteSpace(helmetTextureUrl);
 
-        if (string.IsNullOrWhiteSpace(resolvedCloakUrl))
+        if (CustomCloaksEnabled && string.IsNullOrWhiteSpace(resolvedCloakUrl))
         {
             ApplyProceduralCloakFallback(cloakDesign);
         }
-        else if (cloakKey != appliedCloakUrl)
+        else if (CustomCloaksEnabled && cloakKey != appliedCloakUrl)
         {
             if (cloakRoutine != null) StopCoroutine(cloakRoutine);
             cloakRoutine = StartCoroutine(DownloadAndApply(resolvedCloakUrl, true, cloakIsMaterialTexture, cloakKey));

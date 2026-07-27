@@ -194,7 +194,7 @@ public class DeviceIDManager : MonoBehaviour
         style.fontSize = 20;
         style.normal.textColor = Color.yellow;
 
-        string info = $"Device ID: {_deviceID}\nAll-Time Steps: {_allTimeSteps:N0}";
+        string info = $"Device ID: {_deviceID}\nAll-Time Steps: {K1L0StepFormatter.Value(_allTimeSteps)}";
 
         // Shadow
         style.normal.textColor = Color.black;

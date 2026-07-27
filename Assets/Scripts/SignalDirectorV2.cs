@@ -106,6 +106,7 @@ public class Signal
     public int hologramParticleBudget; // explicit budget for non-ring beams such as locations
 
     // Location-only metadata (null on Artifact / Transmitter transmissions)
+    public string placeId;           // stable Google Places identity
     public string locationName;      // e.g. "Recon Brewing at Meeder"
     public string locationCategory;  // e.g. "brewery", "bar", "coffee_shop"
     // Stable key for external sources (e.g., POI name). Used to de-dup multi-location beams.
@@ -116,10 +117,6 @@ public class Signal
 
     // Runtime visual handle (set externally by whatever renders beams)
     [NonSerialized] public GameObject visualGO;
-
-    // Cached building bounds for ENTER proximity (set by SignalDirectorV2)
-    [NonSerialized] public Bounds? buildingBounds;
-    [NonSerialized] public float buildingBoundsTime; // Time.time when cached
 
     public Signal()
     {
@@ -611,10 +608,7 @@ public class SignalDirectorV2 : MonoBehaviour
 
     private static string FormatTeaserDistancePlain(float meters)
     {
-        float miles = meters / 1609.34f;
-        if (miles < 0.33f)
-            return $"{Mathf.RoundToInt(meters * 3.28084f)}ft";
-        return $"{miles:F1}mi";
+        return K1L0StepFormatter.FromMeters(meters);
     }
 
     private Signal GetNearestSignalByType(TransmissionType transmissionType, Vector2d playerMerc)
@@ -688,6 +682,12 @@ public class SignalDirectorV2 : MonoBehaviour
 
     // ── Road geometry cache ────────────────────────────────────
     private List<Vector2d> roadPoints;       // all walkable road vertices in Mercator
+    private struct SafeAmbientRoadPoint
+    {
+        public Vector2d mercator;
+        public string roadClass;
+    }
+    private List<SafeAmbientRoadPoint> safeAmbientRoadPoints;
     private Transform roadLayerFolder;
     private int lastKnownRoadMeshCount = -1;
     private bool roadsWereAvailable;         // tracks if we've ever had roads
@@ -697,6 +697,11 @@ public class SignalDirectorV2 : MonoBehaviour
         "residential", "living_street", "pedestrian", "footway", "path",
         "tertiary", "secondary", "primary", "unclassified", "service", "steps",
         "cycleway", "bridleway", "track", "primary_link", "secondary_link", "tertiary_link"
+    };
+    private static readonly HashSet<string> SafeAmbientRoadClasses = new HashSet<string>
+    {
+        "residential", "living_street", "pedestrian", "footway", "path",
+        "service", "steps", "cycleway", "bridleway", "track"
     };
 
     // ───────────────────────────────────────────────────────────
@@ -1337,11 +1342,11 @@ public class SignalDirectorV2 : MonoBehaviour
         }
         if (inactive)
         {
-            return $"<size=11>walking: inactive session {pedometerService.walkWindowSteps}/{target}  current {pedometerService.walkCurrentBucketSteps}st/{pedometerService.walkCurrentBucketMeters:F0}m</size>";
+            return $"<size=11>walking: inactive session {K1L0StepFormatter.Value(pedometerService.walkWindowSteps)}/{K1L0StepFormatter.Value(target)}  current {K1L0StepFormatter.Steps(pedometerService.walkCurrentBucketSteps)}</size>";
         }
         // Grace / "keep walking" — show debug steps until signal arrives.
         int remaining = Mathf.Max(0, target - pedometerService.walkWindowSteps);
-        return $"<size=11>walking: keep walking session {pedometerService.walkWindowSteps}/{target}  current {pedometerService.walkCurrentBucketSteps}st/{pedometerService.walkCurrentBucketMeters:F0}m</size>\n<size=10>(signal in {remaining} steps)</size>";
+        return $"<size=11>walking: keep walking session {K1L0StepFormatter.Value(pedometerService.walkWindowSteps)}/{K1L0StepFormatter.Value(target)}  current {K1L0StepFormatter.Steps(pedometerService.walkCurrentBucketSteps)}</size>\n<size=10>(signal in {K1L0StepFormatter.Steps(remaining)})</size>";
     }
 
     private string BuildWalkingBucketDiagnostic()
@@ -1352,7 +1357,7 @@ public class SignalDirectorV2 : MonoBehaviour
             return "<size=11>measuring activity… start walking</size>";
         string firstLine = pedometerService.walkCurrentBucketInactive
             ? "current bucket inactive"
-            : $"session {pedometerService.walkWindowSteps}/{Mathf.Max(0, ambientMinStepsToSpawn)} steps";
+            : $"session {K1L0StepFormatter.Value(pedometerService.walkWindowSteps)}/{K1L0StepFormatter.Value(Mathf.Max(0, ambientMinStepsToSpawn))} steps";
         return $"<size=11>{firstLine}</size>\n" +
                $"<size=10>bucket {pedometerService.walkInactiveBucketMinutes}m needs {pedometerService.walkInactiveStepThreshold}st/{pedometerService.walkInactiveMetersThreshold:F0}m; active buckets {pedometerService.walkActiveBuckets}</size>";
     }
@@ -1519,12 +1524,12 @@ public class SignalDirectorV2 : MonoBehaviour
 
         Signal loc = GetLocationTransmission();
         if (loc != null && showEnter && enterTarget == loc && !string.IsNullOrWhiteSpace(loc.locationName))
-            return $"you are at {loc.locationName}. go outside and walk {Mathf.Max(0, ambientMinStepsToSpawn)} steps to establish kilosync.";
+            return $"you are at {loc.locationName}. go outside and walk {K1L0StepFormatter.Steps(Mathf.Max(0, ambientMinStepsToSpawn))} to establish kilosync.";
 
         if (IsPlayerInsideBuildingCached())
-            return $"Go outside and take {Mathf.Max(0, ambientMinStepsToSpawn)} steps to establish kilosync.";
+            return $"Go outside and take {K1L0StepFormatter.Steps(Mathf.Max(0, ambientMinStepsToSpawn))} to establish kilosync.";
 
-        return $"Start walking... Take {Mathf.Max(0, ambientMinStepsToSpawn)} steps to establish kilosync.";
+        return $"Start walking... Take {K1L0StepFormatter.Steps(Mathf.Max(0, ambientMinStepsToSpawn))} to establish kilosync.";
     }
 
     private bool IsPlayerInsideBuildingCached()
@@ -1632,7 +1637,7 @@ public class SignalDirectorV2 : MonoBehaviour
     private static string FormatStepCount(int steps)
     {
         if (steps < 0) return "...";
-        return steps.ToString("N0");
+        return K1L0StepFormatter.Value(steps);
     }
 
     // True when the player is within enter-proximity of the active location
@@ -2704,7 +2709,7 @@ public class SignalDirectorV2 : MonoBehaviour
             var t = nearest[i];
             if (t == null) continue;
             if (t.Distance > maxMeters) continue;
-            string key = NormalizeExternalKey(t.Name);
+            string key = NormalizeExternalKey(!string.IsNullOrWhiteSpace(t.PlaceId) ? t.PlaceId : t.Name);
             if (string.IsNullOrEmpty(key)) continue;
             want.Add(key);
             bool created;
@@ -2796,6 +2801,7 @@ public class SignalDirectorV2 : MonoBehaviour
             if (!string.IsNullOrEmpty(s.externalKey) && string.Equals(s.externalKey, normalizedKey, StringComparison.Ordinal))
             {
                 // Update metadata (best-effort)
+                s.placeId = t.PlaceId;
                 s.locationName = t.Name;
                 s.locationCategory = t.MainCategoryGroup;
                 s.latitude = t.GeoLocation.x;
@@ -2826,6 +2832,7 @@ public class SignalDirectorV2 : MonoBehaviour
             longitude = t.GeoLocation.y,
             spawnTime = Time.time,
             lastStateChange = Time.time,
+            placeId = t.PlaceId,
             locationName = t.Name,
             locationCategory = t.MainCategoryGroup,
             teaser = "",
@@ -2985,6 +2992,17 @@ public class SignalDirectorV2 : MonoBehaviour
         for (int i = 0; i < signals.Count; i++)
         {
             var sig = signals[i];
+
+            // Native/backend ambient beams already have authoritative shared
+            // latitude/longitude. Re-snapping them to a locally chosen road
+            // point breaks parity with the Home distance and can pull a
+            // 224m item to within ~65m, making its billboard whip across the
+            // screen as the compass camera turns. Only locally generated
+            // ambient signals should participate in this legacy road snap.
+            if (sig.role == SignalRole.SecondaryNearby &&
+                !string.IsNullOrEmpty(sig.externalKey))
+                continue;
+
             float minD, maxD;
             switch (sig.role)
             {
@@ -3490,30 +3508,15 @@ public class SignalDirectorV2 : MonoBehaviour
                 ? TransmissionType.Transmitter
                 : TransmissionType.Artifact;
 
-            bool isImmobile = !AmbientPortalsAllowedByActivity();
-            float stride = pedometerService != null ? pedometerService.EstimatedStrideLength : 0.762f;
-            float immobileMinDist = 200f * stride;
-
-            var tempSig = new Signal { mercatorPosition = merc, latitude = b.lat, longitude = b.lng };
-            float currentDist = DistanceTo(tempSig, GetPlayerMercator());
-
-            if (isImmobile && currentDist < immobileMinDist)
-            {
-                if (existing != null)
-                {
-                    RemoveSignal(existing);
-                }
-                continue;
-            }
-
             bool isArtifact = t == TransmissionType.Artifact;
+            int displayRingIndex = b.ringIndex > 0 ? b.ringIndex : ringIndex;
             string artifactName = isArtifact && !string.IsNullOrEmpty(b.material) ? b.material : (!string.IsNullOrEmpty(b.label) ? b.label : null);
             string teaser = isArtifact && !string.IsNullOrEmpty(b.material) ? b.material : (!string.IsNullOrEmpty(b.label) ? b.label : (string.IsNullOrEmpty(b.lore) ? "" : b.lore));
             string senderName = !string.IsNullOrEmpty(b.senderName) ? b.senderName : b.artifactSenderName;
 
             if (existing == null)
             {
-                var sig = SpawnSignalAtPositionWithMetadata(SignalRole.SecondaryNearby, SignalType.Presence, merc, null, t, b.id, ringIndex, teaser);
+                var sig = SpawnSignalAtPositionWithMetadata(SignalRole.SecondaryNearby, SignalType.Presence, merc, null, t, b.id, displayRingIndex, teaser);
                 if (sig == null) continue;
                 if (t == TransmissionType.Artifact && !string.IsNullOrEmpty(artifactName))
                     sig.specialItem = artifactName;
@@ -3532,7 +3535,7 @@ public class SignalDirectorV2 : MonoBehaviour
                 existing.latitude = b.lat;
                 existing.longitude = b.lng;
                 existing.transmissionType = t;
-                existing.poolRingIndex = ringIndex;
+                existing.poolRingIndex = displayRingIndex;
                 existing.teaser = teaser;
                 if (t == TransmissionType.Artifact && !string.IsNullOrEmpty(artifactName))
                     existing.specialItem = artifactName;
@@ -3716,6 +3719,57 @@ public class SignalDirectorV2 : MonoBehaviour
         return true;
     }
 
+    public bool TryPickSafeAmbientRoadPoint(
+        double playerLatitude,
+        double playerLongitude,
+        float minDist,
+        float maxDist,
+        float preferredBearing,
+        bool constrainBearing,
+        out double latitude,
+        out double longitude,
+        out string roadClass)
+    {
+        latitude = 0;
+        longitude = 0;
+        roadClass = "";
+        RefreshRoadCache();
+        if (safeAmbientRoadPoints == null || safeAmbientRoadPoints.Count == 0) return false;
+
+        var origin = Conversions.LatitudeLongitudeToWebMercator(
+            new LatitudeLongitude(playerLatitude, playerLongitude));
+        var candidates = new List<SafeAmbientRoadPoint>();
+        for (int i = 0; i < safeAmbientRoadPoints.Count; i++)
+        {
+            var candidate = safeAmbientRoadPoints[i];
+            double dx = candidate.mercator.x - origin.x;
+            double dy = candidate.mercator.y - origin.y;
+            double distance = Math.Sqrt(dx * dx + dy * dy);
+            if (distance < minDist || distance > maxDist) continue;
+            if (constrainBearing)
+            {
+                double bearing = Math.Atan2(dx, dy) * Mathf.Rad2Deg;
+                if (bearing < 0) bearing += 360;
+                double delta = Math.Abs(Mathf.DeltaAngle(preferredBearing, (float)bearing));
+                if (delta > 55) continue;
+            }
+            candidates.Add(candidate);
+        }
+        if (candidates.Count == 0 && constrainBearing)
+        {
+            return TryPickSafeAmbientRoadPoint(playerLatitude, playerLongitude, minDist, maxDist,
+                preferredBearing, false, out latitude, out longitude, out roadClass);
+        }
+        if (candidates.Count == 0) return false;
+
+        var picked = candidates[UnityEngine.Random.Range(0, candidates.Count)];
+        var latLng = Conversions.WebMercatorToLatitudeLongitude(picked.mercator);
+        latitude = latLng.Latitude;
+        longitude = latLng.Longitude;
+        roadClass = picked.roadClass;
+        return true;
+    }
+
     private Signal SpawnSignalAtPosition(SignalRole role, SignalType type, Vector2d pos, string chainParentId, TransmissionType transmissionType)
     {
         if (transmissionType == TransmissionType.Transmitter)
@@ -3819,6 +3873,7 @@ public class SignalDirectorV2 : MonoBehaviour
 
         lastKnownRoadMeshCount = meshes.Length;
         roadPoints = new List<Vector2d>();
+        safeAmbientRoadPoints = new List<SafeAmbientRoadPoint>();
         int skipped = 0;
 
         foreach (MeshFilter mf in meshes)
@@ -3826,13 +3881,14 @@ public class SignalDirectorV2 : MonoBehaviour
             if (mf.sharedMesh == null) continue;
 
             // Check road class via metadata (reflection to avoid compile dep)
+            string roadClass = "";
             var meta = mf.gameObject.GetComponent("RoadSegmentMetadata");
             if (meta != null)
             {
                 var field = meta.GetType().GetField("roadClass");
                 if (field != null)
                 {
-                    string roadClass = field.GetValue(meta) as string;
+                    roadClass = (field.GetValue(meta) as string ?? "").Trim().ToLowerInvariant();
                     if (!string.IsNullOrEmpty(roadClass) && !WalkableRoadClasses.Contains(roadClass))
                     {
                         skipped++;
@@ -3863,20 +3919,42 @@ public class SignalDirectorV2 : MonoBehaviour
                 toRight.y = 0;
                 float edgeDist = toRight.magnitude;
                 if (edgeDist < 0.01f) continue; // degenerate
+                float renderedRoadWidth = edgeDist * 2f;
 
                 Vector3 perpNorm = toRight / edgeDist;
 
                 // Sidewalk point: road edge + offset outward
-                Vector3 sidewalk = rightWorld + perpNorm * sidewalkOffset;
+                Vector3 rightSidewalk = rightWorld + perpNorm * sidewalkOffset;
+                Vector3 leftSidewalk = leftWorld - perpNorm * sidewalkOffset;
 
                 roadPoints.Add(new Vector2d(
-                    centerMerc.x + sidewalk.x,
-                    centerMerc.y + sidewalk.z
+                    centerMerc.x + rightSidewalk.x,
+                    centerMerc.y + rightSidewalk.z
                 ));
+                // Current Overture road meshes do not consistently carry the
+                // RoadSegmentMetadata component promised by the renderer. The
+                // ribbon itself still has authoritative physical width, so a
+                // <=5.5m road is a residential/service/walkable fallback while
+                // tertiary, secondary, primary, trunk and motorway ribbons are
+                // excluded. This keeps spawning safe without random geography.
+                bool safeByClass = SafeAmbientRoadClasses.Contains(roadClass);
+                bool safeByRenderedWidth = string.IsNullOrEmpty(roadClass) && renderedRoadWidth <= 5.5f;
+                if (safeByClass || safeByRenderedWidth)
+                {
+                    string ambientRoadClass = safeByClass ? roadClass : "geometry_quiet_road";
+                    safeAmbientRoadPoints.Add(new SafeAmbientRoadPoint {
+                        mercator = new Vector2d(centerMerc.x + rightSidewalk.x, centerMerc.y + rightSidewalk.z),
+                        roadClass = ambientRoadClass
+                    });
+                    safeAmbientRoadPoints.Add(new SafeAmbientRoadPoint {
+                        mercator = new Vector2d(centerMerc.x + leftSidewalk.x, centerMerc.y + leftSidewalk.z),
+                        roadClass = ambientRoadClass
+                    });
+                }
             }
         }
 
-        Debug.Log($"[SignalDirector] Road cache: {roadPoints.Count} walkable points from {meshes.Length} meshes ({skipped} non-walkable skipped)");
+        Debug.Log($"[SignalDirector] Road cache: {roadPoints.Count} walkable points, {safeAmbientRoadPoints.Count} safe ambient-side points from {meshes.Length} meshes ({skipped} non-walkable skipped)");
     }
 
     // ───────────────────────────────────────────────────────────
@@ -4013,80 +4091,18 @@ public class SignalDirectorV2 : MonoBehaviour
     }
 
     /// <summary>
-    /// Find the nearest building to a location signal and cache its XZ bounds.
-    /// Returns true if the player is inside OR within <paramref name="maxEdgeDistanceMeters"/>
-    /// of the building footprint (XZ). This makes location beams enterable when the
-    /// location maps to a building but the signal point isn't on the exact doorway.
+    /// Uses BuildingFlattener's cached Google-place/Overture-footprint pairing.
+    /// This is a single polygon distance test, never a scene search or timer cache.
     /// </summary>
     private bool IsPlayerNearLocationBuilding(Signal loc, Vector3 playerWorldPos, float maxEdgeDistanceMeters)
     {
-        // Refresh building bounds every 5s (buildings shift with floating origin)
-        if (loc.buildingBounds == null || Time.time - loc.buildingBoundsTime > 5f)
-        {
-            loc.buildingBounds = FindBuildingBoundsNear(loc);
-            loc.buildingBoundsTime = Time.time;
-        }
-
-        if (loc.buildingBounds == null) return false;
-
-        Bounds b = loc.buildingBounds.Value;
-        float d = DistanceXZPointToBounds(playerWorldPos, b);
-        return d <= Mathf.Max(0f, maxEdgeDistanceMeters);
-    }
-
-    private static float DistanceXZPointToBounds(Vector3 point, Bounds bounds)
-    {
-        float dx = 0f;
-        if (point.x < bounds.min.x) dx = bounds.min.x - point.x;
-        else if (point.x > bounds.max.x) dx = point.x - bounds.max.x;
-
-        float dz = 0f;
-        if (point.z < bounds.min.z) dz = bounds.min.z - point.z;
-        else if (point.z > bounds.max.z) dz = point.z - bounds.max.z;
-
-        return Mathf.Sqrt(dx * dx + dz * dz);
-    }
-
-    private Bounds? FindBuildingBoundsNear(Signal loc)
-    {
-        Vector3 signalWorld = SignalToWorldPos(loc);
-        float bestDist = 40f; // max search radius in world units
-        Bounds? bestBounds = null;
-
-        // Search all buildings with renderers
-        var allMeta = FindObjectsByType<BuildingMetadata>(FindObjectsSortMode.None);
-        for (int i = 0; i < allMeta.Length; i++)
-        {
-            var mr = allMeta[i].GetComponent<MeshRenderer>();
-            if (mr == null) continue;
-
-            Bounds b = mr.bounds;
-            // Check XZ distance from signal to building center
-            float dx = signalWorld.x - b.center.x;
-            float dz = signalWorld.z - b.center.z;
-            float d = Mathf.Sqrt(dx * dx + dz * dz);
-
-            // Also check if signal point is inside building bounds (best match)
-            bool inside = signalWorld.x >= b.min.x && signalWorld.x <= b.max.x
-                       && signalWorld.z >= b.min.z && signalWorld.z <= b.max.z;
-
-            if (inside)
-            {
-                // Signal is literally inside this building — strong match
-                Debug.Log($"[SignalDirector] Building match for '{loc.locationName}': '{allMeta[i].buildingName}' (signal inside bounds)");
-                return b;
-            }
-
-            if (d < bestDist)
-            {
-                bestDist = d;
-                bestBounds = b;
-            }
-        }
-
-        if (bestBounds != null)
-            Debug.Log($"[SignalDirector] Building match for '{loc.locationName}': nearest at {bestDist:F1}m");
-        return bestBounds;
+        return loc != null
+            && BuildingFlattener.Instance != null
+            && BuildingFlattener.Instance.IsLocationFootprintNear(
+                loc.placeId,
+                loc.locationName,
+                playerWorldPos,
+                maxEdgeDistanceMeters);
     }
 
     /// <summary>Absolute bearing (0=N, 90=E) from player to signal in degrees.</summary>

@@ -595,6 +595,18 @@ namespace KiloWorld.Rendering.Systems
             Debug.Log($"[RenderManager] Volumetric fog renderer feature enabled={enabled}");
         }
 
+        /// Near and far are the public controls. The third-party package has
+        /// one shared renderer feature underneath, so keep that hidden feature
+        /// alive exactly while either independent pass needs it.
+        public void RefreshFogRendererRuntimeEnabled()
+        {
+            bool nearEnabled = PlayerPrefs.GetInt("k1lo_nearFogEnabled", 0) == 1;
+            bool farEnabled = PlayerPrefs.GetInt(
+                "k1lo_fogDistantFog",
+                profile != null && profile.volumetricFog.distantFog ? 1 : 0) == 1;
+            SetVolumetricFogRuntimeEnabled(nearEnabled || farEnabled);
+        }
+
         private void SetFeatureField(object target, string fieldName, object value)
         {
             if (target == null) return;
@@ -824,9 +836,7 @@ namespace KiloWorld.Rendering.Systems
 
         public static string EffectiveWeatherGlyph()
         {
-            if (TestSkyOverrideEnabled)
-                return ManualWeatherGlyph;
-            if (GPSLocationController.GPSDisabled && ManualWeatherOverrideEnabled)
+            if (TestSkyOverrideEnabled || ManualWeatherOverrideEnabled)
                 return ManualWeatherGlyph;
             return !string.IsNullOrWhiteSpace(WeatherGlyph) ? WeatherGlyph : ManualWeatherGlyph;
         }
@@ -980,11 +990,35 @@ namespace KiloWorld.Rendering.Systems
 
         private float _sunAlt = 30f;
 
+        private static float _nativeSunAltitudeDeg;
+        private static float _nativeSunAzimuthDeg;
+        private static double _nativeSunTimestampUnix;
+
+        public static void SetNativeSolarPosition(float altitudeDeg, float azimuthDeg, double timestampUnix)
+        {
+            _nativeSunAltitudeDeg = altitudeDeg;
+            _nativeSunAzimuthDeg = Mathf.Repeat(azimuthDeg, 360f);
+            _nativeSunTimestampUnix = timestampUnix;
+        }
+
+        private static bool TryGetNativeSolarPosition(out float altitudeDeg, out float azimuthDeg)
+        {
+            altitudeDeg = _nativeSunAltitudeDeg;
+            azimuthDeg = _nativeSunAzimuthDeg;
+            if (_nativeSunTimestampUnix <= 0d) return false;
+            double ageSeconds = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0
+                - _nativeSunTimestampUnix;
+            // Native refreshes once per minute. Ignore a persisted/stalled source
+            // rather than carrying the prior location's sky indefinitely.
+            return ageSeconds >= -5d && ageSeconds <= 180d;
+        }
+
         private Vector3 CurrentSunDirection(out float altDeg)
         {
-            // GPS off (or test override) → the sun follows the manual hour slider:
+            // An explicit test/preset override makes the sun follow the manual hour slider:
             // a simple arc (0° at 6h/18h, +60° at noon, below the horizon at night).
-            if (GPSLocationController.GPSDisabled || TestSkyOverrideEnabled)
+            // Merely using fixed/simulated coordinates must not imply a manual sky.
+            if (TestSkyOverrideEnabled)
             {
                 float hr = Mathf.Repeat(ManualHour, 24f);
                 float dayAngle = (hr - 6f) / 12f * Mathf.PI;
@@ -994,22 +1028,27 @@ namespace KiloWorld.Rendering.Systems
                 return new Vector3(Mathf.Sin(zR) * Mathf.Cos(aR), Mathf.Sin(aR), Mathf.Cos(zR) * Mathf.Cos(aR));
             }
 
+            if (TryGetNativeSolarPosition(out altDeg, out float nativeAzimuthDeg))
+            {
+                float nativeAltR = altDeg * Deg2RadD;
+                float nativeAzR = nativeAzimuthDeg * Deg2RadD;
+                return new Vector3(
+                    Mathf.Sin(nativeAzR) * Mathf.Cos(nativeAltR),
+                    Mathf.Sin(nativeAltR),
+                    Mathf.Cos(nativeAzR) * Mathf.Cos(nativeAltR));
+            }
+
             GetLatLon(out double lat, out double lon);
             SunAltAz(lat, lon, System.DateTime.UtcNow, out double alt, out double az);
             altDeg = (float)alt;
-            // Backend sunrise/sunset is authoritative for day vs night: if the weather
-            // feed says daylight but the astro sun sits at/below the horizon (stale GPS
-            // fix, clock skew, 0/0 coords), floor the sun so the world never renders
-            // night lighting under a daytime sky.
-            if (WeatherIsDay == true && altDeg < 8f) altDeg = 8f;
             float altR = (float)(altDeg * Deg2RadD), azR = (float)(az * Deg2RadD);
             // az from north, clockwise. World +Z≈north, +X≈east, +Y up.
             return new Vector3(Mathf.Sin(azR) * Mathf.Cos(altR), Mathf.Sin(altR), Mathf.Cos(azR) * Mathf.Cos(altR));
         }
 
         // Latest computed sun altitude (degrees above horizon) — real astronomy
-        // from GPS + UTC time, floored by the backend isDay clamp. Exposed so
-        // the sky-video picker can fall back to it when the API is silent.
+        // at the active native map coordinate, with Unity GPS/startup coordinates
+        // used only as an offline fallback.
         public static float LiveSunAltitudeDeg = 30f;
         public static Vector3 LiveSunDirection = new Vector3(0f, .5f, .866f);
 
@@ -1151,8 +1190,8 @@ namespace KiloWorld.Rendering.Systems
             _proceduralSky.SetColor("_SkyTint", skyTint);
             // Below-horizon hemisphere doubles as the skybox-ambient ground bounce:
             // pale ash in daylight so terrain reads hazy dust, near-black at night.
-            Color groundHaze = Color.Lerp(new Color(0.06f, 0.07f, 0.08f), new Color(0.45f, 0.45f, 0.40f), dayness);
-            _proceduralSky.SetColor("_GroundColor", groundHaze);
+            Color skyGroundColor = Color.Lerp(new Color(0.06f, 0.07f, 0.08f), new Color(0.45f, 0.45f, 0.40f), dayness);
+            _proceduralSky.SetColor("_GroundColor", skyGroundColor);
             _proceduralSky.SetFloat("_AtmosphereThickness", atmThickness);
             _proceduralSky.SetFloat("_Exposure", Mathf.Max(0.05f, exposure));
             _proceduralSky.SetFloat("_SunSize", sunSize);
@@ -1569,7 +1608,8 @@ namespace KiloWorld.Rendering.Systems
             fogProfile.dithering = Mathf.Clamp(PlayerPrefs.GetFloat("k1lo_fogV2Dithering", fog.dithering), 0f, 2f);
 
             // Density & Appearance
-            fogProfile.constantDensity = fog.constantDensity;
+            bool nearFogEnabled = PlayerPrefs.GetInt("k1lo_nearFogEnabled", 0) == 1;
+            fogProfile.constantDensity = nearFogEnabled && fog.constantDensity;
             fogProfile.noiseStrength = Mathf.Lerp(nightFogNoiseStrength, dayFogNoiseStrength, fogDayness);
             fogProfile.noiseScale = Mathf.Lerp(nightFogNoiseScale, dayFogNoiseScale, fogDayness);
             fogProfile.noiseFinalMultiplier = fog.noiseFinalMultiplier;
@@ -1578,7 +1618,9 @@ namespace KiloWorld.Rendering.Systems
             fogProfile.detailScale = Mathf.Max(0.001f, PlayerPrefs.GetFloat("k1lo_fogV2DetailScale", fogProfile.detailScale));
             fogProfile.detailStrength = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2DetailStrength", fogProfile.detailStrength));
             fogProfile.detailOffset = PlayerPrefs.GetFloat("k1lo_fogV2DetailOffset", fogProfile.detailOffset);
-            fogProfile.density = Mathf.Lerp(nightFogDensity, dayFogDensity, fogDayness);
+            fogProfile.density = nearFogEnabled
+                ? Mathf.Lerp(nightFogDensity, dayFogDensity, fogDayness)
+                : 0f;
 
             // Colors
             float fogOrangeAmount = Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogOrangeAmount", 0f));
@@ -1660,9 +1702,20 @@ namespace KiloWorld.Rendering.Systems
             // Daylight horizon fogs to pale radioactive dust; night keeps the authored color.
             Color daylightFog = Color.Lerp(fog.distantFogColor, new Color(0.58f, 0.60f, 0.54f), fogDayness);
             Color authoredDistantFog = Color.Lerp(daylightFog, orangeFog, fogOrangeAmount);
-            fogProfile.distantFogColor = customFogColor
+            Color finalDistantFog = customFogColor
                 ? Color.Lerp(authoredDistantFog, fogProfile.albedo, fogDayness)
                 : authoredDistantFog;
+            Color distantColor = new Color(
+                Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2DistantColorRed", finalDistantFog.r)),
+                Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2DistantColorGreen", finalDistantFog.g)),
+                Mathf.Clamp01(PlayerPrefs.GetFloat("k1lo_fogV2DistantColorBlue", finalDistantFog.b)),
+                finalDistantFog.a);
+            float distantBrightness = Mathf.Clamp(
+                PlayerPrefs.GetFloat("k1lo_fogV2DistantBrightness", 1f), 0f, 4f);
+            distantColor.r *= distantBrightness;
+            distantColor.g *= distantBrightness;
+            distantColor.b *= distantBrightness;
+            fogProfile.distantFogColor = distantColor;
             fogProfile.distantFogDiffusionIntensity = fog.distantFogDiffusionIntensity;
             fogProfile.distantFogBaseAltitude = fog.distantFogBaseAltitude;
             fogProfile.distantFogSymmetrical = fog.distantFogSymmetrical;
@@ -2352,9 +2405,11 @@ namespace KiloWorld.Rendering.Systems
             foreach (var renderer in _cachedBuildingRenderers)
             {
                 if (renderer == null || renderer.sharedMaterial == null) continue;
-                renderer.forceRenderingOff = !buildingsVisible;
-                renderer.enabled = buildingsVisible;
-                if (!buildingsVisible) continue;
+                var metadata = renderer.GetComponentInParent<Kiloverse.Mapbox.BuildingMetadata>(true);
+                bool runtimeFlattened = metadata != null && metadata.runtimeFlattened;
+                renderer.forceRenderingOff = !buildingsVisible || runtimeFlattened;
+                renderer.enabled = buildingsVisible && !runtimeFlattened;
+                if (!buildingsVisible || runtimeFlattened) continue;
                 string materialName = renderer.sharedMaterial.name;
                 if (renderer.sharedMaterial != profile.buildings.zossWallMaterial &&
                     !materialName.Contains("ZossWall")) continue;

@@ -11,6 +11,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         public float solarAltitude, solarAzimuth, cloudOpacity, cloudCoverage, cloudSpeed,
             cloudScale, cloudContrast, topHue, midHue, horizonHue,
             nightBlackness, rain, aurora;
+        public double solarTimestamp;
         public int effect;
         public bool bypassWeather;
     }
@@ -19,6 +20,11 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     {
         var state = JsonUtility.FromJson<EnvironmentSnapshot>(json);
         if (state == null) return;
+        // Native owns the active map coordinate for both Live GPS and fixed
+        // locations. Feed that one astronomical solution to lighting and sky;
+        // weather remains an independent source for clouds and precipitation.
+        RenderManager.SetNativeSolarPosition(
+            state.solarAltitude, state.solarAzimuth, state.solarTimestamp);
         // A manual/test look explicitly owns the renderer until the user turns
         // it off. The native astronomy timer reports every minute; accepting
         // that snapshot here used to snap sunrise previews back to the real
@@ -330,9 +336,10 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
 
     private string ChooseClipName()
     {
-        string glyph = GPSLocationController.GPSDisabled
-            ? RenderManager.ManualWeatherGlyph
-            : RenderManager.WeatherGlyph;
+        // Coordinate source and weather source are independent. A fixed/test
+        // map location still receives live weather unless an explicit weather
+        // preset/manual override owns the sky.
+        string glyph = RenderManager.EffectiveWeatherGlyph();
         glyph = (glyph ?? string.Empty).ToLowerInvariant();
 
         bool night = IsNight();
@@ -347,23 +354,23 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
     private static bool IsNight()
     {
         // Signal hierarchy, best first:
-        // 1. Manual hour when testing (override) or desktop (no GPS).
-        // 2. Backend isDay — real sunrise/sunset for the player's location.
-        // 3. Astronomical sun altitude computed on-device from GPS + UTC.
+        // 1. Manual hour only when an explicit test/preset override is active.
+        // 2. Astronomical sun altitude for the active map coordinate.
+        // 3. Backend isDay as a startup fallback before astronomy is ready.
         // 4. Hardcoded 6/19 local clock, the dumbest last resort. (This was
         //    briefly the ONLY path with GPS on, which put the night sky up at
         //    7pm in July while the sun was still shining.)
-        if (GPSLocationController.GPSDisabled || RenderManager.TestSkyOverrideEnabled)
+        if (RenderManager.TestSkyOverrideEnabled)
         {
             float hour = Mathf.Repeat(RenderManager.ManualHour, 24f);
             return hour < 6f || hour >= 19f;
         }
 
-        if (RenderManager.WeatherIsDay.HasValue)
-            return !RenderManager.WeatherIsDay.Value;
-
         if (RenderManager.Instance != null)
             return RenderManager.LiveSunAltitudeDeg < -1.5f;
+
+        if (RenderManager.WeatherIsDay.HasValue)
+            return !RenderManager.WeatherIsDay.Value;
 
         int localHour = DateTime.Now.ToLocalTime().Hour;
         return localHour < 6 || localHour >= 19;
@@ -492,6 +499,7 @@ public sealed class DynamicSkyVideoController : MonoBehaviour
         // Aurora is part of every astronomical night. Sky Lab's aurora mode
         // still provides the stronger manual preview/intensity override.
         layeredSkyMaterial.SetFloat("_AuroraStrength", effect == 3 ? .28f + aurora * .72f : .22f);
+        layeredSkyMaterial.SetFloat("_AuroraSpeed", 1.65f);
         layeredSkyMaterial.SetFloat("_StormStrength", effect == 4 ? 1f : 0f);
         layeredSkyMaterial.SetFloat("_NightBlackness", PlayerPrefs.GetFloat("k1lo_layeredNightBlackness", .72f));
         ApplyNightHorizonGlow();

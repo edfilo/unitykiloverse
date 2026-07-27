@@ -38,7 +38,7 @@ public class CommandLineBuild
         // iOS builds must allow insecure HTTP for UnityWebRequest, otherwise boot will throw:
         // "Non-secure network connections disabled in Player Settings" / "Insecure connection not allowed".
         PlayerSettings.insecureHttpOption = InsecureHttpOption.AlwaysAllowed;
-        EnsureAlwaysIncludedShaders("Skybox/Procedural", "Skybox/Cubemap", "Universal Render Pipeline/Unlit", "Universal Render Pipeline/Particles/Unlit", "K1L0/BeamItemGlitch", "K1L0/GroundHaze");
+        EnsureAlwaysIncludedShaders("Skybox/Procedural", "Skybox/Cubemap", "Universal Render Pipeline/Unlit", "Universal Render Pipeline/Particles/Unlit", "K1L0/BeamItemGlitch");
 
         // Let Xcode select the current K1L0 provisioning profile. A previously pinned
         // profile UUID resolved to the stale lowercase K1L0 bundle id.
@@ -121,7 +121,7 @@ public class CommandLineBuild
 
     public static void BuildMac()
     {
-        EnsureAlwaysIncludedShaders("Skybox/Procedural", "Skybox/Cubemap", "Universal Render Pipeline/Unlit", "Universal Render Pipeline/Particles/Unlit", "K1L0/BeamItemGlitch", "K1L0/GroundHaze");
+        EnsureAlwaysIncludedShaders("Skybox/Procedural", "Skybox/Cubemap", "Universal Render Pipeline/Unlit", "Universal Render Pipeline/Particles/Unlit", "K1L0/BeamItemGlitch");
         // Force asset pipeline + script compile refresh — batchmode with -quit sometimes
         // skips detecting edited .cs files and ships a stale assembly.
         AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);

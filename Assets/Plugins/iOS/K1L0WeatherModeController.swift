@@ -6,7 +6,10 @@ struct K1L0WeatherPresetDescriptor: Codable, Identifiable, Hashable {
     let revision: Int
 }
 
-/// Authoritative Day/Night/Auto visual-mode presets and live tuning boundary.
+private final class K1L0WeatherPresetBundleMarker {}
+
+/// Authoritative Day/Night visual presets, their astronomy-driven Auto blend,
+/// and per-renderer-section manual-override boundaries.
 /// Kept separate from the large SwiftUI overlay so renderer tuning recompiles
 /// this small file instead of the entire application HUD implementation.
 enum K1L0WeatherModeController {
@@ -32,7 +35,7 @@ enum K1L0WeatherModeController {
         ("solarWorldOverride", "0"),
         ("visualNightOverride", "0"),
         ("manualWeatherOverrideEnabled", "0"),
-        ("volumetricFogEnabled", "0"),
+        ("nearFogEnabled", "0"),
         ("fogConstantDensity", "0"),
         ("fogDensity", "0"),
         ("fogBrightness", "0.045"),
@@ -47,15 +50,6 @@ enum K1L0WeatherModeController {
         ("fogDistantFog", "0"),
         ("fogDistantDensity", "0"),
         ("fogNativeLights", "0"),
-        ("groundHazeEnabled", "0"),
-        ("groundHazeDensity", "0"),
-        ("groundHazePinkAmount", "0"),
-        ("groundHazeWhiteAmount", "0"),
-        ("groundHazeBlueAmount", "0"),
-        ("groundHazeOrangeAmount", "0"),
-        ("groundHazeHorizonDensity", "0"),
-        ("groundHazeHorizonDistance", "1120"),
-        ("groundHazeHorizonHeight", "0"),
         ("experimentalLayeredSky", "0"),
         ("layeredSkyEffect", "0"),
         ("layeredRain", "0"),
@@ -95,254 +89,6 @@ enum K1L0WeatherModeController {
         ("zossWallDaylightLift", "0.28")
     ]
 
-    private static let automatic: [Setting] = [
-        ("visualNightOverride", "0"),
-        ("fogOrangeAmount", "0"),
-        ("fogDensity", "0.00038"),
-        ("fogBrightness", "0.045"),
-        ("fogScatteringIntensity", "0.10"),
-        ("fogNoiseStrength", "0.14"),
-        ("fogNoiseScale", "8.0"),
-        ("fogTurbulence", "0.35"),
-        ("fogWindX", "0.025"),
-        ("fogWindY", "0.002"),
-        ("fogWindZ", "0.012"),
-        ("fogDistantFog", "1"),
-        ("fogDistantDensity", "0.00014"),
-        ("fogDistantStart", "105"),
-        ("mapBrightness", "0.22"),
-        ("temperature", "0"),
-        ("tint", "0"),
-        ("saturation", "0"),
-        ("contrast", "0"),
-        ("groundHue", "0.33"),
-        ("groundSaturation", "0.32"),
-        ("groundValue", "0.24"),
-        ("groundBrightness", "0.86"),
-        ("bloomEnabled", "1"),
-        ("dayBloomIntensity", "2.2"),
-        ("bloomIntensity", "2.2"),
-        ("bloomThreshold", "1.0"),
-        ("bloomScatter", "0.68"),
-        ("daySunIntensity", "1.35"),
-        ("zossDayWindowIntensity", "5.0"),
-        ("zossEmissiveIntensity", "5.5"),
-        ("zossWindowBrightness", "0.62"),
-        ("zossWarmth", "0.32"),
-        ("zossEmissiveSaturation", "0.35"),
-        ("zossPaletteSaturation", "0.48"),
-        ("roadValue", "0.72"),
-        ("dayRoadValue", "0.42"),
-        ("roadSaturation", "0.08"),
-        ("roadGlow", "0.14"),
-        ("skyCloudPink", "0"),
-        ("skyHorizonPink", "0"),
-        ("vaporDayPink", "0"),
-        ("groundHazeEnabled", "1"),
-        ("groundHazeDensity", "0.12"),
-        ("groundHazeDetail", "1.6"),
-        ("groundHazeSpeed", "0.025"),
-        ("groundHazeHeight", "0.16"),
-        ("groundHazeSpacing", "0.22"),
-        ("groundHazeHue", "0.60"),
-        ("groundHazeSaturation", "0.12"),
-        ("groundHazeBrightness", "0.38"),
-        ("groundHazeBlueAmount", "0.08"),
-        ("groundHazeOrangeAmount", "0")
-    ]
-
-    private static let radioactive: [Setting] = [
-        ("testSkyOverride", "1"),
-        ("layeredBypassWeather", "1"),
-        ("solarWorldOverride", "1"),
-        ("manualHour", "13.25"),
-        ("visualNightOverride", "0"),
-        ("fogOrangeAmount", "0.32"),
-        // The full-screen volumetric path halves iPhone frame rate. The horizon
-        // curtain and tri-color haze carry the Day atmosphere instead.
-        ("fogDensity", "0"),
-        ("fogBrightness", "0.38"),
-        ("fogScatteringIntensity", "0.52"),
-        ("fogNoiseStrength", "2.2"),
-        ("fogNoiseScale", "5.5"),
-        ("fogTurbulence", "2.2"),
-        ("fogWindX", "0.15"),
-        ("fogWindY", "0.004"),
-        ("fogWindZ", "0.07"),
-        ("fogHeight", "5.4"),
-        ("fogDistantFog", "0"),
-        ("fogDistantDensity", "0.0016"),
-        ("fogDistantStart", "145"),
-        ("mapBrightness", "0.20"),
-        ("temperature", "0"),
-        ("tint", "5"),
-        ("saturation", "18"),
-        ("contrast", "16"),
-        ("groundHue", "0.35"),
-        ("groundSaturation", "1.0"),
-        ("groundValue", "0.32"),
-        ("groundBrightness", "1.08"),
-        ("bloomEnabled", "1"),
-        ("dayBloomIntensity", "3.35"),
-        ("bloomIntensity", "3.35"),
-        ("bloomThreshold", "0.68"),
-        ("bloomScatter", "0.91"),
-        ("daySunIntensity", "5.0"),
-        ("zossDayWindowIntensity", "11.2"),
-        ("zossEmissiveIntensity", "11.2"),
-        ("zossWindowBrightness", "0.96"),
-        ("zossWarmth", "0.0"),
-        ("zossEmissiveSaturation", "0.12"),
-        ("zossPaletteSaturation", "0.42"),
-        ("roadValue", "0.76"),
-        ("dayRoadValue", "0.54"),
-        ("roadSaturation", "0.10"),
-        ("roadGlow", "0.15"),
-        ("skyCloudPink", "0.10"),
-        ("skyHorizonPink", "0.42"),
-        ("vaporDayPink", "0.36"),
-        ("skySunsetWarmth", "0.40"),
-        ("groundHazeEnabled", "1"),
-        ("groundHazeDensity", "0.54"),
-        ("groundHazeDetail", "1.58"),
-        ("groundHazeSpeed", "0.078"),
-        ("groundHazeHeight", "0.12"),
-        ("groundHazeSpacing", "0.60"),
-        ("groundHazeHue", "0.038"),
-        ("groundHazeSaturation", "0.56"),
-        ("groundHazeBrightness", "1.04"),
-        ("groundHazeExtent", "280"),
-        ("groundHazePinkAmount", "0.62"),
-        ("groundHazeWhiteAmount", "0.30"),
-        ("groundHazeBlueAmount", "0.14"),
-        ("groundHazeOrangeAmount", "0.80"),
-        ("groundHazeHorizonDensity", "0.54"),
-        ("groundHazeHorizonDistance", "255"),
-        ("groundHazeHorizonHeight", "27"),
-        ("godPositionY", "49.0"),
-        ("godPositionZ", "107.0"),
-        ("godRotationX", "-2.0")
-    ]
-
-    /// Bookmarked July 16 live-tuned look: deep blue daylight with a broad,
-    /// animated pink horizon curtain and consistently luminous windows.
-    private static let pinkHaze: [Setting] = [
-        ("testSkyOverride", "1"),
-        ("layeredBypassWeather", "1"),
-        ("solarWorldOverride", "1"),
-        ("manualHour", "13.25"),
-        ("visualNightOverride", "0"),
-        ("volumetricFogEnabled", "0"),
-        ("fogDensity", "0"),
-        ("fogDistantFog", "0"),
-        ("groundHazeEnabled", "1"),
-        ("groundHazeDensity", "0.92"),
-        ("groundHazeDetail", "0.66"),
-        ("groundHazeSpeed", "0.11"),
-        ("groundHazeHeight", "142"),
-        ("groundHazeSpacing", "1.58"),
-        ("groundHazeHue", "0.965"),
-        ("groundHazeSaturation", "0.36"),
-        ("groundHazeBrightness", "1.38"),
-        ("groundHazeExtent", "1.0"),
-        ("groundHazePinkAmount", "0.76"),
-        ("groundHazeWhiteAmount", "0.40"),
-        ("groundHazeBlueAmount", "0.06"),
-        ("groundHazeOrangeAmount", "0.06"),
-        ("groundHazeHorizonDensity", "0.70"),
-        ("groundHazeHorizonDistance", "1120"),
-        ("groundHazeHorizonHeight", "108"),
-        ("skyHorizonPink", "0.58"),
-        ("skyDayBrightness", "1.02"),
-        ("zossWallHue", "0.91"),
-        ("zossWallSaturation", "0.30"),
-        ("zossWallValue", "0.16"),
-        ("zossWallDaylightLift", "0.28"),
-        ("groundHue", "0.91"),
-        ("groundSaturation", "0.30"),
-        ("groundValue", "0.16"),
-        ("roadHue", "0.90"),
-        ("roadSaturation", "0.24"),
-        ("roadValue", "0.24"),
-        ("waterHue", "0.83"),
-        ("waterSaturation", "0.28"),
-        ("waterValue", "0.24"),
-        ("bloomEnabled", "1"),
-        ("bloomIntensity", "1.48"),
-        ("bloomThreshold", "0.50"),
-        ("bloomScatter", "0.88"),
-        ("zossLitFraction", "1"),
-        ("zossWindowBrightness", "1.78"),
-        ("contrast", "8"),
-        ("saturation", "10"),
-        ("exposureFixedValue", "0.46")
-    ]
-
-    // Patchier, lower, rust-pink dust banks for experimentation. These trailing
-    // values intentionally override Pink Haze while leaving its bookmark intact.
-    private static let hazeLab: [Setting] = pinkHaze + [
-        ("volumetricFogEnabled", "0"),
-        ("fogDensity", "0"),
-        ("groundHazeDensity", "0.80"),
-        ("groundHazeDetail", "2.45"),
-        ("groundHazeSpeed", "0.12"),
-        ("groundHazeHeight", "78"),
-        ("groundHazeSpacing", "0.58"),
-        ("groundHazeHue", "0.008"),
-        ("groundHazeSaturation", "0.60"),
-        ("groundHazeBrightness", "1.04"),
-        ("groundHazePinkAmount", "0.46"),
-        ("groundHazeWhiteAmount", "0.10"),
-        ("groundHazeBlueAmount", "0.05"),
-        ("groundHazeOrangeAmount", "0.48"),
-        ("groundHazeHorizonDensity", "0.44"),
-        ("groundHazeHorizonDistance", "1280"),
-        ("groundHazeHorizonHeight", "58"),
-        ("skyHorizonPink", "0.46"),
-        ("bloomIntensity", "1.68"),
-        ("bloomThreshold", "0.43"),
-        ("zossWindowBrightness", "1.96"),
-        ("contrast", "14"),
-        ("saturation", "15")
-    ]
-
-    /// Deliberately plain locked daylight for judging map colors and geometry
-    /// without any atmospheric grading, volumetric fog, horizon curtain, or
-    /// procedural dust/haze layers.
-    private static let boring: [Setting] = [
-        ("testSkyOverride", "1"),
-        ("layeredBypassWeather", "1"),
-        ("solarWorldOverride", "1"),
-        ("manualHour", "13.25"),
-        ("visualNightOverride", "0"),
-        ("fogOrangeAmount", "0"),
-        ("fogDensity", "0"),
-        ("fogDistantFog", "0"),
-        ("fogDistantDensity", "0"),
-        ("saturation", "0"),
-        ("contrast", "0"),
-        ("temperature", "0"),
-        ("tint", "0"),
-        ("groundHazeEnabled", "0"),
-        ("groundHazeDensity", "0"),
-        ("groundHazeHorizonDensity", "0"),
-        ("skyCloudPink", "0"),
-        ("skyHorizonPink", "0"),
-        ("vaporDayPink", "0"),
-        ("groundHue", "0.33"),
-        ("groundSaturation", "0.42"),
-        ("groundValue", "0.30"),
-        ("groundBrightness", "0.90"),
-        ("roadValue", "0.72"),
-        ("dayRoadValue", "0.48"),
-        ("roadSaturation", "0.08"),
-        ("bloomEnabled", "1"),
-        ("dayBloomIntensity", "2.2"),
-        ("bloomIntensity", "2.2"),
-        ("bloomThreshold", "1.0"),
-        ("bloomScatter", "0.68")
-    ]
-
     private struct RemotePreset: Codable {
         let label: String?
         let revision: Int?
@@ -358,21 +104,29 @@ enum K1L0WeatherModeController {
     }
 
     private static let endpoint = URL(string: "https://api-tunnel.kilo.gallery/api/k1l0/weather-presets")!
-    private static let cacheKey = "k1l0_weather_preset_catalog_v1"
-    private static let preferredOrder = ["auto", "radioactive", "midnight", "pink_haze", "haze_lab", "coral_haze", "deep_orange", "fire_fog_lab", "boring"]
+    // Bump whenever the catalog schema/fallback contract changes so an old
+    // cached recipe cannot outrank the clean bundled snapshot while offline.
+    private static let cacheKey = "k1l0_weather_preset_catalog_v2"
+    private static let preferredOrder = ["day", "night"]
+    private static let supportedModes = Set(preferredOrder)
+
+    private static let bundledCatalogSnapshot: RemoteCatalog? = {
+        var bundles = [Bundle.main, Bundle(for: K1L0WeatherPresetBundleMarker.self)]
+        if let overlayBundle = Bundle(identifier: "com.filowatt.K1L0.overlay") {
+            bundles.insert(overlayBundle, at: 0)
+        }
+        for bundle in bundles {
+            guard let url = bundle.url(forResource: "K1L0WeatherPresets", withExtension: "json"),
+                  let data = try? Data(contentsOf: url),
+                  let catalog = try? JSONDecoder().decode(RemoteCatalog.self, from: data)
+            else { continue }
+            return catalog
+        }
+        return nil
+    }()
 
     static var bundledDescriptors: [K1L0WeatherPresetDescriptor] {
-        [
-            .init(id: "auto", label: "Live · Weather + Astronomy", revision: 0),
-            .init(id: "radioactive", label: "Apocalyptic Day · 2:15 PM · Overcast", revision: 0),
-            .init(id: "midnight", label: "Foggy Blue Night · 11:30 PM · Cloudy", revision: 0),
-            .init(id: "pink_haze", label: "Pink Haze · 1:15 PM · Broken Clouds", revision: 0),
-            .init(id: "haze_lab", label: "Rust Haze · 4:20 PM · Dust", revision: 0),
-            .init(id: "coral_haze", label: "Coral Dusk · 6:35 PM · Haze", revision: 0),
-            .init(id: "deep_orange", label: "Fire Sunset · 6:50 PM · Smoke", revision: 0),
-            .init(id: "fire_fog_lab", label: "Fire Fog · 7:05 PM · Dense Smoke", revision: 0),
-            .init(id: "boring", label: "Neutral Reference · 1:00 PM · Clear", revision: 0)
-        ]
+        bundledCatalogSnapshot.map(descriptors(for:)) ?? []
     }
 
     static func refreshCatalog(completion: @escaping ([K1L0WeatherPresetDescriptor]) -> Void) {
@@ -387,7 +141,7 @@ enum K1L0WeatherModeController {
                 DispatchQueue.main.async { completion(descriptors(for: catalog)) }
                 return
             }
-            let fallback = cachedCatalog().map(descriptors(for:)) ?? bundledDescriptors
+            let fallback = (cachedCatalog() ?? bundledCatalogSnapshot).map(descriptors(for:)) ?? []
             DispatchQueue.main.async { completion(fallback) }
         }.resume()
     }
@@ -398,14 +152,17 @@ enum K1L0WeatherModeController {
     }
 
     private static func descriptors(for catalog: RemoteCatalog) -> [K1L0WeatherPresetDescriptor] {
-        catalog.presets.map { key, preset in
-            .init(id: key, label: preset.label ?? key.replacingOccurrences(of: "_", with: " ").capitalized,
-                  revision: preset.revision ?? 0)
+        let authored: [K1L0WeatherPresetDescriptor] = catalog.presets.compactMap { key, preset in
+            guard supportedModes.contains(key) else { return nil }
+            return .init(id: key, label: preset.label ?? key.replacingOccurrences(of: "_", with: " ").capitalized,
+                         revision: preset.revision ?? 0)
         }.sorted {
             let lhs = preferredOrder.firstIndex(of: $0.id) ?? Int.max
             let rhs = preferredOrder.firstIndex(of: $1.id) ?? Int.max
             return lhs == rhs ? $0.label < $1.label : lhs < rhs
         }
+        let revision = authored.map { $0.revision }.max() ?? 0
+        return [.init(id: "auto", label: "Auto · Weather + Astronomy", revision: revision)] + authored
     }
 
     /// Workshop looks are deterministic lighting laboratories. Only Auto may
@@ -413,28 +170,181 @@ enum K1L0WeatherModeController {
     /// locks the simulation before its authored renderer values are applied.
     private static func workshopContext(for mode: String) -> [Setting] {
         guard mode != "auto" else { return [] }
-        let sun: (altitude: String, azimuth: String)
-        switch mode {
-        case "midnight": sun = ("-35", "30")
-        case "coral_haze": sun = ("5", "252")
-        case "deep_orange": sun = ("3", "258")
-        case "fire_fog_lab": sun = ("-1", "264")
-        case "haze_lab": sun = ("14", "238")
-        case "boring": sun = ("45", "190")
-        default: sun = ("35", "210")
-        }
         return [
             ("testSkyOverride", "1"),
             ("layeredBypassWeather", "1"),
             ("solarWorldOverride", "1"),
-            ("manualWeatherOverrideEnabled", "1"),
-            ("workshopSolarAltitude", sun.altitude),
-            ("workshopSolarAzimuth", sun.azimuth)
+            ("manualWeatherOverrideEnabled", "1")
         ]
+    }
+
+    static let itemFlightSection = "itemFlight"
+    static let lightingSection = "lighting"
+    static let windowsSection = "windowsBuildings"
+    static let groundSection = "ground"
+    static let bloomSection = "bloom"
+    static let gradeSection = "colorGrade"
+    static let postProcessingSection = "postProcessing"
+    static let fogSection = "fog"
+
+    private static let sectionSettings: [String: Set<String>] = [
+      itemFlightSection: [
+        "itemBaseSize", "itemViewportHeight", "itemMaxWorldSize",
+        "itemInsectCruiseY", "itemInsectCeilingY", "itemInsectVisitInterval",
+        "itemInsectApproachSeconds", "itemInsectApproachMeander",
+        "itemInsectCameraClearance", "itemInsectInvestigationLift",
+        "itemInsectCuriosityRadius", "itemInsectCuriositySpeed",
+        "itemInsectHoverSeconds", "itemInsectReturnSeconds",
+        "ambientItemSpotlightEnabled", "ambientItemSpotlightIntensity",
+        "ambientItemSpotlightRange", "ambientItemSpotlightAngle"
+      ],
+      lightingSection: [
+        "ambientEnabled", "ambientIntensity", "daySunIntensity",
+        "moonlightEnabled", "moonlightManualOverride", "moonlightIntensity",
+        "moonlightRed", "moonlightGreen", "moonlightBlue",
+        "moonlightPitch", "moonlightYaw", "moonlightRoll",
+        "spotlightEnabled", "spotlightIntensity",
+        "reflectionsEnabled", "reflectionIntensity",
+        "enableShadows", "shadowStrength", "shadowDistance",
+      ],
+      windowsSection: [
+        "zossEmissiveIntensity", "zossDayWindowIntensity",
+        "zossEmissiveHue", "zossEmissiveSaturation",
+        "zossNightEmissiveHue", "zossNightEmissiveSaturation",
+        "zossEmissiveSmoothness", "zossEmissiveMetallic",
+        "zossLitFraction", "zossPaletteMix", "zossPaletteSaturation",
+        "zossPaletteSaturation_night", "zossWarmth", "zossAccentFraction",
+        "zossWindowBrightness", "zossBrightnessJitter",
+        "zossBrightnessJitterRate", "zossWallValue",
+        "zossWallSaturation", "zossWallDaylightLift", "zossWallVariance",
+        "roadValue", "dayRoadValue", "vaporDayPink"
+      ],
+      groundSection: [
+        "groundHue", "groundSaturation", "groundValue", "groundBrightness",
+        "groundHue_night", "groundSaturation_night", "roadSaturation", "roadGlow"
+      ],
+      bloomSection: [
+        "bloomEnabled", "bloomIntensity", "dayBloomIntensity",
+        "bloomThreshold", "bloomScatter"
+      ],
+      gradeSection: [
+        "mapBrightness", "exposureFixedValue",
+        "saturation", "contrast", "temperature", "tint", "hueShift"
+      ],
+      postProcessingSection: [
+        "vignetteEnabled", "vignetteIntensity", "vignetteSmoothness",
+        "chromaticEnabled", "chromaticIntensity", "dofEnabled",
+        "focusDistance", "aperture", "focalLength", "motionBlurEnabled",
+        "motionBlurIntensity", "filmGrainEnabled", "filmGrainIntensity"
+      ]
+    ]
+
+    private static let fogManualOverrideKey = "k1lo_native_fogManualOverride"
+
+    static var fogManualOverrideActive: Bool {
+        UserDefaults.standard.bool(forKey: fogManualOverrideKey)
+    }
+
+    static func isFogSetting(_ key: String) -> Bool {
+        key == "nearFogEnabled" || key == "volumetricFogEnabled" || key.hasPrefix("fog")
+    }
+
+    static func section(forSetting key: String) -> String? {
+        if isFogSetting(key) { return fogSection }
+        return sectionSettings.first(where: { $0.value.contains(key) })?.key
+    }
+
+    private static func overrideKey(for section: String) -> String {
+        section == fogSection ? fogManualOverrideKey : "k1lo_native_sectionManualOverride_\(section)"
+    }
+
+    static func sectionManualOverrideActive(_ section: String) -> Bool {
+        UserDefaults.standard.bool(forKey: overrideKey(for: section))
+    }
+
+    static func sectionManualOverrideActive(forSetting key: String) -> Bool {
+        guard let section = section(forSetting: key) else { return false }
+        return sectionManualOverrideActive(section)
+    }
+
+    static func beginSectionManualOverride(forSetting key: String) {
+        guard let section = section(forSetting: key) else { return }
+        UserDefaults.standard.set(true, forKey: overrideKey(for: section))
+    }
+
+    static func clearSectionManualOverride(_ section: String) {
+        UserDefaults.standard.set(false, forKey: overrideKey(for: section))
+    }
+
+    /// Removes the device's cached values for one renderer family. The caller
+    /// then reapplies the API section or active Day/Night/Auto recipe.
+    static func resetLocalValues(for section: String) {
+        let defaults = UserDefaults.standard
+        var keys: Set<String>
+        if section == fogSection {
+            keys = Set(defaults.dictionaryRepresentation().keys.filter {
+                $0.hasPrefix("k1lo_native_fog")
+            })
+            keys.insert("k1lo_native_nearFogEnabled")
+            keys.insert("k1lo_native_volumetricFogEnabled")
+        } else {
+            keys = Set((sectionSettings[section] ?? []).map { "k1lo_native_\($0)" })
+        }
+        if section == itemFlightSection {
+            keys.formUnion([
+                "k1lo_native_itemInsectCameraClearanceV3",
+                "k1lo_native_itemInsectHoverSecondsV2",
+                "k1lo_native_itemInsectReturnSecondsV3"
+            ])
+        }
+        keys.insert(overrideKey(for: section))
+        for key in keys { defaults.removeObject(forKey: key) }
+        if section != fogSection && section != itemFlightSection {
+            defaults.removeObject(forKey: "k1lo_native_lookManualOverride")
+        }
+    }
+
+    static func beginFogManualOverride() {
+        beginSectionManualOverride(forSetting: "fogDensity")
+    }
+
+    static func clearFogManualOverride() {
+        clearSectionManualOverride(fogSection)
+    }
+
+    // Compatibility for the retired combined Look panel. The visible UI now
+    // uses independent section authority, so these wrappers cannot create a
+    // second competing override model.
+    static var lookManualOverrideActive: Bool {
+        [lightingSection, windowsSection, groundSection, bloomSection,
+         gradeSection, postProcessingSection].contains { sectionManualOverrideActive($0) }
+    }
+
+    static func isLookSetting(_ key: String) -> Bool {
+        guard let section = section(forSetting: key) else { return false }
+        return section != fogSection && section != itemFlightSection
+    }
+
+    static func beginLookManualOverride() {
+        for section in [lightingSection, windowsSection, groundSection, bloomSection,
+                        gradeSection, postProcessingSection] {
+            UserDefaults.standard.set(true, forKey: overrideKey(for: section))
+        }
+    }
+
+    static func clearLookManualOverride() {
+        for section in [lightingSection, windowsSection, groundSection, bloomSection,
+                        gradeSection, postProcessingSection] {
+            clearSectionManualOverride(section)
+        }
     }
 
     private static func applySettings(_ settings: [Setting], mode: String, syncEnvironment: Bool = true) {
         for (key, value) in resetBaseline + common + settings + workshopContext(for: mode) {
+            // An active settings-panel fog workspace remains authoritative
+            // across periodic preset/astronomy updates. Publish or Revert
+            // clears this flag and reconnects the selected preset.
+            if sectionManualOverrideActive(forSetting: key) { continue }
             if let number = Double(value) {
                 UserDefaults.standard.set(number, forKey: "k1lo_native_\(key)")
             } else {
@@ -453,8 +363,8 @@ enum K1L0WeatherModeController {
 
     private static let autoDiscreteKeys: Set<String> = [
         "testSkyOverride", "layeredBypassWeather", "solarWorldOverride",
-        "visualNightOverride", "manualWeatherOverrideEnabled", "volumetricFogEnabled",
-        "fogConstantDensity", "fogDistantFog", "fogNativeLights", "groundHazeEnabled",
+        "visualNightOverride", "manualWeatherOverrideEnabled", "nearFogEnabled",
+        "fogConstantDensity", "fogDistantFog", "fogNativeLights",
         "experimentalLayeredSky", "bloomEnabled", "vignetteEnabled", "chromaticEnabled",
         "dofEnabled", "motionBlurEnabled", "filmGrainEnabled", "ambientEnabled",
         "spotlightEnabled", "reflectionsEnabled", "enableShadows"
@@ -488,28 +398,40 @@ enum K1L0WeatherModeController {
         }
     }
 
-    /// Non-negotiable cinematic floor for Live. Day/night recipes may color
-    /// the atmosphere, but they cannot remove all haze or window bloom.
-    private static let liveAtmosphereFloor: [Setting] = [
-        ("volumetricFogEnabled", "1"),
-        ("fogConstantDensity", "0"),
-        ("fogDensity", "0.00018"),
-        ("fogBrightness", "0.055"),
-        ("fogScatteringIntensity", "0.08"),
-        ("fogNoiseStrength", "0.16"),
-        ("fogNoiseScale", "10"),
-        ("fogDistantFog", "1"),
-        ("fogDistantDensity", "0.000045"),
-        ("fogDistantStart", "260"),
-        ("bloomEnabled", "1"),
-        ("bloomIntensity", "2.8"),
-        ("dayBloomIntensity", "2.8"),
-        ("bloomThreshold", "0.18"),
-        ("bloomScatter", "0.95"),
-        ("zossEmissiveIntensity", "7.0"),
-        ("zossDayWindowIntensity", "7.0"),
-        ("zossWindowBrightness", "1.35")
-    ]
+    /// Enforce real minimum/maximum constraints without replacing the authored
+    /// Day/Night interpolation. This keeps Live atmospheric while allowing its
+    /// color, lighting, fog and bloom to continue changing with astronomy.
+    private static func constrainedLiveSettings(_ settings: [Setting]) -> [Setting] {
+        var values = Dictionary(uniqueKeysWithValues: settings)
+        func raise(_ key: String, to minimum: Double) {
+            values[key] = String(format: "%.6f", max(Double(values[key] ?? "") ?? minimum, minimum))
+        }
+        func lower(_ key: String, to maximum: Double) {
+            values[key] = String(format: "%.6f", min(Double(values[key] ?? "") ?? maximum, maximum))
+        }
+        values["fogConstantDensity"] = "0"
+        values["fogDistantFog"] = "1"
+        values["bloomEnabled"] = "1"
+        // The API preset owns the fog renderer toggle. In particular, Auto
+        // must not silently turn it back on after Day/Night disabled it.
+        // Preserve authored fog values so an explicitly attached Fog workspace
+        // can still experiment with the renderer without preset interference.
+        raise("fogBrightness", to: 0.050)
+        raise("fogScatteringIntensity", to: 0.08)
+        raise("fogNoiseStrength", to: 0.16)
+        raise("fogNoiseScale", to: 10)
+        raise("fogDistantDensity", to: 0.00055)
+        lower("fogDistantStart", to: 145)
+        raise("fogV2DistantDiffusion", to: 0.24)
+        raise("bloomIntensity", to: 1.65)
+        raise("dayBloomIntensity", to: 1.65)
+        lower("bloomThreshold", to: 0.78)
+        raise("bloomScatter", to: 0.66)
+        raise("zossEmissiveIntensity", to: 8.2)
+        raise("zossDayWindowIntensity", to: 8.2)
+        raise("zossWindowBrightness", to: 1.38)
+        return values.keys.sorted().map { ($0, values[$0]!) }
+    }
 
     /// Auto is not a third authored look. It continuously blends the canonical
     /// Night and Day presets using the live solar altitude (-6° night, +8° day).
@@ -517,8 +439,9 @@ enum K1L0WeatherModeController {
         guard UserDefaults.standard.string(forKey: "k1lo_native_weatherLookMode") == "auto",
               let day = autoDaySettings, let night = autoNightSettings else { return }
         let dayness = (altitude + 6.0) / 14.0
-        let settings = interpolatedAutoSettings(day: day, night: night, dayness: dayness)
-        applySettings(settings + liveAtmosphereFloor + [("testSkyOverride", "0"),
+        let settings = constrainedLiveSettings(
+            interpolatedAutoSettings(day: day, night: night, dayness: dayness))
+        applySettings(settings + [("testSkyOverride", "0"),
                                   ("layeredBypassWeather", "0"),
                                   ("solarWorldOverride", "0"),
                                   ("visualNightOverride", "0"),
@@ -535,11 +458,12 @@ enum K1L0WeatherModeController {
             let remoteCatalog = (200..<300).contains(status) && data != nil
                 ? try? JSONDecoder().decode(RemoteCatalog.self, from: data!)
                 : nil
-            let catalog = remoteCatalog ?? cachedCatalog()
-            let day = catalog?.presets["radioactive"]?.settings
-                ?? Dictionary(uniqueKeysWithValues: radioactive)
-            let night = catalog?.presets["midnight"]?.settings
-                ?? Dictionary(uniqueKeysWithValues: automatic)
+            if remoteCatalog != nil, let data {
+                UserDefaults.standard.set(data, forKey: cacheKey)
+            }
+            let catalog = remoteCatalog ?? cachedCatalog() ?? bundledCatalogSnapshot
+            guard let day = catalog?.presets["day"]?.settings,
+                  let night = catalog?.presets["night"]?.settings else { return }
             DispatchQueue.main.async {
                 autoDaySettings = day
                 autoNightSettings = night
@@ -551,22 +475,20 @@ enum K1L0WeatherModeController {
         }.resume()
     }
 
-    static func apply(_ mode: String) {
+    static func apply(_ requestedMode: String) {
+        refreshGlobalSettingSections()
+        let mode: String
+        switch requestedMode {
+        case "radioactive": mode = "day"
+        case "midnight": mode = "night"
+        case "day", "night", "auto": mode = requestedMode
+        default: mode = "auto"
+        }
+        UserDefaults.standard.set(mode, forKey: "k1lo_native_weatherLookMode")
         if mode == "auto" {
             applyAuto()
             return
         }
-        let nightLock: [Setting] = [("visualNightOverride", "1")]
-        let selected: [Setting]
-        switch mode {
-        case "midnight": selected = automatic + nightLock
-        case "auto": selected = automatic
-        case "boring": selected = boring
-        case "pink_haze": selected = pinkHaze
-        case "haze_lab": selected = hazeLab
-        default: selected = radioactive
-        }
-
         // The API copy is canonical. Only use the last server snapshot (or the
         // bundled preset) if the fresh request actually fails.
         var request = URLRequest(url: endpoint.appendingPathComponent(mode))
@@ -581,10 +503,59 @@ enum K1L0WeatherModeController {
                 }
                 return
             }
-            let fallback = cachedCatalog()?.presets[mode]?.settings.map { ($0.key, $0.value) } ?? selected
+            let fallback = (cachedCatalog() ?? bundledCatalogSnapshot)?
+                .presets[mode]?.settings.map { ($0.key, $0.value) }
+            guard let fallback else { return }
             DispatchQueue.main.async {
                 applySettings(fallback, mode: mode)
             }
         }.resume()
+    }
+
+    private struct RemoteSettingSection: Codable {
+        let label: String?
+        let revision: Int?
+        let settings: [String: String]
+    }
+
+    private struct RemoteSettingSectionCatalog: Codable {
+        let sections: [String: RemoteSettingSection]
+    }
+
+    private static let settingSectionsEndpoint = URL(string: "https://api-tunnel.kilo.gallery/api/k1l0/setting-sections")!
+    private static let settingSectionsCacheKey = "k1lo_setting_sections_v1"
+
+    static func refreshGlobalSettingSections(_ onlySection: String? = nil) {
+        var request = URLRequest(url: settingSectionsEndpoint)
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.timeoutInterval = 8
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let remote = (200..<300).contains(status) && data != nil
+                ? try? JSONDecoder().decode(RemoteSettingSectionCatalog.self, from: data!)
+                : nil
+            if remote != nil, let data { UserDefaults.standard.set(data, forKey: settingSectionsCacheKey) }
+            let cached = UserDefaults.standard.data(forKey: settingSectionsCacheKey)
+                .flatMap { try? JSONDecoder().decode(RemoteSettingSectionCatalog.self, from: $0) }
+            guard let catalog = remote ?? cached else { return }
+            DispatchQueue.main.async {
+                for (section, value) in catalog.sections where onlySection == nil || section == onlySection {
+                    guard !sectionManualOverrideActive(section) else { continue }
+                    for (key, raw) in value.settings { applyGlobalSectionSetting(key, raw) }
+                }
+            }
+        }.resume()
+    }
+
+    private static func applyGlobalSectionSetting(_ key: String, _ raw: String) {
+        let aliases: [String: String] = [
+            "itemInsectCameraClearance": "k1lo_native_itemInsectCameraClearanceV3",
+            "itemInsectHoverSeconds": "k1lo_native_itemInsectHoverSecondsV2",
+            "itemInsectReturnSeconds": "k1lo_native_itemInsectReturnSecondsV3"
+        ]
+        let defaultsKey = aliases[key] ?? "k1lo_native_\(key)"
+        if let number = Double(raw) { UserDefaults.standard.set(number, forKey: defaultsKey) }
+        else { UserDefaults.standard.set(raw, forKey: defaultsKey) }
+        K1L0WeatherOverlayInstaller.setUnitySetting(key, raw)
     }
 }

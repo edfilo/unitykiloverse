@@ -162,6 +162,15 @@ namespace Kiloverse.Mapbox
             }
 
             // Update renderer state
+            var buildingMetadata = renderer.GetComponent<BuildingMetadata>() ??
+                                   renderer.GetComponentInParent<BuildingMetadata>();
+            bool runtimeFlattened = buildingMetadata != null && buildingMetadata.runtimeFlattened;
+            if (runtimeFlattened)
+            {
+                shouldRender = false;
+                cullReason = "player footprint";
+            }
+            renderer.forceRenderingOff = runtimeFlattened;
             if (renderer.enabled != shouldRender)
             {
                 renderer.enabled = shouldRender;

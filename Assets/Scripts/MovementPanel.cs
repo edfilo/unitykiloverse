@@ -116,11 +116,11 @@ public class MovementPanel : MonoBehaviour
         if (live <= 0 && pedometerService.stepsLast24Hours > 0)
             live = pedometerService.stepsLast24Hours;
         if (heroValue != null)
-            heroValue.text = live.ToString("N0");
+            heroValue.text = K1L0StepFormatter.Value(live);
 
         if (subValue != null)
             subValue.text = $"24H {Fmt(pedometerService.stepsLast24Hours)}   ·   7D {Fmt(pedometerService.stepsLast7Days)}";
     }
 
-    static string Fmt(int steps) => steps >= 0 ? steps.ToString("N0") : "--";
+    static string Fmt(int steps) => steps >= 0 ? K1L0StepFormatter.Value(steps) : "--";
 }

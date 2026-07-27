@@ -617,10 +617,7 @@ public class K1L0NearbyMode : MonoBehaviour
 
     private string FormatDistance(float meters)
     {
-        float miles = meters / 1609.34f;
-        if (miles < 0.33f)
-            return $"{Mathf.RoundToInt(meters * 3.28084f)}ft";
-        return $"{miles:F1}mi";
+        return K1L0StepFormatter.FromMeters(meters);
     }
 
     private static Sprite GetArrowSprite()

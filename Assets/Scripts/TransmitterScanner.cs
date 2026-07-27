@@ -1,6 +1,5 @@
 using System.Collections;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using UnityEngine;
 using System;
@@ -29,6 +28,7 @@ public class TransmitterScanner : MonoBehaviour
 
     public class TransmitterData
     {
+        public string PlaceId;
         public string Name;
         public string PrimaryCategory; // Overture primary category (e.g., "bar", "coffee_shop")
         public string MainCategoryGroup; // One of 4 groups: "coffee", "bar", "food", "convenience", "other"
@@ -61,17 +61,8 @@ public class TransmitterScanner : MonoBehaviour
     [Header("Settings")]
     public float scanInterval = 1.0f;
     [Header("Data Source")]
-    public bool usePlacesApi = false;
-    [Tooltip("Legacy fallback only. Native Swift owns world/nearby and pushes places into Unity.")]
-    public bool allowUnityPlacesPolling = false;
-    [Tooltip("Legacy fallback only. Native pushed places are canonical.")]
+    [Tooltip("Native MapKit is canonical; legacy registered POIs remain disabled.")]
     public bool allowLegacyRegisteredTransmitters = false;
-    [Tooltip("Defer Places API start until after boot (avoids lockup during Startup)")]
-    public bool deferPlacesApiStart = true;
-    public float placesPollInterval = 8f;
-    public float placesRadiusMeters = 5000f;
-    public float placesMinFetchSeconds = 1200f; // 20 minutes
-    public float placesMinFetchMeters = 1609.34f; // 1 mile
     public bool disableFiltering = false;
     public float locationPingCooldown = 15f;
     [Tooltip("Main category groups to include (coffee, bar, food, convenience)")]
@@ -83,7 +74,7 @@ public class TransmitterScanner : MonoBehaviour
         // No blacklist
     };
 
-private void Awake()
+    private void Awake()
     {
         Debug.Log($"[TransmitterScanner] ===== Awake() called ===== GameObject: {gameObject.name}, Instance ID: {GetInstanceID()}");
         
@@ -95,6 +86,10 @@ private void Awake()
         }
         _instance = this;
         DontDestroyOnLoad(gameObject);
+
+        // Native MapKit is the sole place-discovery authority. Never allow a
+        // serialized legacy scene value to restart Unity's backend /places poll.
+        allowLegacyRegisteredTransmitters = false;
 
         // Force settings reset to use 4 main category groups (matches locations.html)
         disableFiltering = false;
@@ -119,51 +114,6 @@ private void Awake()
     private void OnDisable()
     {
         Debug.LogWarning($"[TransmitterScanner] OnDisable() called. Instance ID: {GetInstanceID()}");
-    }
-
-    private void Start()
-    {
-        if (usePlacesApi && allowUnityPlacesPolling)
-        {
-            if (deferPlacesApiStart)
-            {
-                StartCoroutine(DeferredPlacesApiStart());
-            }
-            else
-            {
-                StartCoroutine(PlacesPollRoutine());
-            }
-        }
-    }
-
-    private IEnumerator DeferredPlacesApiStart()
-    {
-        if (!usePlacesApi || !allowUnityPlacesPolling)
-            yield break;
-
-        // Wait for boot to complete so API/TryAutoConnect doesn't block startup
-        while (!BootState.AllowPlayer)
-        {
-            yield return new WaitForSeconds(0.5f);
-        }
-        yield return new WaitForSeconds(5f); // Extra buffer after AllowPlayer
-        Debug.Log("[TransmitterScanner] Starting Places API (deferred after boot)");
-        _placesApiRunning = true;
-        StartCoroutine(PlacesPollRoutine());
-    }
-
-    private bool _placesApiRunning = false;
-
-    /// <summary>
-    /// Force-start the Places API polling if it hasn't started yet.
-    /// Useful when TransmitterScanner is auto-created as a singleton (Start may not fire).
-    /// </summary>
-    public void EnsurePlacesApiRunning()
-    {
-        if (!usePlacesApi || !allowUnityPlacesPolling || _placesApiRunning) return;
-        _placesApiRunning = true;
-        Debug.Log("[TransmitterScanner] EnsurePlacesApiRunning: force-starting Places API");
-        StartCoroutine(PlacesPollRoutine());
     }
 
     // Called when teleporting to clear old city data
@@ -199,7 +149,7 @@ private void Awake()
 
 public void RegisterTransmitter(string name, string primaryCategory, string mainCategoryGroup, Vector2d latLon)
     {
-        if (!allowLegacyRegisteredTransmitters || usePlacesApi)
+        if (!allowLegacyRegisteredTransmitters)
         {
             // Ignore Overture/manual POIs. Native Swift pushes canonical nearby places.
             return;
@@ -294,9 +244,6 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
     private float _lastScanTime;
     private OvertureMapManager _cachedOvertureManager;
     private KiloFirstPersonController _cachedPlayer;
-    private bool _placesFetchInFlight = false;
-    private float _lastPlacesFetchTime = -9999f;
-    private Vector2d _lastPlacesFetchGPS = new Vector2d(0, 0);
     private bool _scanInProgress = false;
     [Tooltip("Max milliseconds to spend per frame while scanning (editor safety)")]
     public float maxScanFrameTimeMs = 6f;
@@ -313,6 +260,7 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
     [Serializable]
     private class PlaceEntry
     {
+        public string placeId;
         public string name;
         public string type;
         public string[] types;
@@ -325,6 +273,8 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
         public string artifactSenderName;
         public string imageUrl;
         public string depthMapUrl;
+        public string buildingFeatureId;
+        public string buildingTileKey;
         public PlaceCoordinates coordinates;
     }
 
@@ -353,6 +303,7 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
             var latLon = new Vector2d(place.coordinates.lat, place.coordinates.lng);
             _allTransmitters.Add(new TransmitterData
             {
+                PlaceId = place.placeId,
                 Name = place.name,
                 PrimaryCategory = primary,
                 MainCategoryGroup = group,
@@ -416,109 +367,6 @@ public void RegisterTransmitter(string name, string primaryCategory, string main
             {
                 Debug.LogWarning($"[TransmitterScanner] Update ran. All: {_allTransmitters.Count}, Sorted: 0. Filter Disabled? {disableFiltering}");
             }
-        }
-    }
-
-    private IEnumerator PlacesPollRoutine()
-    {
-        while (true)
-        {
-            if (!usePlacesApi || !allowUnityPlacesPolling)
-            {
-                _placesApiRunning = false;
-                yield break;
-            }
-
-            if (_placesFetchInFlight)
-            {
-                yield return new WaitForSeconds(placesPollInterval);
-                continue;
-            }
-
-            var playerController = FindFirstObjectByType<KiloFirstPersonController>();
-            if (playerController == null)
-            {
-                yield return new WaitForSeconds(placesPollInterval);
-                continue;
-            }
-
-            var playerGPS = playerController.playerGPS;
-            if (Mathf.Approximately((float)playerGPS.Latitude, 0f) && Mathf.Approximately((float)playerGPS.Longitude, 0f))
-            {
-                yield return new WaitForSeconds(placesPollInterval);
-                continue;
-            }
-
-            bool shouldFetch = false;
-            float timeSinceFetch = Time.time - _lastPlacesFetchTime;
-            if (timeSinceFetch >= placesMinFetchSeconds)
-            {
-                shouldFetch = true;
-            }
-            else
-            {
-                double metersMoved = Conversions.GeoDistance(
-                    _lastPlacesFetchGPS.y,
-                    _lastPlacesFetchGPS.x,
-                    playerGPS.Longitude,
-                    playerGPS.Latitude
-                ) * 1000.0;
-                if (metersMoved >= placesMinFetchMeters)
-                {
-                    shouldFetch = true;
-                }
-            }
-
-            if (!shouldFetch)
-            {
-                yield return new WaitForSeconds(placesPollInterval);
-                continue;
-            }
-
-            _placesFetchInFlight = true;
-            // Re-fetch live coordinates right before sending (player may have moved during yields)
-            var liveGPS = playerController.playerGPS;
-            // Strict /places format: latitude, longitude, radiusMeters as top-level numbers
-            string payload = $"{{\"latitude\":{liveGPS.Latitude.ToString("F6", CultureInfo.InvariantCulture)},\"longitude\":{liveGPS.Longitude.ToString("F6", CultureInfo.InvariantCulture)},\"radiusMeters\":{Mathf.RoundToInt(placesRadiusMeters)}}}";
-
-            // Log the API call details
-            string baseURL = APIManager.Instance.GetBaseURL();
-            Debug.Log($"[TransmitterScanner] Calling Places API:");
-            Debug.Log($"[TransmitterScanner]   URL: {baseURL}/places");
-            Debug.Log($"[TransmitterScanner]   Payload: {payload}");
-            Debug.Log($"[TransmitterScanner]   Radius: {placesRadiusMeters}m, Location: ({liveGPS.Latitude:F6}, {liveGPS.Longitude:F6})");
-
-            yield return APIManager.Instance.Post("/places", payload, (success, response) =>
-            {
-                _placesFetchInFlight = false;
-                if (!success)
-                {
-                    Debug.LogWarning($"[TransmitterScanner] Places API call FAILED: {response}");
-                    return;
-                }
-
-                Debug.Log($"[TransmitterScanner] Places API call SUCCESS: {response?.Length ?? 0} chars received");
-
-                try
-                {
-                    var data = JsonUtility.FromJson<PlacesResponse>(response);
-                    if (data == null || data.places == null)
-                    {
-                        Debug.LogWarning("[TransmitterScanner] Places response missing data.");
-                        return;
-                    }
-
-                    ApplyPlaces(data.places, "legacy Places API");
-                    _lastPlacesFetchTime = Time.time;
-                    _lastPlacesFetchGPS = new Vector2d(liveGPS.Latitude, liveGPS.Longitude);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[TransmitterScanner] Failed to parse places response: {ex.Message}");
-                }
-            });
-
-            yield return new WaitForSeconds(placesPollInterval);
         }
     }
 

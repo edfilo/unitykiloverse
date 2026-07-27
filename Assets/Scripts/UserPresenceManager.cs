@@ -289,12 +289,8 @@ public class UserPresenceManager : MonoBehaviour
 
             foreach (var poi in closest3)
             {
-                int steps = Mathf.RoundToInt(poi.Distance / stride);
-                float miles = poi.Distance * 0.000621371f;
-                string distStr = miles < 0.1f
-                    ? $"{Mathf.RoundToInt(poi.Distance * 3.28084f)}ft"
-                    : $"{miles:F1}mi";
-                nearbyPOIs.Add($"{poi.Name} ({steps} steps [{distStr} {poi.Direction}])");
+                string stepsText = K1L0StepFormatter.FromMeters(poi.Distance, stride);
+                nearbyPOIs.Add($"{poi.Name} ({stepsText} [{poi.Direction}])");
             }
         }
         BootDiagnostics.Mark("Presence.POIs done");

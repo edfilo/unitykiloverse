@@ -178,8 +178,7 @@ public class BeamTapDetector : MonoBehaviour
             var allPOIs = TransmitterScanner.Instance.GetAll();
             var closest3 = allPOIs.Take(3).ToList();
             var nearbyList = closest3.Select(poi => {
-                int steps = Mathf.RoundToInt(poi.Distance / 0.762f);
-                return $"\"{poi.Name} ({steps} steps)\"";
+                return $"\"{poi.Name} ({K1L0StepFormatter.FromMeters(poi.Distance)})\"";
             });
             nearbyJson = string.Join(",", nearbyList);
         }

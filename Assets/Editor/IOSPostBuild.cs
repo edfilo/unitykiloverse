@@ -54,6 +54,31 @@ public class IOSPostBuild
             proj.AddFileToBuild(targetGuid, firebasePlistGuid);
         }
 
+        // Ship one complete offline snapshot of the same catalog served by the
+        // API. Swift contains no hand-written preset recipes; it reads this
+        // resource only when both the network and last server cache are absent.
+        string weatherPresetsSource = "Assets/Plugins/iOS/K1L0WeatherPresets.json";
+        string canonicalWeatherPresets = "/Users/kiloverse/kiloworldapi/k1l0-weather-presets.json";
+        if (File.Exists(weatherPresetsSource))
+        {
+            const string weatherPresetsName = "K1L0WeatherPresets.json";
+            string weatherPresetsDestination = Path.Combine(path, weatherPresetsName);
+            if (File.Exists(canonicalWeatherPresets))
+            {
+                string canonical = File.ReadAllText(canonicalWeatherPresets).Trim();
+                File.WriteAllText(weatherPresetsDestination,
+                    "{\"schemaVersion\":1,\"presets\":" + canonical + "}\n");
+            }
+            else
+            {
+                File.Copy(weatherPresetsSource, weatherPresetsDestination, true);
+            }
+            string weatherPresetsGuid = proj.FindFileGuidByProjectPath(weatherPresetsName);
+            if (string.IsNullOrEmpty(weatherPresetsGuid))
+                weatherPresetsGuid = proj.AddFile(weatherPresetsName, weatherPresetsName, PBXSourceTree.Source);
+            proj.AddFileToBuild(targetGuid, weatherPresetsGuid);
+        }
+
         // MetalPluginPostBuild owns native Metal target membership. Keep this
         // postprocessor focused on plist/capability configuration.
         proj.WriteToFile(projPath);

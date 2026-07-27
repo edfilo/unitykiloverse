@@ -6,8 +6,34 @@ namespace Kiloverse.Mapbox
     /// <summary>
     /// Stores metadata for Overture buildings and displays it in the Inspector
     /// </summary>
-    public class BuildingMetadata : MonoBehaviour
+public class BuildingMetadata : MonoBehaviour
 {
+    private static readonly HashSet<BuildingMetadata> ActiveRegistry = new HashSet<BuildingMetadata>();
+
+    // BuildingFlattener consumes this registry incrementally. Tile generation
+    // announces only the building that changed; there is no scene-wide polling.
+    public static event System.Action<BuildingMetadata, bool> ActiveStateChanged;
+    public static event System.Action<BuildingMetadata> GeometryChanged;
+
+    public static IEnumerable<BuildingMetadata> ActiveBuildings => ActiveRegistry;
+
+    // Monotonic diagnostic revision. Consumers should prefer the events above.
+    public static int SceneRevision { get; private set; }
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetRuntimeRegistry()
+    {
+        ActiveRegistry.Clear();
+        SceneRevision = 0;
+        ActiveStateChanged = null;
+        GeometryChanged = null;
+    }
+
+    private static void NoteSceneGeometryChanged()
+    {
+        unchecked { SceneRevision++; }
+    }
+
     [Header("Building Info")]
     public string buildingName = "";
     public string featureId = "";
@@ -24,6 +50,20 @@ namespace Kiloverse.Mapbox
     public Vector3 worldBoundsMin = Vector3.zero;
     public Vector3 worldBoundsMax = Vector3.zero;
     public float worldHeightMeters = 0f;
+
+    // Runtime-only ownership flag. Tile/frustum visibility code must not
+    // re-enable a renderer while BuildingFlattener is suppressing its shell.
+    [System.NonSerialized] public bool runtimeFlattened;
+
+    [Header("Runtime LOD")]
+    [Tooltip("LOD selected when this building or merged building batch was generated.")]
+    public string generatedLod = "Unknown";
+    public float generatedDistanceMeters = -1f;
+    public bool mergedLodBatch;
+    public bool facadeGeometryVisible = true;
+
+    [System.NonSerialized] private int[][] cachedFacadeTriangles;
+    [System.NonSerialized] private int originalSubMeshCount;
 
     [Header("Tile Info")]
     public string tileKey = "";
@@ -62,6 +102,16 @@ namespace Kiloverse.Mapbox
         // Extract height
         if (properties != null)
         {
+            if (properties.TryGetValue("_k1lo_lod", out var lodValue))
+                generatedLod = lodValue?.ToString() ?? "Unknown";
+            if (properties.TryGetValue("_k1lo_lod_distance_m", out var distanceValue))
+            {
+                try { generatedDistanceMeters = System.Convert.ToSingle(distanceValue); } catch { }
+            }
+            if (properties.TryGetValue("_k1lo_merged_lod", out var mergedValue))
+            {
+                try { mergedLodBatch = System.Convert.ToBoolean(mergedValue); } catch { }
+            }
             if (properties.ContainsKey("height"))
             {
                 try { heightMeters = System.Convert.ToSingle(properties["height"]); } catch { }
@@ -88,6 +138,62 @@ namespace Kiloverse.Mapbox
 
         // Update mesh info
         UpdateMeshInfo();
+        RegisterActive();
+        NoteSceneGeometryChanged();
+        GeometryChanged?.Invoke(this);
+    }
+
+    private void OnEnable()
+    {
+        RegisterActive();
+    }
+
+    private void OnDisable()
+    {
+        if (!ActiveRegistry.Remove(this)) return;
+        NoteSceneGeometryChanged();
+        ActiveStateChanged?.Invoke(this, false);
+    }
+
+    private void RegisterActive()
+    {
+        if (!isActiveAndEnabled || !ActiveRegistry.Add(this)) return;
+        NoteSceneGeometryChanged();
+        ActiveStateChanged?.Invoke(this, true);
+    }
+
+    /// <summary>
+    /// Removes/restores emissive facade submeshes without touching the shell or
+    /// rebuilding the containing tile. Triangle indices are cached only for a
+    /// building that actually changes state, keeping the memory cost bounded.
+    /// </summary>
+    public bool SetFacadeGeometryVisible(bool visible)
+    {
+        var mf = GetComponent<MeshFilter>();
+        var mesh = mf != null ? mf.sharedMesh : null;
+        if (mesh == null) return false;
+
+        if (!visible)
+        {
+            if (!facadeGeometryVisible || mesh.subMeshCount <= 1) return false;
+            originalSubMeshCount = mesh.subMeshCount;
+            cachedFacadeTriangles = new int[originalSubMeshCount - 1][];
+            for (int i = 1; i < originalSubMeshCount; i++)
+                cachedFacadeTriangles[i - 1] = mesh.GetTriangles(i);
+            mesh.subMeshCount = 1;
+            facadeGeometryVisible = false;
+            return true;
+        }
+
+        if (facadeGeometryVisible || cachedFacadeTriangles == null || originalSubMeshCount <= 1)
+            return false;
+        mesh.subMeshCount = originalSubMeshCount;
+        for (int i = 1; i < originalSubMeshCount; i++)
+            mesh.SetTriangles(cachedFacadeTriangles[i - 1], i, false);
+        mesh.RecalculateBounds();
+        cachedFacadeTriangles = null;
+        facadeGeometryVisible = true;
+        return true;
     }
 
     public void UpdateMeshInfo()

@@ -2,8 +2,8 @@
 # Builds the lightweight macOS SwiftUI host with the shared weather presets
 # into a universal macOS native plugin bundle: K1L0Overlay.bundle
 #
-# The large iOS HUD remains in its native file; Mac features migrate into this
-# small host incrementally so routine builds never type-check the full HUD.
+# The iOS and Mac overlays compile the same modular Swift sources so their UI
+# and weather behavior cannot drift apart.
 #
 # Usage:
 #   native-mac/build_overlay_bundle.sh [OUTPUT_DIR]
@@ -12,32 +12,36 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT/Assets/Plugins/iOS/K1L0WeatherOverlay.swift"
-MODE_SRC="$ROOT/Assets/Plugins/iOS/K1L0WeatherModeController.swift"
-SOLAR_SRC="$ROOT/Assets/Plugins/iOS/K1L0SolarEnvironmentSync.swift"
-SPLITTER="$ROOT/native-mac/split_overlay_for_mac.sh"
+SRC_DIR="$ROOT/Assets/Plugins/iOS"
+PRESETS_SRC="$ROOT/Assets/Plugins/iOS/K1L0WeatherPresets.json"
+CANONICAL_PRESETS="/Users/kiloverse/kiloworldapi/k1l0-weather-presets.json"
 OUT_DIR="${1:-$ROOT/native-mac}"
 BUNDLE="$OUT_DIR/K1L0Overlay.bundle"
 MACOS_DIR="$BUNDLE/Contents/MacOS"
 DEPLOY_TARGET="12.0"
 
-if [[ ! -f "$SRC" ]]; then
-  echo "[build_overlay_bundle] source not found: $SRC" >&2
+if [[ ! -f "$SRC_DIR/K1L0WeatherOverlay.swift" ]]; then
+  echo "[build_overlay_bundle] source not found: $SRC_DIR/K1L0WeatherOverlay.swift" >&2
   exit 1
 fi
 
-echo "[build_overlay_bundle] source : $SRC"
+echo "[build_overlay_bundle] sources: $SRC_DIR/K1L0*.swift"
 echo "[build_overlay_bundle] bundle : $BUNDLE"
 
 rm -rf "$BUNDLE"
 mkdir -p "$MACOS_DIR"
+mkdir -p "$BUNDLE/Contents/Resources"
+if [[ -f "$CANONICAL_PRESETS" ]]; then
+  jq '{schemaVersion: 1, presets: .}' "$CANONICAL_PRESETS" \
+    > "$BUNDLE/Contents/Resources/K1L0WeatherPresets.json"
+else
+  cp "$PRESETS_SRC" "$BUNDLE/Contents/Resources/K1L0WeatherPresets.json"
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-SPLIT_DIR="$TMP/Sources"
-"$SPLITTER" "$SRC" "$SPLIT_DIR" >/dev/null
-SWIFT_SOURCES=("$SPLIT_DIR"/*.swift "$MODE_SRC" "$SOLAR_SRC")
-echo "[build_overlay_bundle] split sources: ${#SWIFT_SOURCES[@]}"
+SWIFT_SOURCES=("$SRC_DIR"/K1L0*.swift)
+echo "[build_overlay_bundle] modular sources: ${#SWIFT_SOURCES[@]}"
 
 HOST_ARCH="$(uname -m)"
 echo "[build_overlay_bundle] Host architecture detected: $HOST_ARCH"
@@ -50,7 +54,8 @@ for ARCH in $HOST_ARCH; do
       -emit-library -module-name K1L0Overlay \
       -o "$TMP/K1L0Overlay-$ARCH" \
       "${SWIFT_SOURCES[@]}" \
-      -framework SwiftUI -framework AppKit -framework CoreLocation; then
+      -framework SwiftUI -framework AppKit -framework AVFoundation \
+      -framework CoreLocation -framework CoreMedia -framework Metal -framework MetalKit; then
     SLICES="$SLICES $TMP/K1L0Overlay-$ARCH"
   else
     echo "[build_overlay_bundle] WARNING: $ARCH slice failed, skipping" >&2

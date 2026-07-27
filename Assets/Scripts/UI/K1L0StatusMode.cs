@@ -324,7 +324,7 @@ public class K1L0StatusMode : MonoBehaviour
 
     private static string FormatSteps(int steps)
     {
-        return steps >= 0 ? steps.ToString("N0") : "pending";
+        return steps >= 0 ? K1L0StepFormatter.Value(steps) : "pending";
     }
 
     private string BuildHourlyWalkChart()
@@ -352,7 +352,7 @@ public class K1L0StatusMode : MonoBehaviour
             bars.Append(blocks[idx]);
         }
 
-        return $"> <color=#BCFFC5>{bars}</color> <size=12>{total:N0}/24h max {maxSteps:N0}/hr</size>";
+        return $"> <color=#BCFFC5>{bars}</color> <size=12>{K1L0StepFormatter.Value(total)}/24h max {K1L0StepFormatter.Value(maxSteps)}/hr</size>";
     }
 
     private string BuildMetricLine(string name, float amount, string value)

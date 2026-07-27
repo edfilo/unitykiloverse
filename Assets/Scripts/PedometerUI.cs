@@ -133,8 +133,8 @@ void Start()
             
             // Format: "12,345 (24h)   45,678 (7d)"
             // Use placeholders if data is still loading (-1)
-            string s24 = steps24h >= 0 ? $"{steps24h:N0}" : "...";
-            string s7d = steps7d >= 0 ? $"{steps7d:N0}" : "...";
+            string s24 = steps24h >= 0 ? K1L0StepFormatter.Value(steps24h) : "...";
+            string s7d = steps7d >= 0 ? K1L0StepFormatter.Value(steps7d) : "...";
             
             steps24hText.text = $"{s24} (24h)   {s7d} (7d)";
         }
@@ -505,7 +505,7 @@ void Start()
             
             // Update Today's steps (first item if sorted desc, or find today)
             var todayData = history.FirstOrDefault(x => x.date == System.DateTime.Today);
-            totalStepsText.text = $"{todayData.steps:N0} Steps";
+            totalStepsText.text = K1L0StepFormatter.Steps(todayData.steps);
 
             BuildGraph(history);
         });
@@ -571,7 +571,7 @@ void Start()
             GameObject countObj = new GameObject("Count");
             countObj.transform.SetParent(barObj.transform, false);
             Text countText = countObj.AddComponent<Text>();
-            countText.text = data.steps.ToString();
+            countText.text = K1L0StepFormatter.Value(data.steps);
             countText.font = customFont ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             countText.fontSize = 24;
             countText.color = Color.black;

@@ -57,6 +57,24 @@ sync_swift() {
   if [ "$changed" -eq 0 ]; then
     echo "Swift overlay already synchronized; preserving timestamps."
   fi
+
+  local preset_src="$PROJECT/Assets/Plugins/iOS/K1L0WeatherPresets.json"
+  local preset_dst="$IOS_BUILD/K1L0WeatherPresets.json"
+  if [ -f "$preset_src" ] && { [ ! -f "$preset_dst" ] || ! cmp -s "$preset_src" "$preset_dst"; }; then
+    cp -p "$preset_src" "$preset_dst"
+    echo "Copied changed bundled weather preset catalog."
+  fi
+}
+
+restore_unchanged_swift_timestamps() {
+  local snapshot_dir="$1" exported snapshot
+  [ -d "$snapshot_dir" ] || return 0
+  while IFS= read -r exported; do
+    snapshot="$snapshot_dir/$(basename "$exported")"
+    if [ -f "$snapshot" ] && cmp -s "$snapshot" "$exported"; then
+      touch -r "$snapshot" "$exported"
+    fi
+  done < <(find "$IOS_BUILD/Libraries/Plugins/iOS" -maxdepth 1 -type f -name '*.swift' | sort)
 }
 
 patch_xcode_export() {
@@ -74,18 +92,47 @@ device_id() {
     echo "$PREFERRED_DEVICE"
     return
   fi
+  # Newer devicectl releases display a transient CoreDevice UUID in their
+  # table even though xcodebuild still addresses the same phone by hardware
+  # UDID. Prefer the known UDID when the active scheme advertises it.
+  if xcodebuild -project "$IOS_BUILD/Unity-iPhone.xcodeproj" -scheme Unity-iPhone -showdestinations 2>/dev/null \
+      | grep "platform:iOS" | grep "id:$PREFERRED_DEVICE" >/dev/null; then
+    echo "$PREFERRED_DEVICE"
+    return
+  fi
   xcrun devicectl list devices 2>/dev/null | grep -i iphone | grep -vi unavailable \
     | awk '{for(i=1;i<=NF;i++) if($i ~ /^[A-F0-9]{8}-/ || $i ~ /^[0-9A-Fa-f-]{25,}$/) {print $i; exit}}'
 }
 
+sync_bundled_weather_catalog() {
+  local canonical="/Users/kiloverse/kiloworldapi/k1l0-weather-presets.json"
+  local bundled="$PROJECT/Assets/Plugins/iOS/K1L0WeatherPresets.json"
+  local generated
+  [ -f "$canonical" ] || return 0
+  generated=$(mktemp /tmp/k1l0-weather-presets.XXXXXX)
+  jq '{schemaVersion: 1, presets: .}' "$canonical" > "$generated"
+  if [ -f "$bundled" ] && cmp -s "$generated" "$bundled"; then
+    rm -f "$generated"
+  else
+    mv "$generated" "$bundled"
+    echo "Refreshed bundled weather catalog from the canonical API file."
+  fi
+}
+
 check_build_lane
+sync_bundled_weather_catalog
 echo "K1L0 lane=$LANE mode=$MODE"
 
 if [ "$LANE" = "unity" ]; then
   echo "Running Unity export; preserving Library, Temp, Builds/iOS, and DerivedData caches."
+  SWIFT_TIMESTAMP_SNAPSHOT=$(mktemp -d /tmp/k1l0-swift-timestamps.XXXXXX)
+  find "$IOS_BUILD/Libraries/Plugins/iOS" -maxdepth 1 -type f -name '*.swift' \
+    -exec cp -p '{}' "$SWIFT_TIMESTAMP_SNAPSHOT/" \; 2>/dev/null || true
   "$UNITY" -batchmode -quit -nographics -projectPath "$PROJECT" \
     -executeMethod CommandLineBuild.BuildiOS -logFile /tmp/k1l0-unity-export.log
   grep -q 'Build Finished, Result: Success' /tmp/k1l0-unity-export.log
+  restore_unchanged_swift_timestamps "$SWIFT_TIMESTAMP_SNAPSHOT"
+  rm -rf "$SWIFT_TIMESTAMP_SNAPSHOT"
 else
   echo "Skipping Unity and IL2CPP for Swift-only lane."
   sync_swift

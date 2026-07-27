@@ -521,11 +521,11 @@ public class PedometerService : MonoBehaviour
         }
         if (walkCurrentBucketInactive)
         {
-            return $"<size=11>walking: inactive session {walkWindowSteps}/{target}  current {walkCurrentBucketSteps}st/{walkCurrentBucketMeters:F0}m</size>";
+            return $"<size=11>walking: inactive session {K1L0StepFormatter.Value(walkWindowSteps)}/{K1L0StepFormatter.Value(target)}  current {K1L0StepFormatter.Steps(walkCurrentBucketSteps)}</size>";
         }
         // Grace / "keep walking" — show debug steps so the user can see how many more they need.
         int remaining = Mathf.Max(0, target - walkWindowSteps);
-        return $"<size=11>walking: keep walking session {walkWindowSteps}/{target}  current {walkCurrentBucketSteps}st/{walkCurrentBucketMeters:F0}m</size>\n<size=10>(signal in {remaining} steps)</size>";
+        return $"<size=11>walking: keep walking session {K1L0StepFormatter.Value(walkWindowSteps)}/{K1L0StepFormatter.Value(target)}  current {K1L0StepFormatter.Steps(walkCurrentBucketSteps)}</size>\n<size=10>(signal in {K1L0StepFormatter.Steps(remaining)})</size>";
     }
 
     private void ConfigureWalkingSessionClassifier(int inactivityBucketMinutes, int minActiveSteps, int inactivityStepThreshold = -1)
@@ -1128,13 +1128,13 @@ public class PedometerService : MonoBehaviour
 
             GUILayout.BeginArea(new Rect(50, 200, 600, 500));
             GUILayout.Label($"Session Steps: {stepCount}", style);
-            GUILayout.Label($"All-Time Steps: {DeviceIDManager.Instance.AllTimeSteps:N0}", style);
+            GUILayout.Label($"All-Time Steps: {K1L0StepFormatter.Value(DeviceIDManager.Instance.AllTimeSteps)}", style);
             
             if (stepsLastHour >= 0)
-                GUILayout.Label($"Last Hour: {stepsLastHour}", style);
+                GUILayout.Label($"Last Hour: {K1L0StepFormatter.Value(stepsLastHour)}", style);
             
             if (stepsLast24Hours >= 0)
-                GUILayout.Label($"Last 24h: {stepsLast24Hours}", style);
+                GUILayout.Label($"Last 24h: {K1L0StepFormatter.Value(stepsLast24Hours)}", style);
 
             #if UNITY_IOS && !UNITY_EDITOR
             GUILayout.Label($"Dist: {distanceMeters:F1}m", style);
@@ -1273,5 +1273,32 @@ public class PedometerService : MonoBehaviour
             // Fallback to average (0.762 meters = 2.5 feet)
             return 0.762f;
         }
+    }
+}
+
+public static class K1L0StepFormatter
+{
+    public const float DefaultStrideMeters = 0.762f;
+
+    public static int EstimateFromMeters(float meters, float strideMeters = DefaultStrideMeters)
+    {
+        return Mathf.Max(0, Mathf.RoundToInt(Mathf.Max(0f, meters) / Mathf.Max(0.2f, strideMeters)));
+    }
+
+    public static string Value(int steps)
+    {
+        int safeSteps = Mathf.Max(0, steps);
+        if (safeSteps <= 1000) return safeSteps.ToString(CultureInfo.InvariantCulture);
+        return (safeSteps / 1000f).ToString("0.#", CultureInfo.InvariantCulture) + "k";
+    }
+
+    public static string Steps(int steps)
+    {
+        return Value(steps) + " steps";
+    }
+
+    public static string FromMeters(float meters, float strideMeters = DefaultStrideMeters)
+    {
+        return Steps(EstimateFromMeters(meters, strideMeters));
     }
 }

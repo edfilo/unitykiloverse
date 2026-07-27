@@ -23,6 +23,7 @@ Shader "K1L0/Experimental Layered Sky"
         _RainStrength ("Rain", Range(0,1)) = 0
         _SnowStrength ("Snow", Range(0,1)) = 0
         _AuroraStrength ("Aurora", Range(0,1)) = 0
+        _AuroraSpeed ("Aurora Speed", Range(0.1,4)) = 1.65
         _StormStrength ("Storm", Range(0,1)) = 0
         _NightBlackness ("Night Blackness", Range(0,1)) = .72
         [HDR] _NightHorizonGlowColor ("Night Horizon Glow", Color) = (.08,.22,.65,1)
@@ -48,7 +49,7 @@ Shader "K1L0/Experimental Layered Sky"
             float _CloudOpacity, _CloudCoverage, _CloudSpeed, _CloudScale, _CloudContrast, _HorizonHeight, _SkyYawOffset;
             float4 _SunUV, _MoonUV;
             float _SunVisibility, _MoonVisibility, _StarsVisibility;
-            float _NightAmount, _RainStrength, _SnowStrength, _AuroraStrength, _StormStrength, _NightBlackness, _NightHorizonGlow;
+            float _NightAmount, _RainStrength, _SnowStrength, _AuroraStrength, _AuroraSpeed, _StormStrength, _NightBlackness, _NightHorizonGlow;
             float4 _SunDirection, _MoonDirection;
             CBUFFER_END
             TEXTURE2D(_CloudTex); SAMPLER(sampler_CloudTex);
@@ -124,11 +125,12 @@ Shader "K1L0/Experimental Layered Sky"
                 // Integer azimuth harmonics join exactly at the spherical wrap;
                 // the former raw UV frequencies produced a sharp vertical seam.
                 float az=atan2(viewDir.x,viewDir.z);
-                float curtainCenter=.39+sin(az*3.0+_Time.y*.11)*.035+sin(az*7.0-_Time.y*.07)*.014;
+                float auroraTime=_Time.y*_AuroraSpeed;
+                float curtainCenter=.39+sin(az*3.0+auroraTime*.11)*.045+sin(az*7.0-auroraTime*.07)*.022;
                 float ribbonA=exp(-pow((y-curtainCenter)/.028,2.0));
                 float ribbonB=exp(-pow((y-curtainCenter+.075)/.045,2.0))*.48;
-                float azNoise=noise(float2(cos(az)*3.0+_Time.y*.018,sin(az)*3.0));
-                float folds=.28+.72*pow(saturate(sin(az*12.0+azNoise*5.0)*.5+.5),2.0);
+                float azNoise=noise(float2(cos(az)*3.0+auroraTime*.025,sin(az)*3.0-auroraTime*.009));
+                float folds=.28+.72*pow(saturate(sin(az*12.0+azNoise*5.0+auroraTime*.12)*.5+.5),2.0);
                 float aurora=(ribbonA+ribbonB)*folds*_AuroraStrength*_NightAmount;
                 sky += lerp(half3(.04,1.0,.38),half3(.48,.12,1.0),saturate(sin(az*2.0)*.5+.5))*half(aurora*.82);
                 // Two sparse populations avoid the old regular field of equally

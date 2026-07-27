@@ -681,7 +681,6 @@ public class TeleportManager : MonoBehaviour
 
         GPSLocationController.GPSDisabled = true;
         var target = new LatitudeLongitude(payload.latitude, payload.longitude);
-        bool refreshBuildingLods = ShouldRefreshSimulatedBuildingLods(target);
         var player = FindObjectOfType<KiloFirstPersonController>();
         if (player != null)
         {
@@ -691,18 +690,10 @@ public class TeleportManager : MonoBehaviour
 
         if (map != null)
         {
-            if (refreshBuildingLods)
-            {
-                // Building detail/simple/shell allocation happens while a tile
-                // is generated. Reusing the same tiles after moving the test
-                // player therefore leaves LOD centered on the old position.
-                // Refresh only after meaningful movement to avoid churn while
-                // nudging the live test location.
-                var overture = FindFirstObjectByType<OvertureMapManager>();
-                overture?.ClearLoadedTilesForLocationJump();
-                lastSimulatedBuildingLodCenter = target;
-                Debug.Log($"[TeleportManager] Refreshed building LOD after simulated move to ({target.Latitude:F6}, {target.Longitude:F6})");
-            }
+            // OvertureMapManager already performs a building-only, distance-
+            // gated LOD refresh. The old path cleared every map layer, called
+            // Resources.UnloadUnusedAssets and forced GC every 100m, freezing
+            // input/rotation while keyboard walking.
             map.SetPosition(target.Latitude, target.Longitude);
         }
     }
@@ -971,9 +962,11 @@ public class TeleportManager : MonoBehaviour
         if (scanner != null)
             scanner.ClearAll();
 
-        var director = SignalDirectorV2.Instance;
-        if (director != null)
-            director.ApplyNativeWorldNearby("{\"ok\":true,\"includeBeams\":true,\"beams\":[]}");
+        // Swift owns the authoritative ambient-beam snapshot and explicitly
+        // clears/repopulates it when the selected location really changes.
+        // Clearing it again here races the native fetch during GPS startup:
+        // Home keeps the item, while Unity deletes its matching sky visual.
+        // Location/map geometry still needs clearing below.
 
         var overture = FindFirstObjectByType<OvertureMapManager>();
         if (overture != null)

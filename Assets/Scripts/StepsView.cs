@@ -237,7 +237,7 @@ public class StepsView : MonoBehaviour
                 // Graceful fallback: show random step count when Pedometer doesn't exist (e.g. editor)
                 int fallbackSteps = (int)(Time.realtimeSinceStartup * 10) % 15000 + 3000; // Pseudo-random based on time
                 if (stepsSummaryText != null)
-                    stepsSummaryText.text = $"STEPS: {fallbackSteps:N0} >";
+                    stepsSummaryText.text = $"STEPS: {K1L0StepFormatter.Value(fallbackSteps)} >";
                 return;
             }
         }
@@ -255,7 +255,7 @@ public class StepsView : MonoBehaviour
             total = last24Hours;
         }
 
-        stepsSummaryText.text = $"STEPS: {total:N0} >";
+        stepsSummaryText.text = $"STEPS: {K1L0StepFormatter.Value(total)} >";
 
         // Log every 10 seconds (since we update every 1 second)
         if (Time.frameCount % 600 == 0)

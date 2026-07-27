@@ -193,9 +193,7 @@ public class LocationsPanel : MonoBehaviour
             var item = closestList[i];
             
             // Calculate distance string
-            float miles = item.Distance * 0.000621371f;
-            int steps = Mathf.RoundToInt(item.Distance / stride);
-            string distStr = miles <= 0.4f ? $"{steps}st" : $"{miles:F1}mi";
+            string distStr = K1L0StepFormatter.FromMeters(item.Distance, stride);
             
             // Truncate name if too long
             string name = item.Name;
@@ -614,22 +612,7 @@ public class LocationsPanel : MonoBehaviour
         var pedometer = FindFirstObjectByType<PedometerService>();
         if (pedometer != null) stride = pedometer.EstimatedStrideLength;
 
-        // Calculate steps (meters / meters-per-step)
-        int steps = Mathf.RoundToInt(data.Distance / stride);
-        
-        // Calculate miles (1 meter = 0.000621371 miles)
-        float miles = data.Distance * 0.000621371f;
-        string distStr;
-        
-        if (miles <= 0.4f)
-        {
-            // Show Steps if close enough
-            distStr = $"{steps:N0} steps";
-        }
-        else
-        {
-            distStr = $"{miles:F1}mi";
-        }
+        string distStr = K1L0StepFormatter.FromMeters(data.Distance, stride);
         
         string displayText = $"{data.Name}";
         if (data.Name != "Scanning...")

@@ -220,6 +220,7 @@ public class GPSLocationController : MonoBehaviour
     }
 
     private float compassPauseTimer = 0f;
+    private bool compassDetachedForFixedLocation = false;
 
     public void PauseCompass(float duration)
     {
@@ -233,6 +234,28 @@ public class GPSLocationController : MonoBehaviour
         {
             _loggedFirstUpdateAfterBoot = true;
             BootDiagnostics.Mark("GPSLocationController first Update after AllowPlayer");
+        }
+
+        // A fixed/non-GPS map is a manually navigated world. Never let device
+        // heading fight the yaw produced by horizontal swipes. Disable the
+        // Unity compass while detached (also avoiding needless sensor work),
+        // then restore it when the user returns to Live GPS.
+        if (GPSDisabled)
+        {
+            if (!compassDetachedForFixedLocation)
+            {
+                Input.compass.enabled = false;
+                compassDetachedForFixedLocation = true;
+                compassPauseTimer = 0f;
+                Debug.Log("[GPS] Compass detached for fixed-location mode; heading is swipe-owned.");
+            }
+            return;
+        }
+        if (compassDetachedForFixedLocation)
+        {
+            Input.compass.enabled = true;
+            compassDetachedForFixedLocation = false;
+            Debug.Log("[GPS] Compass reattached for Live GPS mode.");
         }
         if (compassPauseTimer > 0)
         {

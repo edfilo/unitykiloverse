@@ -110,8 +110,7 @@ public class POILabelBridge : MonoBehaviour
             _scanner = FindFirstObjectByType<TransmitterScanner>();
             if (_scanner != null)
             {
-                Debug.Log($"[POILabelBridge] Found TransmitterScanner, usePlacesApi={_scanner.usePlacesApi}");
-                _scanner.EnsurePlacesApiRunning();
+                Debug.Log("[POILabelBridge] Found native-fed TransmitterScanner");
             }
             else return;
         }
@@ -196,9 +195,7 @@ public class POILabelBridge : MonoBehaviour
             {
                 if (poi.Name == entry.name && (poi.GeoLocation - entry.geoLocation).magnitude < 0.0001)
                 {
-                    int steps = Mathf.RoundToInt(poi.Distance / 0.762f);
-                    string stepsStr = steps < 1000 ? $"{steps}" : $"{steps / 1000f:F1}k";
-                    entry.tmp.text = $"{entry.name}\n<size=70%>{stepsStr} steps</size>";
+                    entry.tmp.text = $"{entry.name}\n<size=70%>{K1L0StepFormatter.FromMeters(poi.Distance)}</size>";
                     break;
                 }
             }

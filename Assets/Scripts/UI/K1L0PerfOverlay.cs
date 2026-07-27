@@ -161,8 +161,8 @@ public class K1L0PerfOverlay : MonoBehaviour
         string stepsStr = "";
         if (_pedometer != null)
         {
-            string s24 = _pedometer.stepsLast24Hours >= 0 ? _pedometer.stepsLast24Hours.ToString("N0") : "...";
-            string s7d = _pedometer.stepsLast7Days   >= 0 ? _pedometer.stepsLast7Days.ToString("N0")   : "...";
+            string s24 = _pedometer.stepsLast24Hours >= 0 ? K1L0StepFormatter.Value(_pedometer.stepsLast24Hours) : "...";
+            string s7d = _pedometer.stepsLast7Days   >= 0 ? K1L0StepFormatter.Value(_pedometer.stepsLast7Days)   : "...";
             stepsStr = $"24h:{s24}  7d:{s7d}";
         }
 

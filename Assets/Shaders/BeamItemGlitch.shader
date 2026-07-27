@@ -1,6 +1,6 @@
 Shader "K1L0/BeamItemGlitch"
 {
-    Properties { _MainTex("Item", 2D)="black"{} _MaskTex("Mask",2D)="black"{} _HasMask("Has Mask",Float)=0 _DebugSolid("Debug Solid",Float)=0 _TimeOffset("Time",Float)=0 _GlitchAmount("Glitch Amount",Range(0,1))=0 }
+    Properties { _MainTex("Item", 2D)="black"{} _MaskTex("Mask",2D)="black"{} _HasMask("Has Mask",Float)=0 _UseMainAlpha("Use Main Alpha",Float)=0 _DebugSolid("Debug Solid",Float)=0 _TimeOffset("Time",Float)=0 _GlitchAmount("Glitch Amount",Range(0,1))=0 }
     SubShader
     {
         Tags { "Queue"="Transparent+50" "RenderType"="Transparent" "IgnoreProjector"="True" }
@@ -11,7 +11,7 @@ Shader "K1L0/BeamItemGlitch"
         CGINCLUDE
         #include "UnityCG.cginc"
         sampler2D _MainTex, _MaskTex;
-        float _TimeOffset, _HasMask, _DebugSolid, _GlitchAmount;
+        float _TimeOffset, _HasMask, _UseMainAlpha, _DebugSolid, _GlitchAmount;
         struct appdata { float4 vertex:POSITION; float2 uv:TEXCOORD0; };
         struct v2f { float4 pos:SV_POSITION; float2 uv:TEXCOORD0; };
         struct ItemSample { fixed3 rgb; float alpha; float shape; float glitchGate; };
@@ -35,13 +35,17 @@ Shader "K1L0/BeamItemGlitch"
             float luma=dot(c.rgb,float3(.299,.587,.114));
             float maskedAlpha=smoothstep(.04,.22,mask);
             float fallbackAlpha=smoothstep(.035,.18,luma);
-            o.alpha=lerp(fallbackAlpha,maskedAlpha,step(.5,_HasMask))*c.a;
+            float legacyAlpha=lerp(fallbackAlpha,maskedAlpha,step(.5,_HasMask))*c.a;
+            // New item PNGs already contain a semantic silhouette. Their alpha
+            // is authoritative and must not be multiplied by luma/depth, which
+            // would punch holes through legitimate dark foreground material.
+            o.alpha=lerp(legacyAlpha,c.a,step(.5,_UseMainAlpha));
             fixed r=tex2D(_MainTex,uv+float2(.008*burst,0)).r;
             fixed b=tex2D(_MainTex,uv-float2(.008*burst,0)).b;
             float scan=lerp(1.0,.86+.14*sin(sourceUV.y*900.0+t*18.0),o.glitchGate);
             o.rgb=fixed3(r,c.g,b)*scan;
             // Only use the mask as an emissive shape when a real mask exists.
-            o.shape=lerp(fallbackAlpha,maskedAlpha,step(.5,_HasMask));
+            o.shape=lerp(lerp(fallbackAlpha,maskedAlpha,step(.5,_HasMask)),c.a,step(.5,_UseMainAlpha));
             return o;
         }
         ENDCG
@@ -62,7 +66,11 @@ Shader "K1L0/BeamItemGlitch"
                 fixed3 rgb=saturate((item.rgb-.20)*1.25+.20);
                 float luminance=dot(rgb,float3(.299,.587,.114));
                 rgb=lerp(luminance.xxx,rgb,1.28);
-                return fixed4(rgb,item.alpha*.94);
+                // Embedded-alpha PNGs (new-generation items like the fixed coin)
+                // already carry the intended silhouette + opacity. Only the
+                // legacy path (no embedded alpha) needs the .94 haze.
+                float baseAlpha=item.alpha*lerp(.94,1.0,step(.5,_UseMainAlpha));
+                return fixed4(rgb,baseAlpha);
             }
             ENDCG
         }

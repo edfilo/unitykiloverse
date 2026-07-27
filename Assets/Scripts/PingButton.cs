@@ -184,22 +184,8 @@ public class PingButton : MonoBehaviour
 
             foreach (var poi in closest3)
             {
-                int steps = Mathf.RoundToInt(poi.Distance / stride);
-                
-                // Calculate distance string (matching LocationsPanel)
-                float miles = poi.Distance * 0.000621371f;
-                string distStr;
-                if (miles < 0.1f)
-                {
-                    int feet = Mathf.RoundToInt(poi.Distance * 3.28084f);
-                    distStr = $"{feet}ft";
-                }
-                else
-                {
-                    distStr = $"{miles:F1}mi";
-                }
-
-                nearbyPOIs.Add($"{poi.Name} ({steps} steps [{distStr} {poi.Direction}])");
+                string stepsText = K1L0StepFormatter.FromMeters(poi.Distance, stride);
+                nearbyPOIs.Add($"{poi.Name} ({stepsText} [{poi.Direction}])");
             }
         }
 

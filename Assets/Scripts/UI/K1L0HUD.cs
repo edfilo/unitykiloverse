@@ -127,6 +127,9 @@ public class K1L0HUD : MonoBehaviour
     [DllImport("__Internal")] private static extern void K1L0DeliverNativeAuthState(string json);
     [DllImport("__Internal")] private static extern void K1L0DeliverStepState(string json);
     [DllImport("__Internal")] private static extern void K1L0DeliverRenderReadiness(string json);
+    [DllImport("__Internal")] private static extern void K1L0DeliverAmbientSpawnPlacement(string json);
+    [DllImport("__Internal")] private static extern void K1L0DeliverLocationPresence(string json);
+    [DllImport("__Internal")] private static extern void K1L0DeliverFloatingItemTap(string json);
     [DllImport("__Internal")] private static extern void K1L0SetWeatherLookMode(string mode);
 #elif UNITY_STANDALONE_OSX && !UNITY_EDITOR
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverTransmissionResult(string json);
@@ -134,6 +137,9 @@ public class K1L0HUD : MonoBehaviour
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverNativeAuthState(string json);
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverStepState(string json);
     [DllImport("K1L0Overlay")] private static extern void K1L0DeliverRenderReadiness(string json);
+    [DllImport("K1L0Overlay")] private static extern void K1L0DeliverAmbientSpawnPlacement(string json);
+    [DllImport("K1L0Overlay")] private static extern void K1L0DeliverLocationPresence(string json);
+    [DllImport("K1L0Overlay")] private static extern void K1L0DeliverFloatingItemTap(string json);
     [DllImport("K1L0Overlay")] private static extern void K1L0SetWeatherLookMode(string mode);
 #else
     private static void K1L0DeliverTransmissionResult(string json) { /* no-op in editor */ }
@@ -141,8 +147,142 @@ public class K1L0HUD : MonoBehaviour
     private static void K1L0DeliverNativeAuthState(string json) { /* no-op in editor */ }
     private static void K1L0DeliverStepState(string json) { /* no-op in editor */ }
     private static void K1L0DeliverRenderReadiness(string json) { /* no-op in editor */ }
+    private static void K1L0DeliverAmbientSpawnPlacement(string json) { /* no-op in editor */ }
+    private static void K1L0DeliverLocationPresence(string json) { /* no-op in editor */ }
+    private static void K1L0DeliverFloatingItemTap(string json) { /* no-op in editor */ }
     private static void K1L0SetWeatherLookMode(string mode) { /* no-op in editor */ }
 #endif
+
+    [Serializable]
+    private class NativeLocationPresencePayload
+    {
+        public string placeId;
+        public string name;
+        public bool inside;
+        public bool footprintMatched;
+    }
+
+    public static void DeliverNativeLocationPresence(string placeId, string name, bool inside, bool footprintMatched)
+    {
+        var payload = new NativeLocationPresencePayload
+        {
+            placeId = placeId ?? "",
+            name = name ?? "",
+            inside = inside,
+            footprintMatched = footprintMatched
+        };
+        string json = JsonUtility.ToJson(payload);
+        try
+        {
+            K1L0DeliverLocationPresence(json);
+            Debug.Log($"[K1L0HUD] Location presence {(inside ? "ENTER" : "EXIT")} '{payload.name}' footprint={footprintMatched}");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[K1L0HUD] Location presence bridge failed: {ex.Message}");
+        }
+    }
+
+    [Serializable]
+    private class NativeFloatingItemTapPayload
+    {
+        public string signalId;
+        public string externalKey;
+        public string placeId;
+        public string kind;
+        public string locationName;
+        public string itemName;
+        public string imageUrl;
+        public double latitude;
+        public double longitude;
+        public float distanceMeters;
+    }
+
+    public static void DeliverNativeFloatingItemTap(Signal signal, float distanceMeters)
+    {
+        if (signal == null) return;
+        var payload = new NativeFloatingItemTapPayload
+        {
+            signalId = signal.id ?? "",
+            externalKey = signal.externalKey ?? "",
+            placeId = signal.placeId ?? "",
+            kind = signal.transmissionType == TransmissionType.Location ? "location" : "item",
+            locationName = signal.locationName ?? "",
+            itemName = !string.IsNullOrWhiteSpace(signal.specialItem)
+                ? signal.specialItem
+                : (!string.IsNullOrWhiteSpace(signal.teaser) ? signal.teaser : "Ambient Item"),
+            imageUrl = signal.hologramImageUrl ?? "",
+            latitude = signal.latitude,
+            longitude = signal.longitude,
+            distanceMeters = Mathf.Max(0f, distanceMeters)
+        };
+        string json = JsonUtility.ToJson(payload);
+        try
+        {
+            K1L0DeliverFloatingItemTap(json);
+            Debug.Log($"[K1L0HUD] Floating {payload.kind} tapped signal={payload.signalId} external={payload.externalKey} distance={payload.distanceMeters:F1}m");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[K1L0HUD] Floating item tap bridge failed: {ex.Message}");
+        }
+    }
+
+    [Serializable]
+    private class AmbientSpawnPlacementRequest
+    {
+        public double playerLatitude;
+        public double playerLongitude;
+        public float minDistance = 50f;
+        public float maxDistance = 150f;
+        public float preferredBearing;
+        public bool constrainBearing;
+    }
+
+    [Serializable]
+    private class AmbientSpawnPlacementResponse
+    {
+        public bool ok;
+        public double latitude;
+        public double longitude;
+        public string roadClass;
+        public string error;
+    }
+
+    public void RequestAmbientSpawnPlacement(string json)
+    {
+        var response = new AmbientSpawnPlacementResponse();
+        try
+        {
+            var request = JsonUtility.FromJson<AmbientSpawnPlacementRequest>(json);
+            if (request == null || SignalDirectorV2.Instance == null)
+            {
+                response.error = "road_geometry_unavailable";
+            }
+            else if (SignalDirectorV2.Instance.TryPickSafeAmbientRoadPoint(
+                request.playerLatitude,
+                request.playerLongitude,
+                Mathf.Max(45f, request.minDistance),
+                Mathf.Min(160f, request.maxDistance),
+                request.preferredBearing,
+                request.constrainBearing,
+                out response.latitude,
+                out response.longitude,
+                out response.roadClass))
+            {
+                response.ok = true;
+            }
+            else
+            {
+                response.error = "no_safe_road_50_150m";
+            }
+        }
+        catch (Exception ex)
+        {
+            response.error = "placement_error:" + ex.Message;
+        }
+        K1L0DeliverAmbientSpawnPlacement(JsonUtility.ToJson(response));
+    }
 
     private bool nativeTransmissionSubscribed;
     private bool nativeAuthSubscribed;
@@ -491,6 +631,7 @@ public class K1L0HUD : MonoBehaviour
         int steps7d = Mathf.Max(0, pedometer.stepsLast7Days);
         double latitude = double.NaN;
         double longitude = double.NaN;
+        float heading = 0f;
         if (cachedNativePlayer == null)
             cachedNativePlayer = FindFirstObjectByType<KiloFirstPersonController>();
         var player = cachedNativePlayer;
@@ -498,6 +639,7 @@ public class K1L0HUD : MonoBehaviour
         {
             latitude = player.playerGPS.Latitude;
             longitude = player.playerGPS.Longitude;
+            heading = Mathf.Repeat(player.transform.eulerAngles.y, 360f);
         }
 
         string latText = double.IsNaN(latitude) ? "null" : latitude.ToString("R", CultureInfo.InvariantCulture);
@@ -505,13 +647,16 @@ public class K1L0HUD : MonoBehaviour
         string locationSignature = double.IsNaN(latitude) || double.IsNaN(longitude)
             ? "noloc"
             : $"{Math.Round(latitude, 5).ToString(CultureInfo.InvariantCulture)}|{Math.Round(longitude, 5).ToString(CultureInfo.InvariantCulture)}";
-        string signature = $"{liveSteps}|{steps24h}|{steps7d}|{locationSignature}";
+        // Include simulated yaw so native compass arrows remain responsive to
+        // horizontal swipes even while position and step counts are unchanged.
+        string headingText = heading.ToString("R", CultureInfo.InvariantCulture);
+        string signature = $"{liveSteps}|{steps24h}|{steps7d}|{locationSignature}|{Math.Round(heading, 1)}";
         if (signature == lastNativeStepStateSignature)
             return;
 
         lastNativeStepStatePushTime = Time.realtimeSinceStartup;
         lastNativeStepStateSignature = signature;
-        string json = $"{{\"liveSteps\":{liveSteps},\"steps24h\":{steps24h},\"steps7d\":{steps7d},\"latitude\":{latText},\"longitude\":{lonText}}}";
+        string json = $"{{\"liveSteps\":{liveSteps},\"steps24h\":{steps24h},\"steps7d\":{steps7d},\"latitude\":{latText},\"longitude\":{lonText},\"heading\":{headingText}}}";
         try { K1L0DeliverStepState(json); }
         catch (Exception e) { Debug.LogWarning($"[K1L0HUD] Native step state push failed: {e.Message}"); }
 #endif
@@ -1033,7 +1178,12 @@ public class K1L0HUD : MonoBehaviour
         var buildings = GameObject.Find("building layer objects");
         if (buildings != null)
             foreach (var renderer in buildings.GetComponentsInChildren<Renderer>(true))
-                renderer.enabled = true;
+            {
+                var metadata = renderer.GetComponentInParent<Kiloverse.Mapbox.BuildingMetadata>(true);
+                bool runtimeFlattened = metadata != null && metadata.runtimeFlattened;
+                renderer.forceRenderingOff = runtimeFlattened;
+                renderer.enabled = !runtimeFlattened;
+            }
     }
 
     public void ApplyNativeEnvironment(string json)
@@ -1048,6 +1198,13 @@ public class K1L0HUD : MonoBehaviour
             director.PlayAmbientPortalCollectSound();
     }
 
+    public void PlayNativeSfxSlot(string slot)
+    {
+        var director = SignalDirectorV2.Instance;
+        if (director != null && !string.IsNullOrWhiteSpace(slot))
+            director.PlaySfxSlot(slot);
+    }
+
     public void ApplyNativeWorldNearby(string json)
     {
         if (string.IsNullOrWhiteSpace(json)) return;
@@ -1059,6 +1216,15 @@ public class K1L0HUD : MonoBehaviour
         var director = SignalDirectorV2.Instance;
         if (director != null)
             director.ApplyNativeWorldNearby(json);
+    }
+
+    public void ApplyNativeLocationCatalog(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return;
+        if (BuildingFlattener.Instance != null)
+            BuildingFlattener.Instance.ApplyLocationCatalog(json);
+        else
+            Debug.LogWarning("[K1L0HUD] ApplyNativeLocationCatalog: BuildingFlattener not ready.");
     }
 
     public void ApplyNativeLocationMode(string json)
@@ -1543,6 +1709,12 @@ public class K1L0HUD : MonoBehaviour
         catch (Exception ex) { Debug.LogWarning($"[K1L0HUD] native metadata save result deliver failed: {ex.Message}"); }
     }
 
+    public void FocusNativeBeam(string signalId)
+    {
+        bool focused = SignalBeamBridge.FocusCameraOnSignal(signalId, 4f);
+        Debug.Log($"[K1L0HUD] Native nearby-item focus id={signalId} focused={focused}");
+    }
+
     public void SetNativeSetting(string payload)
     {
         if (string.IsNullOrWhiteSpace(payload)) return;
@@ -1749,12 +1921,122 @@ public class K1L0HUD : MonoBehaviour
                 }
                 case "itemViewportHeight":
                     BeamItemHologram.SetViewportHeight(floatValue);
+                    SaveFloat("itemViewportHeight", Mathf.Clamp(floatValue, .015f, .12f));
                     break;
                 case "itemMaxWorldSize":
                     BeamItemHologram.SetMaxWorldSize(floatValue);
+                    SaveFloat("itemMaxWorldSize", Mathf.Clamp(floatValue, 16f, 180f));
+                    break;
+                case "itemBaseSize":
+                    BeamItemHologram.SetBaseWorldSize(floatValue);
+                    SaveFloat("itemBaseSize", Mathf.Clamp(floatValue, 2f, 40f));
                     break;
                 case "itemGlitchAmount":
                     BeamItemHologram.SetGlitchAmount(floatValue);
+                    break;
+                case "itemFloatMinY":
+                    BeamItemHologram.SetFloatMinY(floatValue);
+                    SaveFloat("itemFloatMinY", Mathf.Clamp(floatValue, 0f, 100f));
+                    break;
+                case "itemFloatMaxY":
+                    BeamItemHologram.SetFloatMaxY(floatValue);
+                    SaveFloat("itemFloatMaxY", Mathf.Clamp(floatValue, 0f, 100f));
+                    break;
+                case "itemFloatWobbleX":
+                    BeamItemHologram.SetFloatWobbleX(floatValue);
+                    SaveFloat("itemFloatWobbleX", Mathf.Clamp(floatValue, 0f, 50f));
+                    break;
+                case "itemFloatWobbleZ":
+                    BeamItemHologram.SetFloatWobbleZ(floatValue);
+                    SaveFloat("itemFloatWobbleZ", Mathf.Clamp(floatValue, 0f, 50f));
+                    break;
+                case "itemInsectCameraClearance":
+                    BeamItemHologram.SetInsectCameraClearance(floatValue);
+                    SaveFloat("itemInsectCameraClearance", Mathf.Clamp(floatValue, 6f, 80f));
+                    break;
+                case "itemInsectCuriosityRadius":
+                    BeamItemHologram.SetInsectCuriosityRadius(floatValue);
+                    SaveFloat("itemInsectCuriosityRadius", Mathf.Clamp(floatValue, 1f, 16f));
+                    break;
+                case "itemInsectCuriositySpeed":
+                    BeamItemHologram.SetInsectCuriositySpeed(floatValue);
+                    SaveFloat("itemInsectCuriositySpeed", Mathf.Clamp(floatValue, .03f, .5f));
+                    break;
+                case "itemInsectApproachMeander":
+                    BeamItemHologram.SetInsectApproachMeander(floatValue);
+                    SaveFloat("itemInsectApproachMeander", Mathf.Clamp(floatValue, 0f, 18f));
+                    break;
+                case "itemInsectInvestigationLift":
+                    BeamItemHologram.SetInsectInvestigationLift(floatValue);
+                    SaveFloat("itemInsectInvestigationLift", Mathf.Clamp(floatValue, 0f, 24f));
+                    break;
+                case "itemInsectAggressiveness":
+                    BeamItemHologram.SetInsectAggressiveness(floatValue);
+                    SaveFloat("itemInsectAggressiveness", Mathf.Clamp(floatValue, 0f, .10f));
+                    break;
+                case "itemInsectCruiseY":
+                    BeamItemHologram.SetInsectCruiseY(floatValue);
+                    SaveFloat("itemInsectCruiseY", Mathf.Clamp(floatValue, 2f, 100f));
+                    break;
+                case "itemInsectCeilingY":
+                    BeamItemHologram.SetInsectCeilingY(floatValue);
+                    SaveFloat("itemInsectCeilingY", Mathf.Clamp(floatValue, 2f, 120f));
+                    break;
+                case "itemInsectWanderRadius":
+                    BeamItemHologram.SetInsectWanderRadius(floatValue);
+                    SaveFloat("itemInsectWanderRadius", Mathf.Clamp(floatValue, 0f, 20f));
+                    break;
+                case "itemInsectSpeedMin":
+                    BeamItemHologram.SetInsectSpeedMin(floatValue);
+                    SaveFloat("itemInsectSpeedMin", Mathf.Clamp(floatValue, .01f, .15f));
+                    break;
+                case "itemInsectSpeedMax":
+                    BeamItemHologram.SetInsectSpeedMax(floatValue);
+                    SaveFloat("itemInsectSpeedMax", Mathf.Clamp(floatValue, .01f, .15f));
+                    break;
+                case "itemInsectInvestigateSeconds":
+                    BeamItemHologram.SetInsectInvestigateSeconds(floatValue);
+                    SaveFloat("itemInsectInvestigateSeconds", Mathf.Clamp(floatValue, 2f, 30f));
+                    break;
+                case "itemInsectVisitInterval":
+                    BeamItemHologram.SetInsectVisitInterval(floatValue);
+                    SaveFloat("itemInsectVisitInterval", Mathf.Clamp(floatValue, 5f, 120f));
+                    break;
+                case "itemInsectApproachSeconds":
+                    BeamItemHologram.SetInsectApproachSeconds(floatValue);
+                    SaveFloat("itemInsectApproachSeconds", Mathf.Clamp(floatValue, 1f, 30f));
+                    break;
+                case "itemInsectHoverSeconds":
+                    BeamItemHologram.SetInsectHoverSeconds(floatValue);
+                    SaveFloat("itemInsectHoverSeconds", Mathf.Clamp(floatValue, .5f, 20f));
+                    break;
+                case "itemInsectReturnSeconds":
+                    BeamItemHologram.SetInsectReturnSeconds(floatValue);
+                    SaveFloat("itemInsectReturnSeconds", Mathf.Clamp(floatValue, .5f, 20f));
+                    break;
+                case "ambientItemSpotlightEnabled":
+                    SignalBeamBridge.SetAmbientSpotlightEnabled(boolValue);
+                    SaveBool("ambientItemSpotlightEnabled", boolValue);
+                    break;
+                case "ambientItemSpotlightIntensity":
+                    SignalBeamBridge.SetAmbientSpotlightIntensity(floatValue);
+                    SaveFloat("ambientItemSpotlightIntensity", Mathf.Clamp(floatValue, 0f, 15f));
+                    break;
+                case "ambientItemSpotlightRange":
+                    SignalBeamBridge.SetAmbientSpotlightRange(floatValue);
+                    SaveFloat("ambientItemSpotlightRange", Mathf.Clamp(floatValue, 20f, 120f));
+                    break;
+                case "ambientItemSpotlightAngle":
+                    SignalBeamBridge.SetAmbientSpotlightAngle(floatValue);
+                    SaveFloat("ambientItemSpotlightAngle", Mathf.Clamp(floatValue, 5f, 35f));
+                    break;
+                case "itemFloatSpeedMin":
+                    BeamItemHologram.SetFloatSpeedMin(floatValue);
+                    SaveFloat("itemFloatSpeedMin", Mathf.Clamp(floatValue, .01f, 3f));
+                    break;
+                case "itemFloatSpeedMax":
+                    BeamItemHologram.SetFloatSpeedMax(floatValue);
+                    SaveFloat("itemFloatSpeedMax", Mathf.Clamp(floatValue, .01f, 3f));
                     break;
                 case "farClipPlane":
                     profile.camera.farClipPlane = Mathf.Max(50f, floatValue);
@@ -1818,13 +2100,32 @@ public class K1L0HUD : MonoBehaviour
                     profile.lighting.spotlightIntensity = Mathf.Clamp(floatValue, 0f, 12f);
                     SaveFloat("spotlightIntensity", profile.lighting.spotlightIntensity);
                     break;
+                case "characterFillIntensity":
+                    SaveFloat("characterFillIntensity", Mathf.Clamp(floatValue, 0f, 25f));
+                    break;
+                case "characterFillAngle":
+                    SaveFloat("characterFillAngle", Mathf.Clamp(floatValue, 12f, 90f));
+                    break;
+                case "characterFillTargetHeight":
+                    SaveFloat("characterFillTargetHeight", Mathf.Clamp(floatValue, -1f, 4f));
+                    break;
+                case "avatarEmission":
+                    K1L0PlayerIdentitySkinApplier.SetVisibilityBoost(floatValue);
+                    break;
                 // (reflectionsEnabled / reflectionIntensity handlers removed.)
                 case "fogConstantDensity":
                     profile.volumetricFog.constantDensity = boolValue;
                     SaveBool("fogConstantDensity", boolValue);
                     break;
+                case "nearFogEnabled":
+                    SaveBool("nearFogEnabled", boolValue);
+                    rm?.RefreshFogRendererRuntimeEnabled();
+                    break;
                 case "volumetricFogEnabled":
-                    rm?.SetVolumetricFogRuntimeEnabled(boolValue);
+                    // Retired compatibility key. Never let a server/catalog
+                    // value become a second fog authority: the shared renderer
+                    // is alive exactly when Near Fog OR Far Fog needs it.
+                    rm?.RefreshFogRendererRuntimeEnabled();
                     break;
                 case "fogDensity":
                     // Sky-depth rejection now keeps this dedicated ground fog
@@ -1916,6 +2217,7 @@ public class K1L0HUD : MonoBehaviour
                 case "fogDistantFog":
                     profile.volumetricFog.distantFog = boolValue;
                     SaveBool("fogDistantFog", boolValue);
+                    rm?.RefreshFogRendererRuntimeEnabled();
                     break;
                 case "fogDistantDensity":
                     profile.volumetricFog.distantFogDistanceDensity = Mathf.Clamp(floatValue, 0f, 2f);
@@ -2035,8 +2337,10 @@ public class K1L0HUD : MonoBehaviour
                         }
                         if (isBuilding)
                         {
-                            renderer.forceRenderingOff = !boolValue;
-                            renderer.enabled = boolValue;
+                            var metadata = renderer.GetComponentInParent<Kiloverse.Mapbox.BuildingMetadata>(true);
+                            bool runtimeFlattened = metadata != null && metadata.runtimeFlattened;
+                            renderer.forceRenderingOff = !boolValue || runtimeFlattened;
+                            renderer.enabled = boolValue && !runtimeFlattened;
                         }
                     }
                     break;
@@ -2173,31 +2477,6 @@ public class K1L0HUD : MonoBehaviour
 
         switch (key)
         {
-            case "groundHazeEnabled":
-                PlayerPrefs.SetInt("k1lo_groundHazeEnabled", boolValue ? 1 : 0);
-                PlayerPrefs.Save();
-                GroundHazeController.ApplySettings();
-                break;
-            case "groundHazeDensity":
-            case "groundHazeDetail":
-            case "groundHazeSpeed":
-            case "groundHazeHeight":
-            case "groundHazeSpacing":
-            case "groundHazeHue":
-            case "groundHazeSaturation":
-            case "groundHazeBrightness":
-            case "groundHazeExtent":
-            case "groundHazePinkAmount":
-            case "groundHazeWhiteAmount":
-            case "groundHazeBlueAmount":
-            case "groundHazeOrangeAmount":
-            case "groundHazeHorizonDensity":
-            case "groundHazeHorizonDistance":
-            case "groundHazeHorizonHeight":
-                PlayerPrefs.SetFloat("k1lo_" + key, floatValue);
-                PlayerPrefs.Save();
-                GroundHazeController.ApplySettings();
-                break;
             case "settingsPanelOpen":
                 DynamicSkyVideoController.SetSettingsPanelOpen(boolValue);
                 break;
@@ -2234,6 +2513,12 @@ public class K1L0HUD : MonoBehaviour
                 PlayerPrefs.SetFloat("k1lo_manualWeather", weatherIndex);
                 PlayerPrefs.SetString("k1lo_manualWeatherGlyph", ManualWeatherGlyphs[weatherIndex]);
                 PlayerPrefs.SetInt("k1lo_manualWeatherOverrideEnabled", 1);
+                KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
+                break;
+            case "manualWeatherOverrideEnabled":
+                KiloWorld.Rendering.Systems.RenderManager.ManualWeatherOverrideEnabled = boolValue;
+                PlayerPrefs.SetInt("k1lo_manualWeatherOverrideEnabled", boolValue ? 1 : 0);
+                PlayerPrefs.Save();
                 KiloWorld.Rendering.Systems.RenderManager.NotifyManualSkyChanged();
                 break;
             case "experimentalLayeredSky":

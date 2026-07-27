@@ -5,6 +5,7 @@ using UnityEngine.UI;
 
 using KiloWorld.Rendering;
 using KiloWorld.Rendering.Systems;
+using System.Collections;
 using System.Collections.Generic;
 using Kiloverse.Mapbox;
 
@@ -44,10 +45,7 @@ public class KiloFirstPersonController : MonoBehaviour
     public Color directionConeColor = new Color(0.25f, 1f, 0.35f, 0.72f);
 
     [Header("God View Player Marker")]
-    public bool snapCharacterToRoadInGodView = false;
     public float godViewCharacterScale = 8f;
-    public float godViewRoadSnapRefreshSeconds = 0.5f;
-    public float godViewRoadYOffset = 0.15f;
     
     [Header("Animation Settings")]
     [SerializeField] private string speedParameter = "Speed";
@@ -91,9 +89,6 @@ public class KiloFirstPersonController : MonoBehaviour
     private Vector3 playerVisualOriginalLocalPosition;
     private Vector3 playerVisualOriginalLocalScale;
     private bool playerVisualOriginalCached;
-    private float nextGodViewSnapTime;
-    private Vector3 lastGodViewRoadPosition;
-    private bool hasGodViewRoadPosition;
 
     private int cameraMode = 0; // 0=first person, 1=god view
     private bool isGodViewActive = false; // True only for overhead god view
@@ -367,7 +362,7 @@ public class KiloFirstPersonController : MonoBehaviour
     {
         if (debugPositionOverrideActive)
             transform.position = debugPositionOverride;
-        UpdateGodViewPlayerMarker();
+        UpdateGodViewPlayerScale();
         ApplyCameraRotation();
     }
 
@@ -712,6 +707,39 @@ public class KiloFirstPersonController : MonoBehaviour
         ApplyCameraRotation();
     }
 
+    private Coroutine nativeItemFocusRoutine;
+
+    public void TemporarilyFaceWorldPoint(Vector3 worldPoint, float holdSeconds = 4f)
+    {
+        Vector3 direction = worldPoint - transform.position;
+        direction.y = 0f;
+        if (direction.sqrMagnitude < .01f) return;
+
+        if (nativeItemFocusRoutine != null) StopCoroutine(nativeItemFocusRoutine);
+        var gps = FindFirstObjectByType<GPSLocationController>();
+        gps?.PauseCompass(Mathf.Max(1f, holdSeconds));
+        nativeItemFocusRoutine = StartCoroutine(FaceWorldPointTemporarily(direction.normalized, holdSeconds));
+    }
+
+    private IEnumerator FaceWorldPointTemporarily(Vector3 direction, float holdSeconds)
+    {
+        Quaternion start = transform.rotation;
+        Quaternion target = Quaternion.LookRotation(direction, Vector3.up);
+        const float turnSeconds = .42f;
+        float startedAt = Time.unscaledTime;
+        while (Time.unscaledTime - startedAt < turnSeconds)
+        {
+            float progress = Mathf.Clamp01((Time.unscaledTime - startedAt) / turnSeconds);
+            float eased = progress * progress * (3f - 2f * progress);
+            transform.rotation = Quaternion.Slerp(start, target, eased);
+            yield return null;
+        }
+        transform.rotation = target;
+        yield return new WaitForSecondsRealtime(Mathf.Max(0f, holdSeconds - turnSeconds));
+        nativeItemFocusRoutine = null;
+        // GPS compass control resumes and smoothly returns to the live heading.
+    }
+
     public bool DebugFrameNearestBeam(float standOffMeters = 24f)
     {
         BeamAvatar nearest = null;
@@ -946,7 +974,7 @@ public class KiloFirstPersonController : MonoBehaviour
 
         if (playerVisualRoot == null)
         {
-            Debug.LogWarning("[KiloFirstPersonController] No separate player visual root found for god-view road marker.");
+            Debug.LogWarning("[KiloFirstPersonController] No separate player visual root found for god-view scaling.");
             return;
         }
 
@@ -956,16 +984,7 @@ public class KiloFirstPersonController : MonoBehaviour
         Debug.Log($"[KiloFirstPersonController] God-view visual root: {playerVisualRoot.name}");
     }
 
-    public Vector3 PlayerVisualWorldPosition
-    {
-        get
-        {
-            CachePlayerVisualRoot();
-            return playerVisualRoot != null ? playerVisualRoot.position : transform.position;
-        }
-    }
-
-    private void UpdateGodViewPlayerMarker()
+    private void UpdateGodViewPlayerScale()
     {
         if (!isGodViewActive)
         {
@@ -976,15 +995,10 @@ public class KiloFirstPersonController : MonoBehaviour
         CachePlayerVisualRoot();
         if (playerVisualRoot == null || !playerVisualOriginalCached) return;
 
-        if (snapCharacterToRoadInGodView && Time.unscaledTime >= nextGodViewSnapTime)
-        {
-            nextGodViewSnapTime = Time.unscaledTime + Mathf.Max(0.1f, godViewRoadSnapRefreshSeconds);
-            hasGodViewRoadPosition = TryFindNearestRoadWorldPoint(transform.position, out lastGodViewRoadPosition);
-        }
-
-        Vector3 markerWorldPosition = snapCharacterToRoadInGodView && hasGodViewRoadPosition ? lastGodViewRoadPosition : transform.position;
-        markerWorldPosition.y += godViewRoadYOffset;
-        playerVisualRoot.localPosition = transform.InverseTransformPoint(markerWorldPosition);
+        // God view may enlarge the avatar, but its position always remains the
+        // canonical player position. Road snapping created a second, competing
+        // containment coordinate and is intentionally gone.
+        playerVisualRoot.localPosition = playerVisualOriginalLocalPosition;
         playerVisualRoot.localScale = playerVisualOriginalLocalScale * Mathf.Max(1f, godViewCharacterScale);
     }
 
@@ -997,60 +1011,6 @@ public class KiloFirstPersonController : MonoBehaviour
 
         playerVisualRoot.localPosition = playerVisualOriginalLocalPosition;
         playerVisualRoot.localScale = playerVisualOriginalLocalScale;
-    }
-
-    private bool TryFindNearestRoadWorldPoint(Vector3 origin, out Vector3 nearest)
-    {
-        nearest = origin;
-
-        Transform roadLayerFolder = null;
-        var runtimeRoot = GameObject.Find("RuntimeObjectsRoot");
-        if (runtimeRoot != null)
-            roadLayerFolder = runtimeRoot.transform.Find("road layer objects");
-        if (roadLayerFolder == null)
-        {
-            var roadObj = GameObject.Find("road layer objects");
-            if (roadObj != null) roadLayerFolder = roadObj.transform;
-        }
-        if (roadLayerFolder == null) return false;
-
-        MeshFilter[] meshes = roadLayerFolder.GetComponentsInChildren<MeshFilter>(false);
-        float bestSq = float.MaxValue;
-        bool found = false;
-
-        for (int mi = 0; mi < meshes.Length; mi++)
-        {
-            MeshFilter meshFilter = meshes[mi];
-            Mesh mesh = meshFilter.sharedMesh;
-            if (mesh == null) continue;
-
-            Vector3[] vertices = mesh.vertices;
-            Transform meshTransform = meshFilter.transform;
-            for (int vi = 0; vi < vertices.Length; vi += 2)
-            {
-                Vector3 worldPoint;
-                if (vi + 1 < vertices.Length)
-                {
-                    Vector3 left = meshTransform.TransformPoint(vertices[vi]);
-                    Vector3 right = meshTransform.TransformPoint(vertices[vi + 1]);
-                    worldPoint = (left + right) * 0.5f;
-                }
-                else
-                {
-                    worldPoint = meshTransform.TransformPoint(vertices[vi]);
-                }
-
-                Vector3 flatDelta = worldPoint - origin;
-                flatDelta.y = 0f;
-                float sq = flatDelta.sqrMagnitude;
-                if (sq >= bestSq) continue;
-                bestSq = sq;
-                nearest = worldPoint;
-                found = true;
-            }
-        }
-
-        return found;
     }
 
     public void ApplyCameraProfileNow()
